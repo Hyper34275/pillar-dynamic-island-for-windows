@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { ERROR_CODES } from "../lib/appInfo";
+import { t } from "../lib/i18n";
 
 interface CrashBoundaryProps {
   children: ReactNode;
@@ -9,6 +11,7 @@ interface CrashBoundaryState {
   hasError: boolean;
 }
 
+/** Last line of defence for the whole tree. Tab-level failures are contained by TabBoundary. */
 export class CrashBoundary extends Component<CrashBoundaryProps, CrashBoundaryState> {
   state: CrashBoundaryState = {
     hasError: false,
@@ -22,44 +25,27 @@ export class CrashBoundary extends Component<CrashBoundaryProps, CrashBoundarySt
     this.props.onError?.(error, errorInfo);
   }
 
+  // Reset the error state so React re-mounts children. If the underlying bug persists,
+  // getDerivedStateFromError flips hasError back to true.
   private handleTryAgain = () => {
-    // Reset the error state so React re-mounts children. If the underlying bug
-    // persists, getDerivedStateFromError will flip hasError back to true.
     this.setState({ hasError: false });
-  };
-
-  private handleReload = () => {
-    if (typeof window !== "undefined") {
-      window.location.reload();
-    }
   };
 
   render() {
     if (this.state.hasError) {
+      // The window is only as big as the collapsed island, so the fallback is a small pill.
       return (
-        <div className="w-screen h-screen flex items-center justify-center bg-black text-white p-6 text-center">
-          <div className="max-w-md flex flex-col items-center gap-4">
-            <h1 className="text-lg font-semibold">PILLAR recovered from an error</h1>
-            <p className="text-white/70 text-sm">
-              Something crashed in the UI. Try again, or reload if controls stop responding.
-            </p>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={this.handleTryAgain}
-                className="px-3 py-1.5 rounded-md bg-white/10 hover:bg-white/20 text-white text-sm transition-colors"
-              >
-                Try again
-              </button>
-              <button
-                type="button"
-                onClick={this.handleReload}
-                className="px-3 py-1.5 rounded-md bg-white/20 hover:bg-white/30 text-white text-sm transition-colors"
-              >
-                Reload
-              </button>
-            </div>
-          </div>
+        <div className="w-full flex items-start justify-center">
+          <button
+            type="button"
+            onClick={this.handleTryAgain}
+            className="h-[34px] px-4 rounded-full bg-black text-white/80 text-[12px] font-semibold flex items-center gap-2"
+            title={t("island.tryAgain")}
+            dir="ltr"
+          >
+            <span dir="auto">{t("island.unavailable")}</span>
+            <span className="text-white/40 tabular-nums">{ERROR_CODES.uiRender}</span>
+          </button>
         </div>
       );
     }

@@ -1,11 +1,13 @@
-import React from "react";
+import React, { useEffect } from "react";
 import ReactDOM from "react-dom/client";
-import { useEffect } from "react";
 import App from "./App";
 import "./index.css";
 import { CrashBoundary } from "./components/CrashBoundary";
 import { useCrashRecovery } from "./hooks/useCrashRecovery";
+import { APP_VERSION } from "./lib/appInfo";
 import { dlog, installDebugLogging } from "./lib/debugLog";
+import { describeError, stackFrames } from "./lib/errors";
+import { applyDocumentLocale } from "./lib/i18n";
 
 function AppWithRecovery() {
   const { reportCrash } = useCrashRecovery({
@@ -14,29 +16,16 @@ function AppWithRecovery() {
     timeWindow: 60_000,
   });
 
+  // Uncaught script errors are recorded in the crash history but don't reload the window
+  // (only a render crash does). Promise rejections are handled in installDebugLogging:
+  // logged and swallowed, never filed as crashes.
   useEffect(() => {
     const onWindowError = (event: ErrorEvent) => {
-      reportCrash(event.error ?? event.message, {
-        severity: "severe",
-        component: "window",
-        action: "error",
-      });
+      if (!event.error) return; // e.g. "ResizeObserver loop" notifications carry no error
+      reportCrash(event.error, { severity: "moderate", component: "window", action: "error" });
     };
-
-    const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-      reportCrash(event.reason instanceof Error ? event.reason : String(event.reason), {
-        severity: "moderate",
-        component: "window",
-        action: "unhandledrejection",
-      });
-    };
-
     window.addEventListener("error", onWindowError);
-    window.addEventListener("unhandledrejection", onUnhandledRejection);
-    return () => {
-      window.removeEventListener("error", onWindowError);
-      window.removeEventListener("unhandledrejection", onUnhandledRejection);
-    };
+    return () => window.removeEventListener("error", onWindowError);
   }, [reportCrash]);
 
   return (
@@ -45,7 +34,7 @@ function AppWithRecovery() {
         dlog(
           "error",
           "react",
-          `render crash: ${error.name}: ${error.message}\n${error.stack ?? ""}\ncomponentStack:${errorInfo.componentStack ?? " (none)"}`
+          `render crash: ${describeError(error)}\n${stackFrames(error)}\ncomponentStack:${errorInfo.componentStack ?? " (none)"}`
         );
         reportCrash(error, {
           severity: "critical",
@@ -59,12 +48,9 @@ function AppWithRecovery() {
   );
 }
 
+applyDocumentLocale();
 installDebugLogging();
-dlog(
-  "info",
-  "app",
-  `app boot — ua="${navigator.userAgent}" dpr=${window.devicePixelRatio} win=${window.innerWidth}x${window.innerHeight}`
-);
+dlog("info", "app", `app boot — v${APP_VERSION} dpr=${window.devicePixelRatio} win=${window.innerWidth}x${window.innerHeight}`);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

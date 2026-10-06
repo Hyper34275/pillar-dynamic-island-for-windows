@@ -244,86 +244,6 @@ export function SectionLabel({ children, trailing }: { children: ReactNode; trai
   );
 }
 
-export function IconBadge({ color, children }: { color: string; children: ReactNode }) {
-  return (
-    <span
-      className="w-[26px] h-[26px] rounded-[8px] flex items-center justify-center flex-shrink-0 text-white"
-      style={{ background: color }}
-      aria-hidden="true"
-    >
-      {children}
-    </span>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Fill slider (Control Center style) — visual shell; the caller supplies the
-// native range input as `children` so its commit/throttle logic stays intact.
-// -----------------------------------------------------------------------------
-
-export function FillSlider({
-  percent,
-  icon,
-  label,
-  valueText,
-  fill = "#ffffff",
-  disabled = false,
-  height = 40,
-  children,
-}: {
-  percent: number;
-  icon: ReactNode;
-  label?: string;
-  valueText?: string;
-  fill?: string;
-  disabled?: boolean;
-  height?: number;
-  children: ReactNode;
-}) {
-  const pct = Math.max(0, Math.min(100, percent));
-  const lightFill = fill.toLowerCase() === "#ffffff" || fill.toLowerCase() === "#fff";
-  return (
-    <div
-      className={`relative w-full rounded-[14px] bg-white/[0.09] overflow-hidden ${disabled ? "opacity-45" : ""}`}
-      style={{ height }}
-    >
-      <div
-        className="absolute inset-y-0 left-0 transition-[width] duration-100 ease-out"
-        style={{ width: `${pct}%`, background: fill }}
-      />
-      <div className="absolute inset-0 flex items-center justify-between px-3 pointer-events-none">
-        <span className="flex items-center gap-2 min-w-0">
-          {icon && (
-            <span
-              className="flex-shrink-0 transition-colors"
-              style={{ color: pct > 9 && lightFill ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.9)" }}
-            >
-              {icon}
-            </span>
-          )}
-          {label && (
-            <span
-              className="text-[12px] font-semibold truncate transition-colors"
-              style={{ color: pct > 30 && lightFill ? "rgba(0,0,0,0.75)" : "rgba(255,255,255,0.9)" }}
-            >
-              {label}
-            </span>
-          )}
-        </span>
-        {valueText && (
-          <span
-            className="text-[11px] font-semibold tabular-nums transition-colors"
-            style={{ color: pct > 88 && lightFill ? "rgba(0,0,0,0.6)" : "rgba(255,255,255,0.55)" }}
-          >
-            {valueText}
-          </span>
-        )}
-      </div>
-      {children}
-    </div>
-  );
-}
-
 // -----------------------------------------------------------------------------
 // Empty state
 // -----------------------------------------------------------------------------
@@ -384,10 +304,10 @@ export function PillButton({
   ariaLabel?: string;
   type?: "button" | "submit";
 }) {
-  const color = tint ?? "var(--pillar-accent)";
+  const color = tint ?? SYSTEM_COLORS.blue;
   const style =
     variant === "filled"
-      ? { background: color, color: tint ? "#fff" : "var(--pillar-accent-contrast, #fff)" }
+      ? { background: color, color: "#fff" }
       : variant === "tinted"
         ? { background: `color-mix(in srgb, ${color} 22%, transparent)`, color }
         : undefined;

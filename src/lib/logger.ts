@@ -11,6 +11,8 @@
  * Never import this from inside `src/lib/tauri.ts` (cyclic).
  */
 
+import { describeError, stackFrames } from "./errors";
+
 type LogLevel = "debug" | "info" | "warn" | "error";
 
 const IS_PROD = (import.meta as { env?: { PROD?: boolean } }).env?.PROD === true;
@@ -57,14 +59,17 @@ function forwardToBackend(scope: string, message: string, detail?: unknown): voi
   });
 }
 
+// Privacy: errors and strings are reduced to name + code (+ stack frames), never message
+// text. Plain objects are serialised as-is, so callers must only pass user-data-free ones.
 function safeSerialize(value: unknown): string {
   if (value instanceof Error) {
-    return JSON.stringify({ name: value.name, message: value.message, stack: value.stack });
+    return JSON.stringify({ name: value.name, code: describeError(value), frames: stackFrames(value) });
   }
+  if (typeof value === "string") return describeError(value);
   try {
     return JSON.stringify(value);
   } catch {
-    return String(value);
+    return typeof value;
   }
 }
 
@@ -100,5 +105,3 @@ export function createLogger(scope: string): Logger {
     },
   };
 }
-
-export const rootLogger = createLogger("pillar");

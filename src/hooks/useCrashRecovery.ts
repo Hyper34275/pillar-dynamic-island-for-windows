@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { APP_VERSION } from "../lib/appInfo";
+import { describeError, stackFrames } from "../lib/errors";
 import { createLogger } from "../lib/logger";
 
 const log = createLogger("crash-recovery");
+
+const STORAGE_KEY = "companyisland_crash_history";
+// Earlier builds stored error messages and the user agent here; drop it on sight.
+const LEGACY_STORAGE_KEY = "pillar_crash_history";
+const HISTORY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // =============================================================================
 // Types
@@ -9,330 +16,165 @@ const log = createLogger("crash-recovery");
 
 export type CrashSeverity = "minor" | "moderate" | "severe" | "critical";
 
+/** Privacy-safe by construction: error name and stack frames, never message text. */
 export interface CrashReport {
   id: string;
   timestamp: number;
-  error: Error | string;
+  errorName: string;
   severity: CrashSeverity;
   component?: string;
   action?: string;
-  stackTrace?: string;
-  userAgent?: string;
-  appVersion?: string;
+  frames: string;
+  appVersion: string;
 }
 
 export interface CrashRecoveryConfig {
   maxCrashReports?: number;
-  crashThreshold?: number; // Number of crashes within timeWindow to trigger recovery
-  timeWindow?: number; // Time window in ms
-  autoRecoveryDelay?: number; // Delay before auto-recovery attempt
+  crashThreshold?: number; // crashes within timeWindow that count as a crash loop
+  timeWindow?: number; // ms
+  autoRecoveryDelay?: number; // ms before auto-recovery attempt
   enableAutoRecovery?: boolean;
 }
 
 export interface UseCrashRecoveryReturn {
-  // Crash reporting
-  reportCrash: (error: Error | string, options?: {
-    severity?: CrashSeverity;
-    component?: string;
-    action?: string;
-  }) => void;
-  
-  // Crash history
+  reportCrash: (
+    error: unknown,
+    options?: { severity?: CrashSeverity; component?: string; action?: string }
+  ) => void;
   crashHistory: CrashReport[];
-  recentCrashCount: number;
   isCrashLoopDetected: boolean;
-  
-  // Recovery actions
   triggerRecovery: () => Promise<void>;
   clearCrashHistory: () => void;
-  
-  // Health monitoring
-  isHealthy: boolean;
-  healthScore: number; // 0-100
 }
 
 // =============================================================================
 // Hook
 // =============================================================================
 
-export function useCrashRecovery(
-  config: CrashRecoveryConfig = {}
-): UseCrashRecoveryReturn {
+export function useCrashRecovery(config: CrashRecoveryConfig = {}): UseCrashRecoveryReturn {
   const {
     maxCrashReports = 50,
     crashThreshold = 3,
-    timeWindow = 60000, // 1 minute
-    autoRecoveryDelay = 3000, // 3 seconds
+    timeWindow = 60_000,
+    autoRecoveryDelay = 3000,
     enableAutoRecovery = true,
   } = config;
 
   const [crashHistory, setCrashHistory] = useState<CrashReport[]>([]);
-  const [isRecovering, setIsRecovering] = useState(false);
+  const recoveringRef = useRef(false);
   const recoveryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
-  // Synchronous mirror of crashHistory so loop detection inside reportCrash
-  // always counts every recorded crash, even rapid back-to-back ones.
+  // Synchronous mirror of crashHistory so loop detection inside reportCrash always
+  // counts every recorded crash, even rapid back-to-back ones.
   const crashHistoryRef = useRef<CrashReport[]>([]);
 
-  // Load crash history from localStorage on mount
   useEffect(() => {
     isMountedRef.current = true;
     try {
-      const saved = localStorage.getItem("pillar_crash_history");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          // Filter to only recent crashes (last 24 hours) AND validate item shape
-          // so a single corrupt entry can't crash the loader.
-          const recent = parsed.filter(
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+      const saved = localStorage.getItem(STORAGE_KEY);
+      const parsed: unknown = saved ? JSON.parse(saved) : null;
+      if (Array.isArray(parsed)) {
+        // Recent crashes only, with a shape check so one corrupt entry can't crash the loader.
+        const recent = parsed
+          .filter(
             (crash): crash is CrashReport =>
               !!crash &&
               typeof crash === "object" &&
               typeof (crash as CrashReport).id === "string" &&
               typeof (crash as CrashReport).timestamp === "number" &&
-              Date.now() - (crash as CrashReport).timestamp < 86400000
-          ).slice(0, maxCrashReports);
-          crashHistoryRef.current = recent;
-          setCrashHistory(recent);
-        }
+              Date.now() - (crash as CrashReport).timestamp < HISTORY_MAX_AGE_MS
+          )
+          .slice(0, maxCrashReports);
+        crashHistoryRef.current = recent;
+        setCrashHistory(recent);
       }
     } catch {
-      // Ignore localStorage errors
+      // storage unavailable or corrupt: start with an empty history
     }
 
     return () => {
       isMountedRef.current = false;
-      if (recoveryTimeoutRef.current) {
-        clearTimeout(recoveryTimeoutRef.current);
-      }
+      if (recoveryTimeoutRef.current) clearTimeout(recoveryTimeoutRef.current);
     };
   }, [maxCrashReports]);
 
-  // Save crash history to localStorage
   const saveCrashHistory = useCallback((history: CrashReport[]) => {
     try {
-      localStorage.setItem("pillar_crash_history", JSON.stringify(history));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
     } catch {
-      // Ignore localStorage errors
+      // storage unavailable: history stays in memory only
     }
   }, []);
 
-  // Report a crash
-  const reportCrash = useCallback((
-    error: Error | string,
-    options: {
-      severity?: CrashSeverity;
-      component?: string;
-      action?: string;
-    } = {}
-  ) => {
-    const {
-      severity = "moderate",
-      component,
-      action,
-    } = options;
-
-    const crashReport: CrashReport = {
-      id: `crash_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      timestamp: Date.now(),
-      error,
-      severity,
-      component,
-      action,
-      stackTrace: error instanceof Error ? error.stack : undefined,
-      userAgent: navigator.userAgent,
-      appVersion: (import.meta as any).env?.VITE_APP_VERSION || "unknown",
-    };
-
-    const newHistory = [crashReport, ...crashHistoryRef.current].slice(0, maxCrashReports);
-    crashHistoryRef.current = newHistory;
-    saveCrashHistory(newHistory);
-    setCrashHistory(newHistory);
-
-    // Route through logger so backend gets a persistent record.
-    log.error("Crash reported", crashReport);
-
-    // Trigger auto-recovery if enabled, the crash is severe, and we are not
-    // already in a crash loop. Reloading into a deterministic crash would
-    // otherwise reboot-loop forever at ~autoRecoveryDelay intervals.
-    if (enableAutoRecovery && (severity === "severe" || severity === "critical")) {
-      const now = Date.now();
-      const recentCount = newHistory.filter(
-        (c) => now - c.timestamp < timeWindow
-      ).length;
-
-      if (recentCount >= crashThreshold) {
-        log.warn(
-          `Crash loop detected (${recentCount} crashes in ${Math.round(timeWindow / 1000)}s); auto-recovery suspended`
-        );
-        return;
-      }
-
-      if (recoveryTimeoutRef.current) {
-        clearTimeout(recoveryTimeoutRef.current);
-      }
-
-      recoveryTimeoutRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
-          triggerRecovery();
-        }
-      }, autoRecoveryDelay);
-    }
-  }, [maxCrashReports, enableAutoRecovery, autoRecoveryDelay, timeWindow, crashThreshold, saveCrashHistory]);
-
-  // Calculate recent crash count
-  const recentCrashCount = crashHistory.filter(
-    crash => Date.now() - crash.timestamp < timeWindow
-  ).length;
-
-  // Detect crash loop
-  const isCrashLoopDetected = recentCrashCount >= crashThreshold;
-
-  // Calculate health score. Memoized so we don't recompute on every parent render —
-  // only when crashHistory actually changes.
-  const currentHealthScore = useMemo((): number => {
-    if (crashHistory.length === 0) return 100;
-
-    const now = Date.now();
-    let score = 100;
-
-    crashHistory.forEach(crash => {
-      const age = now - crash.timestamp;
-      const ageInHours = age / 3600000;
-
-      const severityPenalty = {
-        minor: 5,
-        moderate: 10,
-        severe: 20,
-        critical: 40,
-      }[crash.severity];
-
-      // Age decay (older crashes have less impact)
-      const ageDecay = Math.max(0.1, 1 - ageInHours / 24);
-
-      score -= severityPenalty * ageDecay;
-    });
-
-    return Math.max(0, Math.min(100, score));
-  }, [crashHistory]);
-
-  const isHealthy = currentHealthScore >= 50;
-
-  // Trigger recovery action
   const triggerRecovery = useCallback(async () => {
-    if (isRecovering) return;
-
-    setIsRecovering(true);
+    if (recoveringRef.current) return;
+    recoveringRef.current = true;
     log.warn("Starting recovery sequence");
 
     try {
-      // Clear cache storage only. User data in localStorage (productivity
-      // tasks, notes, timer stats, Prism history) is NOT app-state that a
-      // render crash can corrupt — it is parsed defensively everywhere — so
-      // wiping it on every crash would destroy unrelated user work.
+      // Cache storage only: nothing a render crash can corrupt lives in localStorage.
       if (typeof window !== "undefined" && "caches" in window) {
         const cacheNames = await caches.keys();
-        await Promise.all(
-          cacheNames.map(name => caches.delete(name))
-        );
+        await Promise.all(cacheNames.map((name) => caches.delete(name)));
       }
-
-      // Reload the page
-      setTimeout(() => {
-        window.location.reload();
-      }, 500);
-
+      setTimeout(() => window.location.reload(), 500);
     } catch (error) {
       log.error("Recovery failed", error);
-      setIsRecovering(false);
+      recoveringRef.current = false;
     }
-  }, [isRecovering]);
+  }, []);
 
-  // Clear crash history
+  const reportCrash = useCallback(
+    (error: unknown, options: { severity?: CrashSeverity; component?: string; action?: string } = {}) => {
+      const { severity = "moderate", component, action } = options;
+
+      const crashReport: CrashReport = {
+        id: `crash_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
+        timestamp: Date.now(),
+        errorName: describeError(error),
+        severity,
+        component,
+        action,
+        frames: stackFrames(error),
+        appVersion: APP_VERSION,
+      };
+
+      const newHistory = [crashReport, ...crashHistoryRef.current].slice(0, maxCrashReports);
+      crashHistoryRef.current = newHistory;
+      saveCrashHistory(newHistory);
+      setCrashHistory(newHistory);
+
+      // Route through the logger so the backend gets a persistent record.
+      log.error("Crash reported", crashReport);
+
+      // Auto-recover from severe crashes unless we are already in a crash loop:
+      // reloading into a deterministic crash would otherwise loop forever.
+      if (enableAutoRecovery && (severity === "severe" || severity === "critical")) {
+        const now = Date.now();
+        const recentCount = newHistory.filter((c) => now - c.timestamp < timeWindow).length;
+
+        if (recentCount >= crashThreshold) {
+          log.warn(`Crash loop detected (${recentCount} crashes in ${Math.round(timeWindow / 1000)}s); auto-recovery suspended`);
+          return;
+        }
+
+        if (recoveryTimeoutRef.current) clearTimeout(recoveryTimeoutRef.current);
+        recoveryTimeoutRef.current = setTimeout(() => {
+          if (isMountedRef.current) void triggerRecovery();
+        }, autoRecoveryDelay);
+      }
+    },
+    [maxCrashReports, enableAutoRecovery, autoRecoveryDelay, timeWindow, crashThreshold, saveCrashHistory, triggerRecovery]
+  );
+
   const clearCrashHistory = useCallback(() => {
+    crashHistoryRef.current = [];
     setCrashHistory([]);
     saveCrashHistory([]);
-    localStorage.removeItem("pillar_crash_history");
   }, [saveCrashHistory]);
 
-  return {
-    reportCrash,
-    crashHistory,
-    recentCrashCount,
-    isCrashLoopDetected,
-    triggerRecovery,
-    clearCrashHistory,
-    isHealthy,
-    healthScore: currentHealthScore,
-  };
-}
+  const isCrashLoopDetected = crashHistory.filter((crash) => Date.now() - crash.timestamp < timeWindow).length >= crashThreshold;
 
-// =============================================================================
-// Utility Functions
-// =============================================================================
-
-/**
- * Wrap an async function with crash recovery
- * Automatically reports errors and triggers recovery if needed
- */
-export function withCrashRecovery<T>(
-  fn: () => Promise<T>,
-  recovery: UseCrashRecoveryReturn,
-  options: {
-    component?: string;
-    action?: string;
-    severity?: CrashSeverity;
-  } = {}
-): Promise<T | null> {
-  return fn()
-    .then(result => result)
-    .catch(error => {
-      recovery.reportCrash(error as Error, options);
-      return null;
-    });
-}
-
-/**
- * Create an error boundary handler for React components
- */
-export function createErrorHandler(
-  recovery: UseCrashRecoveryReturn,
-  componentName: string
-) {
-  return (error: Error, errorInfo?: React.ErrorInfo) => {
-    recovery.reportCrash(error, {
-      severity: "severe",
-      component: componentName,
-      action: "render",
-    });
-
-    // Log additional error info if available
-    if (errorInfo) {
-      console.error("[Error Boundary] Component stack:", errorInfo.componentStack);
-    }
-  };
-}
-
-/**
- * Check if the app should enter safe mode
- */
-export function shouldEnterSafeMode(recovery: UseCrashRecoveryReturn): boolean {
-  return recovery.isCrashLoopDetected || recovery.healthScore < 30;
-}
-
-/**
- * Get safe mode configuration
- */
-export function getSafeModeConfig() {
-  return {
-    // Disable animations
-    disableAnimations: true,
-    // Reduce polling frequency
-    reducePolling: true,
-    // Disable non-essential features
-    disableNotifications: false,
-    disableMediaControls: false,
-    // Simplify UI
-    simplifiedUI: true,
-  };
+  return { reportCrash, crashHistory, isCrashLoopDetected, triggerRecovery, clearCrashHistory };
 }

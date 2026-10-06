@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { isTauriAvailable, tauriInvoke } from "../lib/tauri";
 import { dlog } from "../lib/debugLog";
+import { describeError } from "../lib/errors";
 
 /** Hit-test rectangle in CSS px, relative to the webview viewport's top-left. */
 export interface HitRect {
@@ -21,6 +22,9 @@ export interface OutsidePress {
 interface UseNativePointerOptions {
   /** Interactive region(s) of the window. Empty = nothing is inside. */
   rects: HitRect[];
+  /** Viewport width the rects were laid out against. Lets the backend re-center
+   *  them if the window was resized before the next push lands. */
+  viewportWidth: number;
   /** Report presses outside the region (set while the island is expanded). */
   armed: boolean;
   /** Cursor crossed the region boundary. A press that started inside keeps it
@@ -43,10 +47,6 @@ function snapRect(r: HitRect): HitRect {
   return { x, y, w: Math.ceil(r.x + r.w) - x, h: Math.ceil(r.y + r.h) - y };
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 /**
  * Native (OS-level) pointer tracking for the island.
  *
@@ -61,6 +61,7 @@ function errorMessage(error: unknown): string {
  */
 export function useNativePointer({
   rects,
+  viewportWidth,
   armed,
   onPointerChange,
   onOutsidePress,
@@ -75,8 +76,8 @@ export function useNativePointer({
   }, [onPointerChange, onOutsidePress]);
 
   // Latest inputs, read at flush time so a burst of changes collapses into one push.
-  const inputsRef = useRef({ rects, armed });
-  inputsRef.current = { rects, armed };
+  const inputsRef = useRef({ rects, viewportWidth, armed });
+  inputsRef.current = { rects, viewportWidth, armed };
   const scheduleRef = useRef<() => void>(() => {});
 
   // Push pipeline: at most one push per animation frame, one in flight at a time
@@ -124,6 +125,7 @@ export function useNativePointer({
         rects: inputsRef.current.rects.map(snapRect),
         dpr: window.devicePixelRatio || 1,
         armed: inputsRef.current.armed,
+        viewportWidth: inputsRef.current.viewportWidth,
       };
       const key = JSON.stringify(payload);
       if (key === lastKey) return;
@@ -139,7 +141,7 @@ export function useNativePointer({
           failures++;
           // Don't retry the identical payload in a loop; the next real change retries.
           lastKey = key;
-          reportActive(false, `set_pill_hit_region failed: ${errorMessage(error)}`);
+          reportActive(false, `set_pill_hit_region failed: ${describeError(error)}`);
           if (failures >= MAX_CONSECUTIVE_FAILURES) {
             dlog("warn", "pointer", `set_pill_hit_region failed ${failures}x in a row — giving up for this session`);
           }
@@ -197,9 +199,9 @@ export function useNativePointer({
   const rectsKey = JSON.stringify(rects);
   useEffect(() => {
     scheduleRef.current();
-  }, [rectsKey, armed]);
+  }, [rectsKey, viewportWidth, armed]);
 
-  // Backend events — same disposal pattern as useWorkflowEvents.
+  // Backend events.
   useEffect(() => {
     if (!isTauriAvailable()) return;
     let disposed = false;

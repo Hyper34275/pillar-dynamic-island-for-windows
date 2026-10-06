@@ -1,411 +1,76 @@
-// Reduced motion detection helper
-const getPrefersReducedMotion = () => {
-  if (typeof window === "undefined") return false;
-  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-};
+// Motion + geometry tokens for the island. All springs settle on their own (motion stops
+// the frame loop at rest), and nothing here animates forever.
 
-// Helper to get reduced motion transition
-const getReducedMotionTransition = (baseTransition: any) => {
-  if (getPrefersReducedMotion()) {
-    return {
-      duration: 0.1,
-      ease: "easeOut",
-    };
-  }
-  return baseTransition;
-};
-
-// Check reduced motion preference (can be called reactively in components)
-export const prefersReducedMotion = getPrefersReducedMotion();
-
-// Spring configurations for different animation types
 export const springConfig = {
-  // Default spring - balanced feel
-  default: {
-    type: "spring" as const,
-    stiffness: 220,
-    damping: 25,
-    mass: 1,
-  },
-
-  // Snappy spring - quick response
-  snappy: {
-    type: "spring" as const,
-    stiffness: 300,
-    damping: 28,
-    mass: 0.8,
-  },
-
-  // Gentle spring - smooth expansion
-  gentle: {
-    type: "spring" as const,
-    stiffness: 180,
-    damping: 22,
-    mass: 1.2,
-  },
-
-  // Island spring - the Dynamic Island morph: fast, with a small, confident overshoot
+  // The island morph: fast, with a small, confident overshoot.
   island: {
     type: "spring" as const,
     stiffness: 420,
     damping: 32,
     mass: 0.95,
   },
-
-  // Bouncy spring - playful overshoot
-  bouncy: {
+  // Reduced motion: effectively instant, no overshoot.
+  instant: {
+    stiffness: 1000,
+    damping: 100,
+    mass: 0.1,
+  },
+  // Entrance of the pill itself at launch.
+  entrance: {
     type: "spring" as const,
     stiffness: 260,
-    damping: 18,
+    damping: 22,
     mass: 1,
   },
 };
 
-// Standardized motion tokens for consistent animations
-export const PILL_SPRING_PRIMARY = getReducedMotionTransition(springConfig.snappy);
-export const PILL_SPRING_SUBTLE = getReducedMotionTransition(springConfig.gentle);
-export const PILL_SPRING_BOUNCY = getReducedMotionTransition(springConfig.bouncy);
+export const PILL_DURATION_FAST = 0.15;
 
-// Duration tokens
-export const PILL_DURATION_FAST = prefersReducedMotion ? 0.05 : 0.15;
-export const PILL_DURATION_MEDIUM = prefersReducedMotion ? 0.1 : 0.25;
-export const PILL_DURATION_SLOW = prefersReducedMotion ? 0.15 : 0.4;
-
-// Micro-interaction configs
-export const microInteractions = {
-  button: {
-    whileHover: prefersReducedMotion ? {} : { scale: 1.05 },
-    whileTap: { scale: 0.95 },
-    transition: PILL_SPRING_PRIMARY,
-  },
-  icon: {
-    whileHover: prefersReducedMotion ? {} : { scale: 1.1 },
-    whileTap: { scale: 0.9 },
-    transition: PILL_SPRING_PRIMARY,
-  },
-  card: {
-    whileHover: prefersReducedMotion ? {} : { scale: 1.02 },
-    whileTap: { scale: 0.98 },
-    transition: PILL_SPRING_SUBTLE,
-  },
-};
-
-// =============================================================================
-// Animation Performance Optimizations
-// =============================================================================
-
-// GPU layer promotion hints - use these properties to promote elements to GPU layers
-// This reduces repaints and improves animation performance
-export const gpuLayerHints = {
-  // For elements that animate transform (scale, translate, rotate)
-  transform: {
-    willChange: "transform",
-    backfaceVisibility: "hidden" as const,
-    WebkitBackfaceVisibility: "hidden" as const,
-  },
-  // For elements that animate opacity
-  opacity: {
-    willChange: "opacity",
-  },
-  // For elements that animate both transform and opacity
-  transformAndOpacity: {
-    willChange: "transform, opacity",
-    backfaceVisibility: "hidden" as const,
-    WebkitBackfaceVisibility: "hidden" as const,
-  },
-  // For elements that animate layout (width, height) - use sparingly
-  layout: {
-    willChange: "width, height",
-  },
-  // Reset will-change after animation completes
-  reset: {
-    willChange: "auto",
-  },
-};
-
-// Animation frame budgeting - limits concurrent animations to prevent jank
-let activeAnimations = 0;
-const MAX_CONCURRENT_ANIMATIONS = 8;
-
-export const animationFrameBudget = {
-  canStartAnimation: () => activeAnimations < MAX_CONCURRENT_ANIMATIONS,
-  startAnimation: () => {
-    activeAnimations++;
-  },
-  endAnimation: () => {
-    activeAnimations = Math.max(0, activeAnimations - 1);
-  },
-  getActiveCount: () => activeAnimations,
-};
-
-// Performance-aware animation variants that include GPU hints
-export const optimizedAnimations = {
-  // Optimized pill container animations
-  pill: {
-    initial: { ...gpuLayerHints.transformAndOpacity, opacity: 0, scale: 0 },
-    animate: { opacity: 1, scale: 1 },
-    exit: { opacity: 0, scale: 0.95 },
-    transition: springConfig.snappy,
-  },
-  // Optimized hover animations
-  hover: {
-    whileHover: prefersReducedMotion ? {} : { scale: 1.02 },
-    whileTap: { scale: 0.98 },
-    style: gpuLayerHints.transform,
-    transition: springConfig.gentle,
-  },
-  // Optimized slide animations
-  slideIn: {
-    initial: { ...gpuLayerHints.transformAndOpacity, opacity: 0, x: -20 },
-    animate: { opacity: 1, x: 0 },
-    exit: { opacity: 0, x: 20 },
-    transition: springConfig.snappy,
-  },
-  // Optimized fade animations
-  fadeIn: {
-    initial: { ...gpuLayerHints.opacity, opacity: 0 },
-    animate: { opacity: 1 },
-    exit: { opacity: 0 },
-    transition: { duration: PILL_DURATION_FAST },
-  },
-  // Optimized scale animations
-  scaleIn: {
-    initial: { ...gpuLayerHints.transformAndOpacity, opacity: 0, scale: 0.8 },
-    animate: { opacity: 1, scale: 1 },
-    exit: { opacity: 0, scale: 0.8 },
-    transition: springConfig.snappy,
-  },
-};
-
-// CSS class names for GPU layer promotion (can be used in className prop)
-export const gpuLayerClasses = {
-  promote: "gpu-layer-promote",
-  promoteTransform: "gpu-layer-promote-transform",
-  promoteOpacity: "gpu-layer-promote-opacity",
-};
-
-// Add these CSS classes to index.css for GPU layer promotion:
-/*
-.gpu-layer-promote {
-  will-change: transform, opacity;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-
-.gpu-layer-promote-transform {
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-
-.gpu-layer-promote-opacity {
-  will-change: opacity;
-}
-*/
-
-// Pill dimension configurations
-// Note: These are logical dimensions (DPI-aware via Tauri's LogicalSize)
-// Tauri automatically handles scale factor conversion, so these values work correctly
-// across different DPI displays without manual scaling
-export const pillDimensions = {
-  boot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  idle: {
-    width: 118,
-    height: 36,
-    borderRadius: 18,
-  },
-  // Wider idle state when battery icon is shown (icon only, no %)
-  idleWithBattery: {
-    width: 148,
-    height: 36,
-    borderRadius: 18,
-  },
-  // Wider idle state when notifications are present
-  idleWithNotifications: {
-    width: 170,
-    height: 36,
-    borderRadius: 18,
-  },
-  // Battery icon + notifications both present
-  idleWithBatteryAndNotifications: {
-    width: 196,
-    height: 36,
-    borderRadius: 18,
-  },
-  hover: {
-    width: 146,
-    height: 40,
-    borderRadius: 20,
-  },
-  // Hover with battery (icon + % text visible on hover)
-  hoverWithBattery: {
-    width: 200,
-    height: 40,
-    borderRadius: 20,
-  },
-  // Wider hover state when notifications are present
-  hoverWithNotifications: {
-    width: 200,
-    height: 40,
-    borderRadius: 20,
-  },
-  // Battery + notifications both present on hover
-  hoverWithBatteryAndNotifications: {
-    width: 240,
-    height: 40,
-    borderRadius: 20,
-  },
-  expanded: {
-    width: 404,
-    height: 368,
-    borderRadius: 42,
-  },
-} as const;
-
-// Dimension tokens for consistent reference
-export const PILL_WIDTH_IDLE = pillDimensions.idle.width;
-export const PILL_WIDTH_EXPANDED = pillDimensions.expanded.width;
-export const PILL_HEIGHT_IDLE = pillDimensions.idle.height;
-export const PILL_HEIGHT_EXPANDED = pillDimensions.expanded.height;
-
-// Notification animation configurations
-export const notificationAnimations = {
-  // Toast appearing below pill
-  toast: {
-    initial: prefersReducedMotion
-      ? { opacity: 0 }
-      : { y: 30, opacity: 0, scale: 0.85 },
-    animate: { y: 0, opacity: 1, scale: 1 },
-    exit: prefersReducedMotion
-      ? { opacity: 0 }
-      : { y: -40, opacity: 0, scale: 0.4 },
-  },
-  // Badge appearing in pill
-  badge: {
-    initial: prefersReducedMotion 
-      ? { opacity: 0 } 
-      : { scale: 0, opacity: 0 },
-    animate: { scale: 1, opacity: 1 },
-    exit: prefersReducedMotion 
-      ? { opacity: 0 } 
-      : { scale: 0, opacity: 0 },
-  },
-  // Pulse effect for new notifications (disabled for reduced motion)
-  pulse: prefersReducedMotion 
-    ? {} 
-    : {
-        scale: [1, 1.15, 1],
-        transition: { duration: PILL_DURATION_MEDIUM },
-      },
-  // Spring config for notification animations
-  spring: getReducedMotionTransition({
-    type: "spring" as const,
-    stiffness: 400,
-    damping: 30,
-    mass: 0.8,
-  }),
-  // Gentler spring for absorption animation
-  absorptionSpring: getReducedMotionTransition({
-    type: "spring" as const,
-    stiffness: 300,
-    damping: 25,
-    mass: 1,
-  }),
-};
-
-// Boot animation sequence duration in ms
 export const bootAnimationDuration = {
   dotAppear: 200,
-  dotToMorphDelay: 100,
-  morphToPill: 600,
-  total: 900,
+  morphToPill: 500,
 };
 
-// Single source of truth: target dimensions + blur/shadow for current interaction state.
-// Use this in one place so hover/expanded/unhover logic stays simple and animations stay smooth.
-export type PillVisualState = "idle" | "hover" | "expanded";
+// Logical pixels: Tauri converts to physical using the window's scale factor.
+export const pillDimensions = {
+  boot: { width: 8, height: 8, radius: 4 },
+  compact: {
+    height: 34,
+    hoverHeight: 38,
+    paddingX: 15,
+    /** Minimum space between the date and the weekday. */
+    gap: 14,
+    minWidth: 112,
+    maxWidth: 220,
+    hoverGrow: 12,
+  },
+  expanded: { width: 404, height: 420, radius: 40 },
+} as const;
 
-export interface IdleSlotOptions {
-  hasMedia?: boolean;
-  hasBattery?: boolean;
-  hasNotifications?: boolean;
-  hasTimer?: boolean;
+/** Window slack around the island, so edge antialiasing and the hover growth are never clipped. */
+export const windowMargin = {
+  collapsedX: 12,
+  collapsedY: 4,
+  expandedX: 16,
+  expandedY: 10,
+  /** Notification toast: gap + toast height + breathing room, and a width that contains the toast. */
+  toastY: 160,
+  toastWidth: 420,
+} as const;
+
+export interface IslandSize {
+  width: number;
+  height: number;
+  radius: number;
 }
 
-// Compact-island geometry. Slots hug the clock so the pill only grows by what it
-// actually shows — the same numbers drive the pill width AND the slot widths, so
-// content can never be clipped by a stale hard-coded width.
-const IDLE_PADDING_X = 14;
-const IDLE_CENTER_WIDTH = 50; // "23:59" at 15px semibold
-const IDLE_TIMER_EXTRA = 26; // timer glyph beside the countdown
-const SLOT_GAP = 8;
-const ART_WIDTH = 22;
-const WAVE_WIDTH = 18;
-const BATTERY_WIDTH = 24;
-const BATTERY_PERCENT_WIDTH = 30; // "100%" revealed on hover
-const NOTIFICATION_WIDTH = 30; // avatar + room for the count bubble's overhang
-
-export function getIdleSlotWidths(options: IdleSlotOptions, isHover: boolean): { left: number; right: number } {
-  const left = options.hasMedia ? ART_WIDTH + SLOT_GAP : 0;
-  const rightItems: number[] = [];
-  if (options.hasMedia) rightItems.push(WAVE_WIDTH);
-  if (options.hasBattery) rightItems.push(BATTERY_WIDTH + (isHover ? BATTERY_PERCENT_WIDTH : 0));
-  if (options.hasNotifications) rightItems.push(NOTIFICATION_WIDTH);
-  const right = rightItems.length
-    ? SLOT_GAP + rightItems.reduce((sum, w) => sum + w, 0) + (rightItems.length - 1) * 6
-    : 0;
-  return { left, right };
+export function compactSize(contentWidth: number, hover: boolean): IslandSize {
+  const c = pillDimensions.compact;
+  const base = Math.min(c.maxWidth, Math.max(c.minWidth, contentWidth + c.paddingX * 2));
+  const height = hover ? c.hoverHeight : c.height;
+  return { width: base + (hover ? c.hoverGrow : 0), height, radius: height / 2 };
 }
 
-export function getPillTargetStyle(
-  state: PillVisualState,
-  options: IdleSlotOptions = {}
-): { width: number; height: number; borderRadius: number; blur: number; shadow: number } {
-  if (state === "expanded") {
-    const d = pillDimensions.expanded;
-    return { ...d, blur: 20, shadow: 0.55 };
-  }
-
-  const isHover = state === "hover";
-  const base = isHover ? pillDimensions.hover : pillDimensions.idle;
-  const { left, right } = getIdleSlotWidths(options, isHover);
-  const content =
-    IDLE_PADDING_X * 2 + IDLE_CENTER_WIDTH + (options.hasTimer ? IDLE_TIMER_EXTRA : 0) + left + right + (isHover ? 16 : 0);
-
-  return {
-    width: Math.max(base.width, content),
-    height: base.height,
-    borderRadius: base.borderRadius,
-    blur: isHover ? 14 : 10,
-    shadow: isHover ? 0.35 : 0.25,
-  };
+export function expandedSize(): IslandSize {
+  return { ...pillDimensions.expanded };
 }
-
-// Idle pill slot animations (media, timer, notification badge) — enter/exit when active or turned off
-export const idleSlotAnimations = {
-  left: {
-    initial: prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: -10 },
-    animate: { opacity: 1, x: 0 },
-    exit: prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: -10 },
-  },
-  center: {
-    initial: prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92 },
-    animate: { opacity: 1, scale: 1 },
-    exit: prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.92 },
-  },
-  right: {
-    initial: prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: 10 },
-    animate: { opacity: 1, x: 0 },
-    exit: prefersReducedMotion ? { opacity: 0 } : { opacity: 0, x: 10 },
-  },
-  transition: getReducedMotionTransition({
-    type: "spring" as const,
-    stiffness: 520,
-    damping: 36,
-    duration: PILL_DURATION_FAST,
-  }),
-};

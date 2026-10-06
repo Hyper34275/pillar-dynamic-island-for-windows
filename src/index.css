@@ -10,14 +10,6 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --pillar-surface-primary: rgba(0, 0, 0, 0.96);
-  --pillar-surface-secondary: rgba(0, 0, 0, 0.96);
-  --pillar-border: rgba(255, 255, 255, 0.12);
-  --pillar-text: #ffffff;
-  --pillar-text-muted: rgba(255, 255, 255, 0.65);
-  --pillar-accent: #eb0028;
-  --pillar-accent-contrast: #ffffff;
-  --pillar-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
 }
 
 * {
@@ -53,47 +45,6 @@ body {
 }
 
 /* =============================================================================
-   GPU Layer Promotion for Animation Performance
-   These classes promote elements to GPU layers to reduce repaints
-   and improve animation performance. Use sparingly - only on elements
-   that are actively animating.
-   ============================================================================= */
-
-.gpu-layer-promote {
-  will-change: transform, opacity;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-
-.gpu-layer-promote-transform {
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-}
-
-.gpu-layer-promote-opacity {
-  will-change: opacity;
-}
-
-/* Hardware acceleration for animated containers */
-.gpu-accelerated {
-  transform: translateZ(0);
-  -webkit-transform: translateZ(0);
-}
-
-/* Reduce paint complexity for pill container */
-.pill-container {
-  contain: layout style paint;
-}
-
-/* Optimize for sub-pixel rendering */
-.subpixel-optimized {
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-}
-
-/* =============================================================================
    Accessibility - Screen Reader Support
    These classes provide screen reader-only content and keyboard navigation support.
    ============================================================================= */
@@ -118,39 +69,10 @@ body {
   border-radius: 8px;
 }
 
-/* Text inputs on the island: no native chrome */
-input, textarea {
-  font: inherit;
-  color: inherit;
-}
-input::placeholder, textarea::placeholder {
-  color: rgba(255, 255, 255, 0.32);
-}
-input[type="datetime-local"]::-webkit-calendar-picker-indicator {
-  filter: invert(1);
-  opacity: 0.5;
-}
-
 /* Fade the bottom edge of scrolling panels so content dissolves into the island */
 .island-scroll {
   mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
-}
-
-/* Skip to main content link for keyboard users */
-.skip-to-content {
-  position: absolute;
-  top: -40px;
-  left: 0;
-  background: rgba(0, 0, 0, 0.8);
-  color: white;
-  padding: 8px 16px;
-  z-index: 100;
-  transition: top 0.3s;
-}
-
-.skip-to-content:focus {
-  top: 0;
 }
 
 /* High contrast mode support */

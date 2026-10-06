@@ -1,170 +1,105 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { tauriInvoke } from "../lib/tauri";
+import { useCallback, useSyncExternalStore } from "react";
+import { ipc, normalizeSettings, onEvent, SETTINGS_DEFAULTS, type Settings, type SettingsPatch } from "../lib/ipc";
+import { dlog } from "../lib/debugLog";
 
-// =============================================================================
-// Types (mirrors Rust AppSettings)
-// =============================================================================
+// One settings store for the whole UI, backed by get_settings / update_settings and the
+// 'settings-changed' event. There is no read-modify-write: the UI only ever sends the
+// fields it changed, Rust merges them and returns the authoritative result.
+//
+// view = confirmed (last value from Rust) + pending patches (sent, not yet acknowledged),
+// so rapid toggles stay responsive and a failed save simply drops its patch.
 
-export interface AppearanceSettingsData {
-  mode: "island" | "notch";
-  opacity: number;
-  accent_color: string;
-  use_album_accent: boolean;
+type Listener = () => void;
+
+interface Pending {
+  id: number;
+  patch: SettingsPatch;
 }
 
-export interface MotionSettingsData {
-  animation_speed: number; // multiplier: 0.5, 0.75, 1.0, 1.5, 2.0
-  reduced_motion_override: "system" | "on" | "off";
+export interface SettingsBackend {
+  get: () => Promise<Settings | null>;
+  update: (patch: SettingsPatch) => Promise<Settings | null>;
+  subscribe: (handler: (raw: unknown) => void) => () => void;
 }
 
-export interface BehaviorSettingsData {
-  launch_at_startup: boolean;
-  pause_other_sessions: boolean;
+export function applyPending(confirmed: Settings, pending: readonly Pending[]): Settings {
+  return pending.reduce<Settings>((acc, p) => ({ ...acc, ...p.patch }), confirmed);
 }
 
-export interface TimerSettingsData {
-  last_custom_label: string;
-  last_custom_minutes: number;
-}
+export function createSettingsStore(backend: SettingsBackend) {
+  let confirmed: Settings = SETTINGS_DEFAULTS;
+  let pending: Pending[] = [];
+  let view: Settings = SETTINGS_DEFAULTS;
+  let nextId = 1;
+  let started = false;
+  // Updates go out one at a time so Rust applies them in the order the user made them.
+  let queue: Promise<unknown> = Promise.resolve();
+  const listeners = new Set<Listener>();
 
-export interface LayoutSettingsData {
-  visible_tabs: {
-    timer: boolean;
-    media: boolean;
-    notifications: boolean;
-    settings: boolean;
-    prism: boolean;
-    productivity: boolean;
-  };
-  idle_indicators: {
-    media: boolean;
-    battery: boolean;
-    notifications: boolean;
-  };
-}
-
-export interface AppSettings {
-  appearance: AppearanceSettingsData;
-  motion: MotionSettingsData;
-  behavior: BehaviorSettingsData;
-  timer: TimerSettingsData;
-  layout: LayoutSettingsData;
-}
-
-export const SETTINGS_DEFAULTS: AppSettings = {
-  appearance: {
-    mode: "island",
-    opacity: 94,
-    accent_color: "#EB0028",
-    use_album_accent: true,
-  },
-  motion: {
-    animation_speed: 1.0,
-    reduced_motion_override: "system",
-  },
-  behavior: {
-    launch_at_startup: false,
-    pause_other_sessions: false,
-  },
-  timer: {
-    last_custom_label: "",
-    last_custom_minutes: 25,
-  },
-  layout: {
-    visible_tabs: {
-      timer: true,
-      media: true,
-      notifications: true,
-      settings: true,
-      prism: true,
-      productivity: true,
-    },
-    idle_indicators: {
-      media: true,
-      battery: true,
-      notifications: true,
-    },
-  },
-};
-
-// =============================================================================
-// Hook
-// =============================================================================
-
-interface UseSettingsReturn {
-  settings: AppSettings;
-  isLoaded: boolean;
-  update: (patch: DeepPartial<AppSettings>) => Promise<void>;
-  reload: () => Promise<void>;
-}
-
-export type DeepPartial<T> = {
-  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
-};
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function deepMerge<T>(base: T, patch: DeepPartial<T>): T {
-  if (!isPlainObject(base) || !isPlainObject(patch)) {
-    return (patch as T) ?? base;
+  function publish() {
+    const next = applyPending(confirmed, pending);
+    if (JSON.stringify(next) === JSON.stringify(view)) return;
+    view = next;
+    listeners.forEach((l) => l());
   }
 
-  const result: Record<string, unknown> = { ...base as Record<string, unknown> };
-  for (const key of Object.keys(patch)) {
-    const patchValue = (patch as Record<string, unknown>)[key];
-    if (patchValue === undefined) continue;
-    const baseValue = (base as Record<string, unknown>)[key];
-    if (isPlainObject(baseValue) && isPlainObject(patchValue)) {
-      result[key] = deepMerge(baseValue, patchValue as DeepPartial<typeof baseValue>);
-    } else {
-      result[key] = patchValue;
-    }
+  function start() {
+    if (started) return;
+    started = true;
+    backend.subscribe((raw) => {
+      confirmed = normalizeSettings(raw);
+      publish();
+    });
+    void backend.get().then((settings) => {
+      if (settings) confirmed = settings;
+      publish();
+    });
   }
-  return result as T;
-}
 
-export function useSettings(): UseSettingsReturn {
-  const [settings, setSettings] = useState<AppSettings>(SETTINGS_DEFAULTS);
-  const [isLoaded, setIsLoaded] = useState(false);
-  const settingsRef = useRef(settings);
-  settingsRef.current = settings;
-
-  const load = useCallback(async () => {
-    try {
-      const loaded = await tauriInvoke<AppSettings>("load_settings");
-      if (loaded) {
-        const merged = deepMerge(SETTINGS_DEFAULTS, loaded as DeepPartial<AppSettings>);
-        setSettings(merged);
+  function update(patch: SettingsPatch): Promise<boolean> {
+    const entry: Pending = { id: nextId++, patch };
+    pending = [...pending, entry];
+    publish();
+    const run = queue.then(async () => {
+      const result = await backend.update(patch);
+      pending = pending.filter((p) => p.id !== entry.id);
+      if (result) {
+        confirmed = result;
+      } else {
+        dlog("warn", "settings", "update failed; change reverted");
       }
-    } catch (e) {
-      // Backend hiccup: degrade to defaults rather than leaving the UI stuck
-      // on a skeleton forever.
-      console.warn("[useSettings] Failed to load settings; using defaults", e);
-    } finally {
-      setIsLoaded(true);
-    }
-  }, []);
+      publish();
+      return result !== null;
+    });
+    queue = run.catch(() => {});
+    return run;
+  }
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  return {
+    subscribe(listener: Listener): () => void {
+      start();
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot: () => view,
+    update,
+  };
+}
 
-  const update = useCallback(async (patch: DeepPartial<AppSettings>) => {
-    const merged = deepMerge(settingsRef.current, patch);
-    const previous = settingsRef.current;
-    setSettings(merged);
-    try {
-      await tauriInvoke("save_settings", { settings: merged });
-    } catch (e) {
-      // Persist failed: revert in-memory state so the UI doesn't claim a save
-      // that will silently vanish on next launch.
-      console.warn("[useSettings] Failed to save settings; reverting", e);
-      setSettings(previous);
-      throw e;
-    }
-  }, []);
+const store = createSettingsStore({
+  get: ipc.getSettings,
+  update: ipc.updateSettings,
+  subscribe: (handler) => onEvent<unknown>("settings-changed", handler),
+});
 
-  return { settings, isLoaded, update, reload: load };
+export interface UseSettingsResult {
+  settings: Settings;
+  /** Resolves true when Rust accepted the change; on false the UI has already reverted it. */
+  update: (patch: SettingsPatch) => Promise<boolean>;
+}
+
+export function useSettings(): UseSettingsResult {
+  const settings = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const update = useCallback((patch: SettingsPatch) => store.update(patch), []);
+  return { settings, update };
 }

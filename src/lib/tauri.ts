@@ -1,5 +1,6 @@
 import { createLogger } from "./logger";
 import { dlog } from "./debugLog";
+import { describeError } from "./errors";
 
 type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -46,6 +47,7 @@ export class TauriTimeoutError extends Error {
 }
 
 function getInvoker(): TauriInvoke | null {
+  if (typeof window === "undefined") return null;
   const invoke = window.__TAURI__?.core?.invoke;
   return invoke ?? null;
 }
@@ -92,12 +94,8 @@ export async function tauriInvoke<T>(
   } catch (error) {
     if (shouldTrace) {
       const elapsed = Math.round(performance.now() - startedAt);
-      const reason =
-        error instanceof TauriTimeoutError
-          ? `timed out after ${timeoutMs}ms`
-          : error instanceof Error
-            ? error.message
-            : String(error);
+      // Message-free: Rust errors are "CODE: text" and only the code is logged.
+      const reason = error instanceof TauriTimeoutError ? `timed out after ${timeoutMs}ms` : describeError(error);
       dlog(options.silent ? "warn" : "error", "tauri", `invoke ${cmd} failed after ${elapsed}ms: ${reason}`);
     }
     if (!options.silent) {
