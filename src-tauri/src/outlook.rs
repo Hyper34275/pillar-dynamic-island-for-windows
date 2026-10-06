@@ -10,19 +10,31 @@
 //! between syncs would keep OUTLOOK.EXE alive after the user closes it.
 //!
 //! Per item only EntryID (hashed), Subject, Start, End, Location, Organizer (display
-//! name), AllDayEvent, IsRecurring, BusyStatus and ResponseStatus are read. Never Body,
-//! Recipients, Attachments, SenderEmailAddress, UserProperties or GetOrganizer.
+//! name), AllDayEvent, IsRecurring, BusyStatus, ResponseStatus and Categories (names, only
+//! to look up their color) are read. Never Body, Recipients, Attachments,
+//! SenderEmailAddress, UserProperties or GetOrganizer. The master category list is read for
+//! names and colors only.
+//!
+//! When meeting invitations are on, the default Inbox is filtered (no date in the filter) to
+//! unread meeting requests; of each, only EntryID (hashed), Subject, ReceivedTime and, of
+//! the tentative calendar entry Outlook made for it, Start, End, Location and Organizer.
+//!
+//! The one thing that is not a read is [`open_calendar`]: on a click in the island it shows
+//! the user's own (running) Outlook on its calendar.
 
 use crate::calendar::{
-    BusyStatus, CalendarEventDto, CalendarSource, ErrKind, FetchResult, FetchWindow, ResponseStatus, SourceError,
+    BusyStatus, CalendarEventDto, CalendarSource, ErrKind, FetchResult, FetchWindow, Fetched, MeetingInviteDto, ResponseStatus,
+    SourceError, MAX_INVITES,
 };
 use crate::com::{self, ComApartment, ComError, ComResult, Dispatch, MessageFilterGuard};
 use crate::debug_log::hash_id;
 use chrono::{DateTime, Local, NaiveDateTime, Timelike, Utc};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, SYSTEMTIME};
 use windows::Win32::Globalization::{GetDateFormatEx, GetTimeFormatEx, DATE_SHORTDATE, TIME_NOSECONDS};
@@ -38,15 +50,25 @@ use windows::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG, MWMO_INPUTAVAILABLE, PM_REMOVE,
-    QS_ALLINPUT,
+    AllowSetForegroundWindow, DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
+    MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT,
 };
 
 const PROG_ID: &str = "Outlook.Application";
 const OL_FOLDER_CALENDAR: i32 = 9;
+const OL_FOLDER_INBOX: i32 = 6;
 const MAX_SCANNED: usize = 500;
 const MAX_TEXT_CHARS: usize = 200;
 const MAX_LOCATION_CHARS: usize = 4_096;
+/// Far above any real master category list; bounds the read.
+const MAX_CATEGORIES: i32 = 200;
+/// The category colors are re-read this often, not on every sync.
+const CATEGORY_REFRESH_SECS: u64 = 300;
+const MEETING_REQUEST_CLASS: &str = "IPM.Schedule.Meeting.Request";
+/// Unread requests looked at per sync (newest first).
+const MAX_INVITES_SCANNED: usize = 30;
+/// An unread request older than this is not news any more.
+const INVITE_MAX_AGE_HOURS: i64 = 72;
 
 // =============================================================================
 // Process discovery
@@ -221,8 +243,45 @@ pub fn event_id(entry_id: &str, start_utc: &DateTime<Utc>) -> String {
     hash16(&format!("{}|{}", entry_id, start_utc.format("%Y-%m-%dT%H:%M:%SZ")))
 }
 
-const MEETING_HOSTS: [&str; 5] = ["teams.microsoft.com", "teams.live.com", "zoom.us", "webex.com", "meet.google.com"];
+/// Join links recognised in a Location. Teams (work, personal, government clouds), Skype for
+/// Business / Lync Online (`meet.lync.com`) and Skype (`join.skype.com`), Cisco Webex (which Jabber
+/// meetings run on) and Webex Teams, Zoom, Google Meet.
+const MEETING_HOSTS: [&str; 10] = [
+    "teams.microsoft.com",
+    "teams.live.com",
+    "teams.microsoft.us",
+    "lync.com",
+    "join.skype.com",
+    "webex.com",
+    "ciscospark.com",
+    "zoom.us",
+    "zoomgov.com",
+    "meet.google.com",
+];
 const MAX_URL_LEN: usize = 2_048;
+
+/// Where the meeting add-ins put the join link (MAPI named properties in PS_PUBLIC_STRINGS):
+/// Teams, then Skype for Business / Lync (whose on-premises link is on the company's own host).
+/// Teams and Skype meetings carry their link in the body, which is never read; these are not.
+const ONLINE_MEETING_PROPS: [&str; 2] = [
+    "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/SkypeTeamsMeetingUrl",
+    "http://schemas.microsoft.com/mapi/string/{00020329-0000-0000-C000-000000000046}/OnlineMeetingExternalLink",
+];
+
+/// A join link taken from a meeting property: one plain https URL, any host, no credentials,
+/// nothing that could break out of a command line.
+pub fn meeting_link(value: &str) -> Option<String> {
+    let url = value.trim();
+    if url.len() > MAX_URL_LEN || !url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://")) {
+        return None;
+    }
+    if url.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '"' | '<' | '>' | '`')) {
+        return None;
+    }
+    let authority_end = url[8..].find(['/', '?', '#']).map_or(url.len(), |i| 8 + i);
+    let authority = &url[8..authority_end];
+    (!authority.is_empty() && !authority.contains('@')).then(|| url.to_string())
+}
 
 fn is_meeting_host(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
@@ -288,6 +347,53 @@ fn non_empty(s: Option<String>, max_chars: usize) -> Option<String> {
     s.map(|s| s.trim().chars().take(max_chars).collect::<String>()).filter(|s| !s.is_empty())
 }
 
+/// `OlCategoryColor` 1..=25 -> `#RRGGBB`, close to how Outlook paints each category and
+/// readable on the island's black (Outlook's own "Black" is lifted to a dark gray).
+/// 0 (`olCategoryColorNone`) and unknown values have no color.
+pub fn category_color(ol_color: i32) -> Option<&'static str> {
+    const COLORS: [&str; 25] = [
+        "#E7484F", // 1 red
+        "#F7881D", // 2 orange
+        "#F2B661", // 3 peach
+        "#F9D33C", // 4 yellow
+        "#5FBE7D", // 5 green
+        "#4BC1B5", // 6 teal
+        "#A5B85A", // 7 olive
+        "#4A9BE8", // 8 blue
+        "#8C6CE0", // 9 purple
+        "#C94F7C", // 10 maroon
+        "#9EB0C6", // 11 steel
+        "#6B7F99", // 12 dark steel
+        "#ABABAB", // 13 gray
+        "#7A7A7A", // 14 dark gray
+        "#4A4A4A", // 15 black
+        "#B0262D", // 16 dark red
+        "#C25E10", // 17 dark orange
+        "#A97A2B", // 18 dark peach
+        "#B39A16", // 19 dark yellow
+        "#2E7D47", // 20 dark green
+        "#23807A", // 21 dark teal
+        "#6D7B33", // 22 dark olive
+        "#2B5FA8", // 23 dark blue
+        "#5B3FA6", // 24 dark purple
+        "#8E2F56", // 25 dark maroon
+    ];
+    usize::try_from(ol_color).ok()?.checked_sub(1).and_then(|i| COLORS.get(i)).copied()
+}
+
+/// Category name (trimmed, lowercased) -> its color.
+type CategoryColors = HashMap<String, &'static str>;
+
+/// The color of the first of an item's categories that has one. Outlook joins the names with
+/// the list separator ("," or ";" depending on the locale); names can contain neither.
+pub fn first_category_color(categories: &str, colors: &CategoryColors) -> Option<String> {
+    categories
+        .split([',', ';'])
+        .map(|name| name.trim().to_lowercase())
+        .filter(|name| !name.is_empty())
+        .find_map(|name| colors.get(&name).map(|c| c.to_string()))
+}
+
 /// What is read from one appointment.
 struct RawItem {
     entry_id: String,
@@ -300,11 +406,15 @@ struct RawItem {
     recurring: bool,
     busy: i32,
     response: i32,
+    /// Already resolved from the item's categories.
+    color: Option<String>,
+    /// From a meeting add-in's property; only looked up when the Location has no join link.
+    online_link: Option<String>,
 }
 
 fn build_event(raw: RawItem, calendar_id: &str) -> CalendarEventDto {
     let id_seed = if raw.entry_id.is_empty() { format!("noid:{}", raw.subject) } else { raw.entry_id };
-    let meeting_url = raw.location.as_deref().and_then(find_meeting_url);
+    let meeting_url = raw.location.as_deref().and_then(find_meeting_url).or(raw.online_link);
     CalendarEventDto {
         id: event_id(&id_seed, &raw.start),
         calendar_id: calendar_id.to_string(),
@@ -318,6 +428,7 @@ fn build_event(raw: RawItem, calendar_id: &str) -> CalendarEventDto {
         meeting_url,
         busy_status: busy_status(raw.busy),
         response_status: response_status(raw.response),
+        color: raw.color,
     }
 }
 
@@ -496,7 +607,31 @@ fn is_canceled(meeting_status: i32) -> bool {
     matches!(meeting_status, 5 | 7)
 }
 
-fn read_item(item: &mut Dispatch) -> ComResult<Option<RawItem>> {
+/// Only a lost or busy Outlook is an error here: anything else (no add-in, the property is not
+/// set, a guard) just means there is nothing to read.
+fn lenient<T>(r: ComResult<T>) -> ComResult<Option<T>> {
+    match r {
+        Ok(v) => Ok(Some(v)),
+        Err(e) if e.is_disconnected() || e.is_busy() => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The join link a Teams or Skype for Business add-in stored on the item, if any.
+fn online_meeting_link(item: &mut Dispatch) -> ComResult<Option<String>> {
+    let Some(mut accessor) = lenient(item.get_object("PropertyAccessor"))? else {
+        return Ok(None);
+    };
+    for prop in ONLINE_MEETING_PROPS {
+        let value = lenient(accessor.call("GetProperty", vec![com::variant_from_str(prop)]))?;
+        if let Some(link) = value.as_ref().and_then(com::variant_string).as_deref().and_then(meeting_link) {
+            return Ok(Some(link));
+        }
+    }
+    Ok(None)
+}
+
+fn read_item(item: &mut Dispatch, colors: &CategoryColors) -> ComResult<Option<RawItem>> {
     let (Some(start), Some(end)) = (date_prop(item, "Start")?, date_prop(item, "End")?) else {
         return Ok(None);
     };
@@ -504,27 +639,183 @@ fn read_item(item: &mut Dispatch) -> ComResult<Option<RawItem>> {
     if is_canceled(i32_prop(item, "MeetingStatus")?.unwrap_or(0)) {
         return Ok(None);
     }
+    // Without any colored category in the profile there is nothing to look up.
+    let color = if colors.is_empty() {
+        None
+    } else {
+        str_prop(item, "Categories")?.and_then(|names| first_category_color(&names, colors))
+    };
+    // Kept long enough to find a whole join URL; shortened for the DTO in `build_event`.
+    let location = non_empty(str_prop(item, "Location")?, MAX_LOCATION_CHARS);
+    let online_link = if location.as_deref().and_then(find_meeting_url).is_some() { None } else { online_meeting_link(item)? };
     Ok(Some(RawItem {
         entry_id: str_prop(item, "EntryID")?.unwrap_or_default(),
         subject: str_prop(item, "Subject")?.unwrap_or_default(),
         start,
         end,
-        // Kept long enough to find a whole join URL; shortened for the DTO in `build_event`.
-        location: non_empty(str_prop(item, "Location")?, MAX_LOCATION_CHARS),
+        location,
         organizer: non_empty(str_prop(item, "Organizer")?, MAX_TEXT_CHARS),
         all_day: bool_prop(item, "AllDayEvent")?,
         recurring: bool_prop(item, "IsRecurring")?,
         busy: i32_prop(item, "BusyStatus")?.unwrap_or(2),
         response: i32_prop(item, "ResponseStatus")?.unwrap_or(0),
+        color,
+        online_link,
     }))
+}
+
+/// The profile's master category list: name -> color, for the categories that have one.
+fn read_category_colors(session: &mut Dispatch) -> ComResult<CategoryColors> {
+    let mut colors = CategoryColors::new();
+    let Some(mut categories) = optional(session.get_object("Categories"))? else {
+        return Ok(colors);
+    };
+    let count = i32_prop(&mut categories, "Count")?.unwrap_or(0).clamp(0, MAX_CATEGORIES);
+    for index in 1..=count {
+        let Some(mut category) = optional(categories.call_object("Item", vec![com::variant_from_i32(index)]))?.flatten() else {
+            continue;
+        };
+        let (Some(name), Some(color)) = (str_prop(&mut category, "Name")?, i32_prop(&mut category, "Color")?) else {
+            continue;
+        };
+        if let Some(hex) = category_color(color) {
+            colors.insert(name.trim().to_lowercase(), hex);
+        }
+    }
+    Ok(colors)
+}
+
+/// What one unread meeting request turned out to be.
+enum InviteRead {
+    /// The invite and the request's EntryID (kept in this module, for answering it).
+    Invite(MeetingInviteDto, String),
+    /// Older than [`INVITE_MAX_AGE_HOURS`]; the list is sorted newest first, so stop here.
+    TooOld,
+    Skip,
+}
+
+/// `OlResponseStatus` values that mean the user already answered: tentative, accepted, declined.
+fn is_answered(response_status: i32) -> bool {
+    matches!(response_status, 2..=4)
+}
+
+/// invite id -> the request's EntryID, from the latest read. Memory only, never logged or sent
+/// to the page: the page answers an invite by its hashed id.
+static INVITE_ENTRY_IDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn remember_invites(entries: Vec<(String, String)>) {
+    *INVITE_ENTRY_IDS.lock().unwrap_or_else(|e| e.into_inner()) = entries;
+}
+
+fn invite_entry_id(id: &str) -> Option<String> {
+    INVITE_ENTRY_IDS.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(i, _)| i == id).map(|(_, entry)| entry.clone())
+}
+
+fn read_invite(item: &mut Dispatch, now: DateTime<Utc>) -> ComResult<InviteRead> {
+    let Some(received) = date_prop(item, "ReceivedTime")? else {
+        return Ok(InviteRead::Skip);
+    };
+    if received < now - chrono::Duration::hours(INVITE_MAX_AGE_HOURS) {
+        return Ok(InviteRead::TooOld);
+    }
+    let entry_id = str_prop(item, "EntryID")?.unwrap_or_default();
+    if entry_id.is_empty() {
+        return Ok(InviteRead::Skip);
+    }
+    let subject = str_prop(item, "Subject")?.unwrap_or_default();
+    // The meeting itself: the tentative entry Outlook put on the calendar when the request
+    // arrived. `false` = look it up only, never add one.
+    let appointment = optional(item.call_object("GetAssociatedAppointment", vec![com::variant_from_bool(false)]))?.flatten();
+    let (start_utc, end_utc, location, organizer) = match appointment {
+        Some(mut a) => {
+            // Answered already (from Outlook, a phone or the island): not pending any more.
+            if is_answered(i32_prop(&mut a, "ResponseStatus")?.unwrap_or(0)) {
+                return Ok(InviteRead::Skip);
+            }
+            (
+                date_prop(&mut a, "Start")?,
+                date_prop(&mut a, "End")?,
+                non_empty(str_prop(&mut a, "Location")?, MAX_TEXT_CHARS),
+                non_empty(str_prop(&mut a, "Organizer")?, MAX_TEXT_CHARS),
+            )
+        }
+        None => (None, None, None, None),
+    };
+    let dto = MeetingInviteDto {
+        id: invite_id(&entry_id),
+        subject: clip(&subject),
+        organizer,
+        start_utc,
+        end_utc,
+        location,
+        received_utc: received,
+    };
+    Ok(InviteRead::Invite(dto, entry_id))
+}
+
+fn invite_id(entry_id: &str) -> String {
+    hash16(&format!("invite|{entry_id}"))
+}
+
+/// The newest unread meeting requests in the default Inbox. The filter has no date in it, so
+/// unlike the calendar's it cannot be misparsed in any locale.
+fn read_invites(session: &mut Dispatch, now: DateTime<Utc>) -> ComResult<Vec<MeetingInviteDto>> {
+    let mut invites = Vec::new();
+    let Some(mut inbox) = session.call_object("GetDefaultFolder", vec![com::variant_from_i32(OL_FOLDER_INBOX)])? else {
+        return Ok(invites);
+    };
+    let mut items = inbox.get_object("Items")?;
+    let filter = format!("[MessageClass] = '{MEETING_REQUEST_CLASS}' AND [UnRead] = True");
+    let Some(mut requests) = items.call_object("Restrict", vec![com::variant_from_str(&filter)])? else {
+        return Ok(invites);
+    };
+    requests.call("Sort", vec![com::variant_from_str("[ReceivedTime]"), com::variant_from_bool(true)])?;
+    let mut entries = Vec::new();
+    let mut next = requests.call_object("GetFirst", Vec::new())?;
+    let mut scanned = 0;
+    while let Some(mut item) = next.take() {
+        scanned += 1;
+        match read_invite(&mut item, now)? {
+            InviteRead::Invite(invite, entry_id) => {
+                entries.push((invite.id.clone(), entry_id));
+                invites.push(invite);
+            }
+            InviteRead::TooOld => break,
+            InviteRead::Skip => {}
+        }
+        drop(item);
+        if scanned >= MAX_INVITES_SCANNED || invites.len() >= MAX_INVITES {
+            break;
+        }
+        next = requests.call_object("GetNext", Vec::new())?;
+    }
+    remember_invites(entries);
+    Ok(invites)
 }
 
 #[derive(Default)]
 pub struct OutlookSource {
     pub last_restrict_mode: Option<RestrictMode>,
+    category_colors: CategoryColors,
+    categories_read_at: Option<Instant>,
 }
 
 impl OutlookSource {
+    /// Re-read the category colors when they are older than [`CATEGORY_REFRESH_SECS`]. A
+    /// failure keeps the last good colors; only a lost or busy Outlook fails the sync.
+    fn refresh_category_colors(&mut self, session: &mut Dispatch) -> Result<(), SourceError> {
+        if self.categories_read_at.is_some_and(|at| at.elapsed().as_secs() < CATEGORY_REFRESH_SECS) {
+            return Ok(());
+        }
+        match read_category_colors(session) {
+            Ok(colors) => self.category_colors = colors,
+            Err(e) if e.is_disconnected() || e.is_busy() => return Err(map_com("OUTLOOK-107", e)),
+            Err(e) => dlog!("WARN", "outlook", "category colors not read: {}", e),
+        }
+        self.categories_read_at = Some(Instant::now());
+        Ok(())
+    }
+
     /// Read the items of `items` that Outlook returns for the window when the dates are
     /// written in `mode`'s format. Every item is re-checked against the window.
     fn scan(&self, items: &mut Dispatch, window: &FetchWindow, mode: RestrictMode, calendar_id: &str) -> Result<Scan, SourceError> {
@@ -546,7 +837,7 @@ impl OutlookSource {
         let mut scanned = 0;
         while let Some(mut item) = next.take() {
             scanned += 1;
-            if let Some(raw) = read_item(&mut item).map_err(|e| map_com("OUTLOOK-108", e))? {
+            if let Some(raw) = read_item(&mut item, &self.category_colors).map_err(|e| map_com("OUTLOOK-108", e))? {
                 match fit(raw.start, raw.end, window) {
                     Fit::Inside => scan.events.push(build_event(raw, calendar_id)),
                     Fit::Edge => {}
@@ -614,14 +905,274 @@ impl CalendarSource for OutlookSource {
             .call_object("GetDefaultFolder", vec![com::variant_from_i32(OL_FOLDER_CALENDAR)])
             .map_err(|e| map_com("OUTLOOK-107", e))?
             .ok_or_else(|| SourceError::new(ErrKind::Failed, "OUTLOOK-107", "no default calendar"))?;
+        self.refresh_category_colors(&mut session)?;
         // Multi-calendar-ready: today the list holds only the default calendar.
         let mut calendars = vec![default_calendar];
         let mut events = Vec::new();
         for folder in calendars.iter_mut() {
             events.extend(self.read_calendar(folder, window)?);
         }
-        Ok(crate::calendar::normalize_events(events))
+        // The calendar is what matters: a request that cannot be read only costs its popup.
+        let invites = if window.invites {
+            read_invites(&mut session, Utc::now()).unwrap_or_else(|e| {
+                dlog!("WARN", "outlook", "meeting requests not read: {}", e);
+                Vec::new()
+            })
+        } else {
+            Vec::new()
+        };
+        Ok(Fetched { events: crate::calendar::normalize_events(events), invites })
     }
+}
+
+// =============================================================================
+// Actions on a click in the island: open the calendar, answer an invitation
+// =============================================================================
+
+/// `OlWindowState`
+const OL_MINIMIZED: i32 = 1;
+const OL_NORMAL_WINDOW: i32 = 2;
+/// The whole open (attach, switch folder, navigate) must answer within this.
+const OPEN_TIMEOUT_SECS: u64 = 10;
+/// Answering may wait on an Outlook security prompt the user has to click.
+const RESPOND_TIMEOUT_SECS: u64 = 60;
+
+/// Run `action` against the user's own running classic Outlook, on a fresh STA thread (pool
+/// threads may already be MTA), giving up after `timeout_secs`. Attach-only: an Outlook that
+/// is not running is never started.
+fn run_on_outlook<T: Send + 'static>(
+    thread: &'static str,
+    timeout_secs: u64,
+    action: impl FnOnce(u32) -> ComResult<T> + Send + 'static,
+) -> Result<T, String> {
+    let pid = match discover()? {
+        Discovery::Classic(pid) => pid,
+        Discovery::Waiting => return Err("OUTLOOK-101: classic Outlook is not running".into()),
+        Discovery::NewOutlookOnly => return Err("OUTLOOK-104: only the new Outlook is running".into()),
+        Discovery::ElevationMismatch => return Err("OUTLOOK-103: Outlook runs with different permissions".into()),
+    };
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name(thread.into())
+        .spawn(move || {
+            let result = crate::debug_log::catch("outlook", || {
+                let apartment = ComApartment::init_sta().map_err(|e| format!("OUTLOOK-102: {e}"))?;
+                let _filter = MessageFilterGuard::register(&apartment).ok();
+                action(pid).map_err(|e| {
+                    let code = if e.is_blocked() {
+                        "OUTLOOK-110"
+                    } else if e.is_busy() {
+                        "OUTLOOK-105"
+                    } else if e.is_disconnected() {
+                        "OUTLOOK-102"
+                    } else {
+                        "OUTLOOK-108"
+                    };
+                    format!("{code}: {e}")
+                })
+            })
+            .unwrap_or_else(|| Err("OUTLOOK-108: internal error".into()));
+            let _ = tx.send(result);
+        })
+        .map_err(|e| format!("OUTLOOK-102: cannot start the Outlook thread: {e}"))?;
+    rx.recv_timeout(std::time::Duration::from_secs(timeout_secs))
+        .unwrap_or_else(|_| Err("OUTLOOK-109: Outlook did not answer".into()))
+}
+
+fn show_calendar(pid: u32, at: Option<NaiveDateTime>) -> ComResult<()> {
+    let mut app = Dispatch::get_active(PROG_ID)?;
+    let mut session = app.get_object("Session")?;
+    let mut calendar = session
+        .call_object("GetDefaultFolder", vec![com::variant_from_i32(OL_FOLDER_CALENDAR)])?
+        .ok_or_else(|| ComError::new("GetDefaultFolder", com::E_NOOBJECT))?;
+    let mut explorer = match app.call_object("ActiveExplorer", Vec::new())? {
+        Some(mut explorer) => {
+            explorer.put_ref("CurrentFolder", &calendar)?;
+            explorer
+        }
+        // Outlook runs without a main window (e.g. only a mail was open): give it one.
+        None => {
+            let mut explorer = calendar
+                .call_object("GetExplorer", Vec::new())?
+                .ok_or_else(|| ComError::new("GetExplorer", com::E_NOOBJECT))?;
+            explorer.call("Display", Vec::new())?;
+            explorer
+        }
+    };
+    if i32_prop(&mut explorer, "WindowState")? == Some(OL_MINIMIZED) {
+        explorer.put("WindowState", com::variant_from_i32(OL_NORMAL_WINDOW))?;
+    }
+    // The click was on our (never-activated) window, so Windows lets this process hand the
+    // foreground on: to the user's own Outlook, for this one activation.
+    unsafe {
+        let _ = AllowSetForegroundWindow(pid);
+    }
+    explorer.call("Activate", Vec::new())?;
+    if let Some(date) = at.and_then(com::naive_to_date) {
+        // Only a calendar view has GoToDate; any other view simply stays where it is.
+        if let Ok(mut view) = explorer.get_object("CurrentView") {
+            if let Err(e) = com::variant_from_date(date).and_then(|d| view.call("GoToDate", vec![d])) {
+                dlog!("DEBUG", "outlook", "GoToDate not applied: {}", e);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Show the user's classic Outlook on its calendar, on the day of `at` when given. Only ever
+/// from an explicit click in the island.
+pub fn open_calendar(at: Option<DateTime<Utc>>) -> Result<(), String> {
+    let local = at.map(|t| t.with_timezone(&Local).naive_local());
+    run_on_outlook("companyisland-outlook-open", OPEN_TIMEOUT_SECS, move |pid| show_calendar(pid, local))
+}
+
+/// An answer to a meeting request (`OlMeetingResponse`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InviteResponse {
+    Accept,
+    Tentative,
+    Decline,
+}
+
+impl InviteResponse {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "accept" => Some(InviteResponse::Accept),
+            "tentative" => Some(InviteResponse::Tentative),
+            "decline" => Some(InviteResponse::Decline),
+            _ => None,
+        }
+    }
+
+    fn ol_value(self) -> i32 {
+        match self {
+            InviteResponse::Tentative => 2,
+            InviteResponse::Accept => 3,
+            InviteResponse::Decline => 4,
+        }
+    }
+}
+
+/// Answer the meeting request `entry_id` exactly as Outlook's own buttons do: respond on its
+/// calendar entry and send the reply to the organizer (only when a reply was asked for).
+/// Returns whether a reply was sent. Nothing about the meeting is logged.
+fn answer_invite(entry_id: &str, response: InviteResponse) -> ComResult<bool> {
+    let mut app = Dispatch::get_active(PROG_ID)?;
+    let mut session = app.get_object("Session")?;
+    let mut request = session
+        .call_object("GetItemFromID", vec![com::variant_from_str(entry_id)])?
+        .ok_or_else(|| ComError::new("GetItemFromID", com::E_NOOBJECT))?;
+    // The id only ever comes from `read_invites`, but the item must still be a request.
+    if !str_prop(&mut request, "MessageClass")?.unwrap_or_default().starts_with(MEETING_REQUEST_CLASS) {
+        return Err(ComError::new("MessageClass", com::E_NOOBJECT));
+    }
+    // `true`: put it on the calendar if it is not there yet, as answering from Outlook does.
+    let mut appointment = request
+        .call_object("GetAssociatedAppointment", vec![com::variant_from_bool(true)])?
+        .ok_or_else(|| ComError::new("GetAssociatedAppointment", com::E_NOOBJECT))?;
+    // Unknown counts as "asked for": a reply too many is better than a silent organizer.
+    let reply_wanted = optional(appointment.get("ResponseRequested"))?.and_then(|v| com::variant_bool(&v)).unwrap_or(true);
+    let reply = appointment.call_object(
+        "Respond",
+        vec![com::variant_from_i32(response.ol_value()), com::variant_from_bool(true), com::variant_from_bool(false)],
+    )?;
+    match reply {
+        Some(mut reply) if reply_wanted => {
+            reply.call("Send", Vec::new())?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+/// Answer a pending invitation (by the id the page got in the snapshot). Only ever from an
+/// explicit click in the island.
+pub fn respond_invite(id: &str, response: InviteResponse) -> Result<bool, String> {
+    let entry_id = invite_entry_id(id).ok_or_else(|| "OUTLOOK-108: the invitation is no longer pending".to_string())?;
+    let sent = run_on_outlook("companyisland-outlook-respond", RESPOND_TIMEOUT_SECS, move |_| answer_invite(&entry_id, response))?;
+    // Answered: it is not pending any more, whatever the next read finds.
+    INVITE_ENTRY_IDS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(i, _)| i != id);
+    Ok(sent)
+}
+
+#[tauri::command]
+pub async fn outlook_respond_invite(id: String, response: String) -> Result<(), String> {
+    let response = InviteResponse::parse(&response).ok_or_else(|| "OUTLOOK-108: unknown response".to_string())?;
+    let result = crate::rt::run_blocking("outlook_respond_invite", move || respond_invite(&id, response)).await;
+    match &result {
+        Ok(sent) => {
+            dlog!("INFO", "outlook", "invitation answered from the island ({:?}, reply sent: {})", response, sent);
+            // The calendar entry changed: read it again now rather than in a minute.
+            let _ = crate::calendar::calendar_refresh();
+        }
+        Err(e) => dlog!("WARN", "outlook", "answering an invitation failed: {}", e),
+    }
+    result.map(|_| ())
+}
+
+/// The Teams desktop app's own link for a Teams web join link (`msteams:/l/meetup-join/...`).
+pub fn teams_app_link(url: &str) -> Option<String> {
+    const WEB: &str = "https://teams.microsoft.com/";
+    url.get(..WEB.len()).filter(|p| p.eq_ignore_ascii_case(WEB)).map(|_| format!("msteams:/{}", &url[WEB.len()..]))
+}
+
+/// Only links the island itself found: an https link from a meeting property, or a link on a
+/// known meeting host from a Location.
+fn openable_meeting_link(url: &str) -> bool {
+    meeting_link(url).is_some() || find_meeting_url(url).as_deref() == Some(url)
+}
+
+fn shell_open(target: &str) -> bool {
+    let result = unsafe {
+        windows::Win32::UI::Shell::ShellExecuteW(
+            None,
+            &windows::core::HSTRING::from("open"),
+            &windows::core::HSTRING::from(target),
+            None,
+            None,
+            windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL,
+        )
+    };
+    result.0 as isize > 32
+}
+
+/// Join a meeting: Teams links go straight to the Teams app when it is installed, anything else
+/// (and Teams without the app) to the link's default handler (browser, Webex, Zoom, Skype). The
+/// link itself is never logged.
+#[tauri::command]
+pub async fn open_meeting_url(url: String) -> Result<(), String> {
+    if !openable_meeting_link(&url) {
+        return Err("APP-020: not a meeting link".into());
+    }
+    crate::rt::run_blocking("open_meeting_url", move || {
+        crate::rt::ensure_com_initialized();
+        let app = teams_app_link(&url);
+        if app.as_deref().is_some_and(shell_open) {
+            dlog!("INFO", "outlook", "meeting joined in the Teams app");
+            return Ok(());
+        }
+        if shell_open(&url) {
+            dlog!("INFO", "outlook", "meeting link opened (teams link: {})", app.is_some());
+            Ok(())
+        } else {
+            Err("APP-020: the meeting link could not be opened".into())
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn outlook_open_calendar(start_utc: Option<String>) -> Result<(), String> {
+    let at = start_utc
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Utc));
+    let result = crate::rt::run_blocking("outlook_open_calendar", move || open_calendar(at)).await;
+    match &result {
+        Ok(()) => dlog!("INFO", "outlook", "calendar opened from the island (dated: {})", at.is_some()),
+        Err(e) => dlog!("WARN", "outlook", "open calendar failed: {}", e),
+    }
+    result
 }
 
 // =============================================================================
@@ -872,6 +1423,13 @@ mod tests {
             ("https://company.webex.com/meet/jdoe", true),
             ("https://meet.google.com/abc-defg-hij", true),
             ("https://teams.live.com/meet/9876", true),
+            ("Skype Meeting https://meet.lync.com/contoso/jdoe/AB12CD34", true),
+            ("https://join.skype.com/aBcDeFgHiJ", true),
+            ("Cisco Webex https://contoso.webex.com/contoso/j.php?MTID=m123", true),
+            ("https://web.ciscospark.com/meet/jdoe", true),
+            ("https://dod.teams.microsoft.us/l/meetup-join/1", true),
+            ("https://www.skype.com/en/", false),
+            ("https://lync.com.evil.example/x", false),
             ("https://evil.example.com/teams.microsoft.com", false),
             ("https://teams.microsoft.com.evil.example/x", false),
             ("https://nozoom.us/j/1", false),
@@ -916,6 +1474,124 @@ mod tests {
     }
 
     #[test]
+    fn category_colors_follow_ol_category_color() {
+        assert_eq!(category_color(1), Some("#E7484F"));
+        assert_eq!(category_color(8), Some("#4A9BE8"));
+        assert_eq!(category_color(25), Some("#8E2F56"));
+        for none in [0, -1, 26, 1000] {
+            assert_eq!(category_color(none), None, "{none}");
+        }
+        for i in 1..=25 {
+            let hex = category_color(i).unwrap();
+            assert!(hex.len() == 7 && hex.starts_with('#') && hex[1..].chars().all(|c| c.is_ascii_hexdigit()), "{hex}");
+        }
+    }
+
+    #[test]
+    fn the_first_colored_category_wins_whatever_the_separator() {
+        let colors: CategoryColors = [("red category".to_string(), "#E7484F"), ("project x".to_string(), "#4A9BE8")].into();
+        assert_eq!(first_category_color("Red Category, Project X", &colors).as_deref(), Some("#E7484F"));
+        assert_eq!(first_category_color("Uncolored; project x", &colors).as_deref(), Some("#4A9BE8"));
+        assert_eq!(first_category_color("  PROJECT X  ", &colors).as_deref(), Some("#4A9BE8"));
+        assert_eq!(first_category_color("", &colors), None);
+        assert_eq!(first_category_color("Other", &colors), None);
+    }
+
+    #[test]
+    fn meeting_property_links_are_plain_https() {
+        let teams = "https://teams.microsoft.com/l/meetup-join/19%3ameeting_x%40thread.v2/0?context=%7b%7d";
+        assert_eq!(meeting_link(teams).as_deref(), Some(teams));
+        // Skype for Business on-premises: the company's own host is fine from a meeting property.
+        assert!(meeting_link("https://meet.contoso.com/jdoe/AB12CD34").is_some());
+        assert_eq!(meeting_link("  https://meet.contoso.com/x  ").as_deref(), Some("https://meet.contoso.com/x"));
+        for bad in [
+            "http://meet.contoso.com/x",
+            "conf:sip:jdoe@contoso.com",
+            "https://user@evil.example/x",
+            "https:///nohost",
+            "https://a.example/x y",
+            "https://a.example/\"x",
+            "javascript:alert(1)",
+        ] {
+            assert!(meeting_link(bad).is_none(), "{bad}");
+        }
+        assert!(meeting_link(&format!("https://a.example/{}", "x".repeat(3000))).is_none());
+    }
+
+    #[test]
+    fn a_location_link_wins_over_a_property_link() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 6, 9, 0, 0).unwrap();
+        let raw = |location: Option<&str>, online_link: Option<&str>| RawItem {
+            entry_id: "id".into(),
+            subject: "s".into(),
+            start,
+            end: start + chrono::Duration::minutes(30),
+            location: location.map(String::from),
+            organizer: None,
+            all_day: false,
+            recurring: false,
+            busy: 2,
+            response: 3,
+            color: None,
+            online_link: online_link.map(String::from),
+        };
+        let teams = "https://teams.microsoft.com/l/meetup-join/1";
+        assert_eq!(build_event(raw(Some("Microsoft Teams Meeting"), Some(teams)), "c").meeting_url.as_deref(), Some(teams));
+        assert_eq!(build_event(raw(Some("https://zoom.us/j/1"), Some(teams)), "c").meeting_url.as_deref(), Some("https://zoom.us/j/1"));
+        assert_eq!(build_event(raw(None, None), "c").meeting_url, None);
+    }
+
+    #[test]
+    fn teams_links_go_to_the_teams_app() {
+        assert_eq!(
+            teams_app_link("https://teams.microsoft.com/l/meetup-join/19%3a1/0").as_deref(),
+            Some("msteams:/l/meetup-join/19%3a1/0")
+        );
+        assert_eq!(teams_app_link("HTTPS://TEAMS.MICROSOFT.COM/l/x").as_deref(), Some("msteams:/l/x"));
+        assert_eq!(teams_app_link("https://zoom.us/j/1"), None);
+        assert_eq!(teams_app_link("https://teams.microsoft.com.evil.example/x"), None);
+    }
+
+    #[test]
+    fn only_links_the_island_found_can_be_opened() {
+        assert!(openable_meeting_link("https://zoom.us/j/1"));
+        assert!(openable_meeting_link("http://zoom.us/j/1"));
+        assert!(openable_meeting_link("https://meet.contoso.com/jdoe/1"));
+        assert!(!openable_meeting_link("http://evil.example/x"));
+        assert!(!openable_meeting_link("file:///C:/Windows/System32/cmd.exe"));
+        assert!(!openable_meeting_link("calc.exe"));
+        assert!(!openable_meeting_link("https://zoom.us/j/1 && calc"));
+    }
+
+    #[test]
+    fn invite_answers_map_to_ol_meeting_response() {
+        assert_eq!(InviteResponse::parse("accept").map(InviteResponse::ol_value), Some(3));
+        assert_eq!(InviteResponse::parse("tentative").map(InviteResponse::ol_value), Some(2));
+        assert_eq!(InviteResponse::parse("decline").map(InviteResponse::ol_value), Some(4));
+        assert_eq!(InviteResponse::parse("Accept"), None);
+        assert!(is_answered(2) && is_answered(3) && is_answered(4));
+        assert!(!is_answered(0) && !is_answered(1) && !is_answered(5));
+    }
+
+    #[test]
+    fn answering_needs_an_invite_from_the_latest_read() {
+        remember_invites(vec![("abc".into(), "ENTRY".into())]);
+        assert_eq!(invite_entry_id("abc").as_deref(), Some("ENTRY"));
+        assert_eq!(invite_entry_id("other"), None);
+        assert!(respond_invite("other", InviteResponse::Accept).unwrap_err().starts_with("OUTLOOK-108"));
+        remember_invites(Vec::new());
+    }
+
+    #[test]
+    fn invite_ids_are_stable_and_hide_the_entry_id() {
+        let id = invite_id("SECRET-ENTRY-ID");
+        assert_eq!(id, invite_id("SECRET-ENTRY-ID"));
+        assert_ne!(id, invite_id("OTHER"));
+        assert_eq!(id.len(), 16);
+        assert!(!id.contains("SECRET"));
+    }
+
+    #[test]
     fn build_event_hides_entry_id_and_extracts_the_url() {
         let start = Utc.with_ymd_and_hms(2026, 10, 6, 9, 0, 0).unwrap();
         let dto = build_event(
@@ -930,6 +1606,8 @@ mod tests {
                 recurring: true,
                 busy: 2,
                 response: 3,
+                color: None,
+                online_link: None,
             },
             "cal",
         );
@@ -956,6 +1634,8 @@ mod tests {
                 recurring: false,
                 busy: 2,
                 response: 3,
+                color: None,
+                online_link: None,
             },
             "cal",
         );
@@ -965,7 +1645,7 @@ mod tests {
 
     fn window() -> FetchWindow {
         let from = Utc.with_ymd_and_hms(2026, 10, 6, 9, 0, 30).unwrap();
-        FetchWindow { from, to: from + chrono::Duration::hours(48) }
+        FetchWindow { from, to: from + chrono::Duration::hours(48), invites: false }
     }
 
     #[test]
@@ -995,6 +1675,8 @@ mod tests {
                         recurring: false,
                         busy: 2,
                         response: 3,
+                        color: None,
+                        online_link: None,
                     },
                     "cal",
                 )
@@ -1099,7 +1781,7 @@ mod tests {
         struct Tracked(mpsc::Sender<()>);
         impl CalendarSource for Tracked {
             fn fetch(&mut self, _: &FetchWindow) -> FetchResult {
-                Ok(Vec::new())
+                Ok(Fetched::default())
             }
         }
         impl Drop for Tracked {
@@ -1144,7 +1826,7 @@ mod tests {
         let apartment = ComApartment::init_sta().expect("STA");
         let _filter = MessageFilterGuard::register(&apartment).expect("message filter");
         let mut source = OutlookSource::default();
-        let window = FetchWindow::starting_at(Utc::now());
+        let window = FetchWindow { invites: true, ..FetchWindow::starting_at(Utc::now()) };
         if !matches!(discovery, Discovery::Classic(_)) {
             // Attach-only: with no Outlook running this must fail fast and launch nothing.
             let started = std::time::Instant::now();
@@ -1168,16 +1850,28 @@ mod tests {
         let outcome = source.fetch(&window);
         let ms = started.elapsed().as_millis();
         match &outcome {
-            Ok(events) => println!(
-                "live: status=connected errorCode=- events={} allDay={} recurring={} withMeetingUrl={} restrict={:?} ms={}",
+            Ok(Fetched { events, invites }) => println!(
+                "live: status=connected errorCode=- events={} allDay={} recurring={} withMeetingUrl={} colored={} invites={} restrict={:?} ms={}",
                 events.len(),
                 events.iter().filter(|e| e.all_day).count(),
                 events.iter().filter(|e| e.is_recurring).count(),
                 events.iter().filter(|e| e.meeting_url.is_some()).count(),
+                events.iter().filter(|e| e.color.is_some()).count(),
+                invites.len(),
                 source.last_restrict_mode,
                 ms
             ),
             Err(e) => println!("live: status=error errorCode={} kind={:?} detail={} ms={}", e.code, e.kind, e.detail, ms),
+        }
+        // `fetch` swallows these two on purpose; here their errors are shown (HRESULTs only).
+        {
+            let mut app = Dispatch::get_active(PROG_ID).expect("attach");
+            let mut session = app.get_object("Session").expect("session");
+            println!(
+                "live: colored categories={:?} unread meeting requests={:?}",
+                read_category_colors(&mut session).map(|c| c.len()).map_err(|e| e.to_string()),
+                read_invites(&mut session, Utc::now()).map(|v| v.len()).map_err(|e| e.to_string())
+            );
         }
 
         let before = handles();

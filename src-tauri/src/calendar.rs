@@ -12,6 +12,7 @@
 
 use crate::calendar_diag::{self, OutlookDiag};
 use crate::outlook::{self, Discovery};
+use crate::settings::SettingsStore;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Local, Utc};
 use serde::{Serialize, Serializer};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -74,6 +75,13 @@ fn serialize_iso<S: Serializer>(t: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Err
     s.serialize_str(&t.format("%Y-%m-%dT%H:%M:%SZ").to_string())
 }
 
+fn serialize_iso_opt<S: Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
+    match t {
+        Some(t) => serialize_iso(t, s),
+        None => s.serialize_none(),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEventDto {
@@ -91,6 +99,26 @@ pub struct CalendarEventDto {
     pub meeting_url: Option<String>,
     pub busy_status: BusyStatus,
     pub response_status: ResponseStatus,
+    /// `#RRGGBB` of the first of the item's Outlook categories that has a color.
+    pub color: Option<String>,
+}
+
+/// An unread meeting request in the default Inbox. Memory only, like events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingInviteDto {
+    /// Hash of the request's EntryID; the EntryID itself never leaves the COM worker.
+    pub id: String,
+    pub subject: String,
+    pub organizer: Option<String>,
+    /// The requested meeting, when Outlook can tell (its tentative calendar entry).
+    #[serde(serialize_with = "serialize_iso_opt")]
+    pub start_utc: Option<DateTime<Utc>>,
+    #[serde(serialize_with = "serialize_iso_opt")]
+    pub end_utc: Option<DateTime<Utc>>,
+    pub location: Option<String>,
+    #[serde(serialize_with = "serialize_iso")]
+    pub received_utc: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -102,6 +130,8 @@ pub struct CalendarSnapshot {
     pub cached_count: usize,
     pub next_retry_unix_ms: Option<i64>,
     pub events: Vec<CalendarEventDto>,
+    /// Newest first, at most [`MAX_INVITES`]; empty while invites are switched off.
+    pub invites: Vec<MeetingInviteDto>,
 }
 
 impl Default for CalendarSnapshot {
@@ -113,6 +143,7 @@ impl Default for CalendarSnapshot {
             cached_count: 0,
             next_retry_unix_ms: None,
             events: Vec::new(),
+            invites: Vec::new(),
         }
     }
 }
@@ -142,17 +173,20 @@ impl CalendarState {
 // =============================================================================
 
 pub const MAX_EVENTS: usize = 50;
+pub const MAX_INVITES: usize = 10;
 pub const HORIZON_HOURS: i64 = 48;
 
 #[derive(Clone, Debug)]
 pub struct FetchWindow {
     pub from: DateTime<Utc>,
     pub to: DateTime<Utc>,
+    /// Also read the unread meeting requests (the `meetingInvitesEnabled` setting).
+    pub invites: bool,
 }
 
 impl FetchWindow {
     pub fn starting_at(now: DateTime<Utc>) -> Self {
-        FetchWindow { from: now, to: now + ChronoDuration::hours(HORIZON_HOURS) }
+        FetchWindow { from: now, to: now + ChronoDuration::hours(HORIZON_HOURS), invites: false }
     }
 }
 
@@ -183,7 +217,20 @@ impl SourceError {
     }
 }
 
-pub type FetchResult = Result<Vec<CalendarEventDto>, SourceError>;
+/// What one read returns: the events inside the window and, when asked for, the invites.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fetched {
+    pub events: Vec<CalendarEventDto>,
+    pub invites: Vec<MeetingInviteDto>,
+}
+
+impl From<Vec<CalendarEventDto>> for Fetched {
+    fn from(events: Vec<CalendarEventDto>) -> Self {
+        Fetched { events, invites: Vec::new() }
+    }
+}
+
+pub type FetchResult = Result<Fetched, SourceError>;
 
 /// A calendar backend. `fetch` returns the events (all calendars it covers) inside the window.
 pub trait CalendarSource {
@@ -236,6 +283,7 @@ pub struct Machine {
     status: CalendarStatus,
     error_code: Option<&'static str>,
     events: Vec<CalendarEventDto>,
+    invites: Vec<MeetingInviteDto>,
     last_sync_unix_ms: Option<i64>,
     next_retry_unix_ms: Option<i64>,
     action: Action,
@@ -261,6 +309,7 @@ impl Machine {
             status: CalendarStatus::Waiting,
             error_code: None,
             events: Vec::new(),
+            invites: Vec::new(),
             last_sync_unix_ms: None,
             next_retry_unix_ms: None,
             action: Action::Discover,
@@ -305,7 +354,14 @@ impl Machine {
             cached_count: events.len(),
             next_retry_unix_ms: self.next_retry_unix_ms,
             events,
+            invites: self.invites.clone(),
         }
+    }
+
+    /// The invites of the latest successful read (replaced as a whole, like events).
+    pub fn set_invites(&mut self, mut invites: Vec<MeetingInviteDto>) {
+        invites.truncate(MAX_INVITES);
+        self.invites = invites;
     }
 
     fn jittered(&mut self, base_ms: u64) -> u64 {
@@ -539,7 +595,13 @@ enum Msg {
     Refresh,
     Shutdown,
     Reply { generation: u64, result: FetchResult },
+    /// Read another stretch of the calendar (a day the user browses to) through the same worker.
+    /// It changes nothing in the machine: the regular 48 h sync stays what reminders follow.
+    Range { window: FetchWindow, reply: Sender<FetchResult> },
 }
+
+/// Longest stretch one `calendar_get_range` may read.
+const MAX_RANGE_DAYS: i64 = 7;
 
 struct Control {
     tx: Sender<Msg>,
@@ -566,6 +628,8 @@ struct Supervisor {
     generation: u64,
     started: Instant,
     last_logged: (CalendarStatus, Option<&'static str>),
+    /// Range reads asked for while the worker was busy; served before the next scheduled step.
+    pending_ranges: Vec<(FetchWindow, Sender<FetchResult>)>,
 }
 
 impl Supervisor {
@@ -669,22 +733,56 @@ impl Supervisor {
                 Ok(Msg::Refresh) => {
                     // Already reading; the refresh is satisfied by this read.
                 }
+                Ok(Msg::Range { window, reply }) => self.pending_ranges.push((window, reply)),
                 Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => return Outcome::Shutdown,
                 Err(RecvTimeoutError::Timeout) => return Outcome::TimedOut,
             }
         }
     }
 
+    /// Serve one range read. Only while connected: otherwise the answer is the current status code.
+    fn fetch_range(&mut self, window: FetchWindow, reply: Sender<FetchResult>) -> bool {
+        if self.machine.status() != CalendarStatus::Connected {
+            let code = self.machine.error_code().unwrap_or("OUTLOOK-101");
+            let _ = reply.send(Err(SourceError::new(ErrKind::Failed, code, "calendar not connected")));
+            return true;
+        }
+        match self.run_fetch(window) {
+            Outcome::Shutdown => return false,
+            Outcome::Done(result) => {
+                let _ = reply.send(result);
+            }
+            Outcome::TimedOut => {
+                // Same as a hung sync: abandon that worker, the machine counts it.
+                self.drop_worker(false);
+                let now = self.now();
+                self.machine.on_timeout(&now);
+                dlog!("ERROR", "calendar", "OUTLOOK-109 watchdog: range read did not answer in {}ms", WATCHDOG_MS);
+                let _ = reply.send(Err(SourceError::new(ErrKind::Busy, "OUTLOOK-109", "watchdog")));
+            }
+        }
+        true
+    }
+
     fn fetch(&mut self) -> bool {
         let started = self.now();
         self.machine.on_fetch_started(&started);
-        let outcome = self.run_fetch(FetchWindow::starting_at(Utc::now()));
+        let invites = self.app.state::<SettingsStore>().get().meeting_invites_enabled;
+        let outcome = self.run_fetch(FetchWindow { invites, ..FetchWindow::starting_at(Utc::now()) });
         let now = self.now();
         match outcome {
             Outcome::Shutdown => return false,
-            Outcome::Done(Ok(events)) => {
-                dlog!("DEBUG", "calendar", "sync ok: {} events in {}ms", events.len(), now.mono_ms.saturating_sub(started.mono_ms));
-                self.machine.on_fetch_ok(&now, events);
+            Outcome::Done(Ok(fetched)) => {
+                dlog!(
+                    "DEBUG",
+                    "calendar",
+                    "sync ok: {} events, {} invites in {}ms",
+                    fetched.events.len(),
+                    fetched.invites.len(),
+                    now.mono_ms.saturating_sub(started.mono_ms)
+                );
+                self.machine.on_fetch_ok(&now, fetched.events);
+                self.machine.set_invites(fetched.invites);
             }
             Outcome::Done(Err(err)) => {
                 dlog!("WARN", "calendar", "{} read failed ({:?}): {}", err.code, err.kind, err.detail);
@@ -715,6 +813,10 @@ impl Supervisor {
             dlog!("INFO", "calendar", "resume from sleep detected, rechecking now");
         }
         self.publish(&now);
+        if !self.pending_ranges.is_empty() {
+            let (window, reply) = self.pending_ranges.remove(0);
+            return self.fetch_range(window, reply);
+        }
         let (action, at) = self.machine.next();
         if at > now.mono_ms {
             let wait = (at - now.mono_ms).min(MAX_IDLE_WAIT_MS);
@@ -722,6 +824,10 @@ impl Supervisor {
                 Ok(Msg::Refresh) => {
                     let now = self.now();
                     self.machine.on_refresh(&now);
+                    true
+                }
+                Ok(Msg::Range { window, reply }) => {
+                    self.pending_ranges.push((window, reply));
                     true
                 }
                 Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => false,
@@ -770,6 +876,7 @@ pub fn start(app: AppHandle) {
         generation: 0,
         started: Instant::now(),
         last_logged: (CalendarStatus::Waiting, None),
+        pending_ranges: Vec::new(),
     };
     let spawned = std::thread::Builder::new().name("companyisland-calendar".into()).spawn(move || {
         supervisor.run();
@@ -803,6 +910,41 @@ pub fn calendar_refresh() -> Result<(), String> {
     Ok(())
 }
 
+/// `[from, to]` checked for a range read: both ISO instants, `to` after `from`, at most
+/// [`MAX_RANGE_DAYS`] apart.
+pub fn range_window(from_utc: &str, to_utc: &str) -> Result<FetchWindow, String> {
+    let parse = |s: &str| {
+        DateTime::parse_from_rfc3339(s).map(|t| t.with_timezone(&Utc)).map_err(|_| "OUTLOOK-108: invalid date".to_string())
+    };
+    let (from, to) = (parse(from_utc)?, parse(to_utc)?);
+    if to <= from || to - from > ChronoDuration::days(MAX_RANGE_DAYS) {
+        return Err("OUTLOOK-108: invalid range".into());
+    }
+    Ok(FetchWindow { from, to, invites: false })
+}
+
+/// The events of another stretch of the calendar (a day the user browses to), read on demand
+/// through the same worker and watchdog as the regular sync. Nothing is cached in Rust.
+#[tauri::command]
+pub async fn calendar_get_range(from_utc: String, to_utc: String) -> Result<Vec<CalendarEventDto>, String> {
+    let window = range_window(&from_utc, &to_utc)?;
+    let (tx, rx) = mpsc::channel();
+    {
+        let control = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        let c = control.as_ref().ok_or_else(|| "OUTLOOK-102: calendar service not running".to_string())?;
+        c.tx.send(Msg::Range { window, reply: tx }).map_err(|_| "OUTLOOK-102: calendar service not running".to_string())?;
+    }
+    crate::rt::run_blocking("calendar_get_range", move || {
+        // A sync in progress, then this read: each has the watchdog's 10 s.
+        match rx.recv_timeout(Duration::from_millis(WATCHDOG_MS * 2 + 5_000)) {
+            Ok(Ok(fetched)) => Ok(fetched.events),
+            Ok(Err(e)) => Err(format!("{}: range read failed", e.code)),
+            Err(_) => Err("OUTLOOK-109: no answer".into()),
+        }
+    })
+    .await
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -832,7 +974,49 @@ mod tests {
             meeting_url: None,
             busy_status: BusyStatus::Busy,
             response_status: ResponseStatus::Accepted,
+            color: None,
         }
+    }
+
+    fn at_utc(min: i64) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2027, 1, 15, 8, 0, 0).unwrap() + ChronoDuration::minutes(min)
+    }
+
+    #[test]
+    fn range_reads_are_bounded_iso_windows() {
+        let w = range_window("2026-10-11T21:00:00Z", "2026-10-12T21:00:00Z").unwrap();
+        assert_eq!(w.to - w.from, ChronoDuration::hours(24));
+        assert!(!w.invites);
+        assert!(range_window("2026-10-11T21:00:00+03:00", "2026-10-18T21:00:00+03:00").is_ok());
+        for (from, to) in [
+            ("2026-10-12T00:00:00Z", "2026-10-11T00:00:00Z"),
+            ("2026-10-12T00:00:00Z", "2026-10-12T00:00:00Z"),
+            ("2026-10-01T00:00:00Z", "2026-10-09T00:00:00Z"),
+            ("tomorrow", "2026-10-12T00:00:00Z"),
+        ] {
+            assert!(range_window(from, to).unwrap_err().starts_with("OUTLOOK-108"), "{from} {to}");
+        }
+    }
+
+    #[test]
+    fn invites_of_the_latest_read_reach_the_snapshot_capped() {
+        let invite = |i: usize| MeetingInviteDto {
+            id: format!("inv{i}"),
+            subject: "s".into(),
+            organizer: None,
+            start_utc: None,
+            end_utc: None,
+            location: None,
+            received_utc: at_utc(0),
+        };
+        let mut m = Machine::new(None);
+        m.on_fetch_ok(&at(0), vec![ev("a", 0, 30)]);
+        m.set_invites((0..15).map(invite).collect());
+        let snapshot = m.snapshot(0);
+        assert_eq!(snapshot.invites.len(), MAX_INVITES);
+        assert_eq!(snapshot.invites[0].id, "inv0");
+        m.set_invites(Vec::new());
+        assert!(m.snapshot(0).invites.is_empty());
     }
 
     fn err(kind: ErrKind, code: &'static str) -> SourceError {
@@ -848,7 +1032,7 @@ mod tests {
     impl CalendarSource for FakeSource {
         fn fetch(&mut self, _window: &FetchWindow) -> FetchResult {
             self.calls += 1;
-            self.script.pop_front().unwrap_or_else(|| Ok(Vec::new()))
+            self.script.pop_front().unwrap_or_else(|| Ok(Fetched::default()))
         }
     }
 
@@ -888,7 +1072,7 @@ mod tests {
                     Action::Fetch => {
                         self.machine.on_fetch_started(&now);
                         match self.source.fetch(&FetchWindow::starting_at(Utc::now())) {
-                            Ok(events) => self.machine.on_fetch_ok(&now, events),
+                            Ok(fetched) => self.machine.on_fetch_ok(&now, fetched.events),
                             Err(e) => self.machine.on_fetch_err(&now, &e),
                         }
                     }
@@ -910,7 +1094,21 @@ mod tests {
             last_sync_unix_ms: Some(5),
             cached_count: 1,
             next_retry_unix_ms: None,
-            events: vec![CalendarEventDto { busy_status: BusyStatus::WorkingElsewhere, response_status: ResponseStatus::NotResponded, ..ev("a", 0, 30) }],
+            events: vec![CalendarEventDto {
+                busy_status: BusyStatus::WorkingElsewhere,
+                response_status: ResponseStatus::NotResponded,
+                color: Some("#3267B8".into()),
+                ..ev("a", 0, 30)
+            }],
+            invites: vec![MeetingInviteDto {
+                id: "0123456789abcdef".into(),
+                subject: "Review".into(),
+                organizer: None,
+                start_utc: Some(at_utc(60)),
+                end_utc: None,
+                location: None,
+                received_utc: at_utc(0),
+            }],
         };
         let json = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(json["status"], "newOutlookOnly");
@@ -927,6 +1125,12 @@ mod tests {
         assert_eq!(e["busyStatus"], "workingElsewhere");
         assert_eq!(e["responseStatus"], "notResponded");
         assert!(e["meetingUrl"].is_null());
+        assert_eq!(e["color"], "#3267B8");
+        let i = &json["invites"][0];
+        assert_eq!(i["startUtc"], "2027-01-15T09:00:00Z");
+        assert!(i["endUtc"].is_null());
+        assert_eq!(i["receivedUtc"], "2027-01-15T08:00:00Z");
+        assert!(i.get("entryId").is_none());
         for s in [CalendarStatus::Waiting, CalendarStatus::ElevationMismatch, CalendarStatus::Unresponsive] {
             assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
         }
@@ -998,7 +1202,7 @@ mod tests {
 
     #[test]
     fn connected_resyncs_every_60_seconds_and_discovers_every_15() {
-        let mut sim = Sim::new(vec![Ok(vec![ev("a", 0, 30)]), Ok(vec![ev("a", 0, 30)]), Ok(vec![])]);
+        let mut sim = Sim::new(vec![Ok(vec![ev("a", 0, 30)].into()), Ok(vec![ev("a", 0, 30)].into()), Ok(vec![].into())]);
         sim.run_until(125_000);
         assert_eq!(sim.fetch_times(), [0, 60_000, 120_000]);
         assert_eq!(sim.machine.status(), CalendarStatus::Connected);
@@ -1008,7 +1212,7 @@ mod tests {
 
     #[test]
     fn outlook_closing_is_noticed_within_one_poll() {
-        let mut sim = Sim::new(vec![Ok(vec![ev("a", 0, 30)])]);
+        let mut sim = Sim::new(vec![Ok(vec![ev("a", 0, 30)].into())]);
         sim.run_until(10_000);
         assert_eq!(sim.machine.status(), CalendarStatus::Connected);
         sim.discovery = Discovery::Waiting;
@@ -1035,7 +1239,7 @@ mod tests {
     #[test]
     fn failure_backoff_schedule_and_reset_on_success() {
         let mut script: Vec<FetchResult> = (0..9).map(|_| Err(err(ErrKind::Failed, "OUTLOOK-108"))).collect();
-        script.push(Ok(vec![]));
+        script.push(Ok(vec![].into()));
         script.push(Err(err(ErrKind::Failed, "OUTLOOK-108")));
         let mut sim = Sim::new(script);
         sim.run_until(2_000_000);
@@ -1220,7 +1424,7 @@ mod tests {
         let mut sim = Sim::new(vec![
             Err(err(ErrKind::NotInRot, "OUTLOOK-102")),
             Err(err(ErrKind::Busy, "OUTLOOK-105")),
-            Ok(vec![ev("a", 0, 30)]),
+            Ok(vec![ev("a", 0, 30)].into()),
         ]);
         sim.run_until(40_000);
         assert_eq!(sim.machine.status(), CalendarStatus::Connected);

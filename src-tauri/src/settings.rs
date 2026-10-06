@@ -42,6 +42,10 @@ pub struct Settings {
     )]
     pub monitor: String,
     pub notifications_enabled: bool,
+    /// When a meeting starts the island offers to silence notifications until it ends.
+    pub meeting_silence_prompt: bool,
+    /// New Outlook meeting requests pop up in the island. Off means the Inbox is not read at all.
+    pub meeting_invites_enabled: bool,
     /// Opt-in debug-level logging (`COMPANYISLAND_LOG=debug` does the same).
     pub debug_logging: bool,
 }
@@ -56,6 +60,8 @@ impl Default for Settings {
             reminder_minutes: DEFAULT_REMINDER_MINUTES,
             monitor: PRIMARY_MONITOR.to_string(),
             notifications_enabled: true,
+            meeting_invites_enabled: true,
+            meeting_silence_prompt: true,
             debug_logging: false,
         }
     }
@@ -74,6 +80,8 @@ pub struct SettingsPatch {
     #[serde(default, rename = "monitorId", alias = "monitor", deserialize_with = "de_monitor_patch")]
     monitor: Option<String>,
     notifications_enabled: Option<bool>,
+    meeting_invites_enabled: Option<bool>,
+    meeting_silence_prompt: Option<bool>,
     debug_logging: Option<bool>,
 }
 
@@ -161,6 +169,12 @@ impl Settings {
         }
         if let Some(v) = patch.notifications_enabled {
             next.notifications_enabled = v;
+        }
+        if let Some(v) = patch.meeting_silence_prompt {
+            next.meeting_silence_prompt = v;
+        }
+        if let Some(v) = patch.meeting_invites_enabled {
+            next.meeting_invites_enabled = v;
         }
         if let Some(v) = patch.debug_logging {
             next.debug_logging = v;
@@ -359,7 +373,7 @@ mod tests {
         assert!(s.launch_with_windows && s.hide_in_fullscreen && s.meeting_reminder_enabled);
         assert_eq!(s.reminder_minutes, 30);
         assert_eq!(s.monitor, "primary");
-        assert!(s.notifications_enabled);
+        assert!(s.notifications_enabled && s.meeting_invites_enabled && s.meeting_silence_prompt);
         assert!(!s.debug_logging);
     }
 
@@ -421,6 +435,16 @@ mod tests {
         let next = Settings::default().patched(patch(r#"{"hideInFullscreen": false, "unknown": 1}"#));
         assert!(!next.hide_in_fullscreen);
         assert!(next.launch_with_windows && next.notifications_enabled);
+    }
+
+    #[test]
+    fn meeting_invites_toggle_and_old_files_default_to_on() {
+        let off = Settings::default().patched(patch(r#"{"meetingInvitesEnabled": false}"#));
+        assert!(!off.meeting_invites_enabled);
+        assert!(off.notifications_enabled);
+        assert_eq!(serde_json::to_value(&off).unwrap()["meetingInvitesEnabled"], false);
+        let old: Settings = serde_json::from_str(r#"{"schemaVersion": 1, "notificationsEnabled": false}"#).unwrap();
+        assert!(old.meeting_invites_enabled);
     }
 
     #[test]

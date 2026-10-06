@@ -85,6 +85,7 @@ pub fn run() {
             settings::update_settings,
             calendar::calendar_get_snapshot,
             calendar::calendar_refresh,
+            calendar::calendar_get_range,
             reminder_state::reminder_state_load,
             reminder_state::reminder_state_save,
             window::set_island_geometry,
@@ -98,6 +99,9 @@ pub fn run() {
             notifications::notifications_request_access,
             notifications::activate_notification,
             notifications::activate_app_by_aumid,
+            outlook::outlook_open_calendar,
+            outlook::outlook_respond_invite,
+            outlook::open_meeting_url,
         ])
         .on_window_event(|window, event| window::on_window_event(window, event))
         .setup(|app| {

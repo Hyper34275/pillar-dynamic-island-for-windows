@@ -16,10 +16,13 @@ use windows::Win32::Media::Audio::{IMessageFilter, IMessageFilter_Impl};
 use windows::Win32::Media::HTASK;
 use windows::Win32::System::Com::{
     CLSIDFromProgID, CoInitializeEx, CoUninitialize, IDispatch, COINIT_APARTMENTTHREADED,
-    DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPPARAMS, EXCEPINFO, INTERFACEINFO,
+    DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPATCH_PROPERTYPUTREF, DISPPARAMS, EXCEPINFO,
+    INTERFACEINFO,
 };
 use windows::Win32::System::Ole::GetActiveObject;
-use windows::Win32::System::Variant::{VT_BOOL, VT_BSTR, VT_DATE, VT_DISPATCH, VT_I2, VT_I4, VT_R8, VT_UNKNOWN};
+use windows::Win32::System::Variant::{
+    VariantChangeType, VAR_CHANGE_FLAGS, VT_BOOL, VT_BSTR, VT_DATE, VT_DISPATCH, VT_I2, VT_I4, VT_R8, VT_UNKNOWN,
+};
 
 const LOCALE_USER_DEFAULT: u32 = 0x0400;
 const DISPID_PROPERTYPUT: i32 = -3;
@@ -245,7 +248,7 @@ impl Dispatch {
         // IDispatch takes arguments in reverse order.
         let mut rgvarg: Vec<VARIANT> = args.into_iter().rev().collect();
         let mut put_id = DISPID_PROPERTYPUT;
-        let is_put = flags == DISPATCH_PROPERTYPUT;
+        let is_put = flags == DISPATCH_PROPERTYPUT || flags == DISPATCH_PROPERTYPUTREF;
         let params = DISPPARAMS {
             rgvarg: if rgvarg.is_empty() { std::ptr::null_mut() } else { rgvarg.as_mut_ptr() },
             rgdispidNamedArgs: if is_put { &mut put_id } else { std::ptr::null_mut() },
@@ -284,6 +287,18 @@ impl Dispatch {
 
     pub fn put(&mut self, name: &'static str, value: VARIANT) -> ComResult<()> {
         self.invoke(name, DISPATCH_PROPERTYPUT, vec![value]).map(|_| ())
+    }
+
+    /// Assign an object to a property (VBA's `Set obj.Prop = other`).
+    pub fn put_ref(&mut self, name: &'static str, value: &Dispatch) -> ComResult<()> {
+        let arg = value.to_variant()?;
+        self.invoke(name, DISPATCH_PROPERTYPUTREF, vec![arg]).map(|_| ())
+    }
+
+    /// A VT_DISPATCH VARIANT holding a new reference to this object, to pass it as an argument.
+    pub fn to_variant(&self) -> ComResult<VARIANT> {
+        let unknown: windows::core::IUnknown = self.ptr.cast().map_err(|e| ComError::from_windows("QueryInterface(IUnknown)", &e))?;
+        convert(&VARIANT::from(unknown), VT_DISPATCH)
     }
 
     /// `args` are in natural (left-to-right) order.
@@ -383,6 +398,18 @@ pub fn variant_from_bool(b: bool) -> VARIANT {
     VARIANT::from(b)
 }
 
+/// Coerce `v` the way automation servers do (e.g. VT_R8 -> VT_DATE, VT_UNKNOWN -> VT_DISPATCH).
+fn convert(v: &VARIANT, to: windows::Win32::System::Variant::VARENUM) -> ComResult<VARIANT> {
+    let mut out = VARIANT::new();
+    unsafe { VariantChangeType(&mut out, v, VAR_CHANGE_FLAGS(0), to) }.map_err(|e| ComError::from_windows("VariantChangeType", &e))?;
+    Ok(out)
+}
+
+/// A VT_DATE argument (days since 1899-12-30, machine-local time, as Outlook expects).
+pub fn variant_from_date(date: f64) -> ComResult<VARIANT> {
+    convert(&VARIANT::from(date), VT_DATE)
+}
+
 // =============================================================================
 // DATE conversion
 // =============================================================================
@@ -395,6 +422,13 @@ pub fn date_to_naive(date: f64) -> Option<NaiveDateTime> {
     }
     let epoch = NaiveDate::from_ymd_opt(1899, 12, 30)?.and_hms_opt(0, 0, 0)?;
     epoch.checked_add_signed(Duration::seconds((date * 86_400.0).round() as i64))
+}
+
+/// Civil date-time -> days since 1899-12-30 (the inverse of [`date_to_naive`]).
+pub fn naive_to_date(naive: NaiveDateTime) -> Option<f64> {
+    let epoch = NaiveDate::from_ymd_opt(1899, 12, 30)?.and_hms_opt(0, 0, 0)?;
+    let seconds = naive.signed_duration_since(epoch).num_seconds();
+    (seconds >= 0).then(|| seconds as f64 / 86_400.0)
 }
 
 /// Resolve a machine-local civil time to UTC through `lookup`.
@@ -418,6 +452,17 @@ pub fn date_to_utc(date: f64) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
     use chrono::{FixedOffset, Timelike};
+
+    #[test]
+    fn dates_round_trip_and_go_out_as_vt_date() {
+        let naive = NaiveDate::from_ymd_opt(2026, 10, 7).unwrap().and_hms_opt(9, 30, 0).unwrap();
+        let date = naive_to_date(naive).unwrap();
+        assert_eq!(date_to_naive(date), Some(naive));
+        assert_eq!(naive_to_date(NaiveDate::from_ymd_opt(1800, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap()), None);
+        let v = variant_from_date(date).unwrap();
+        assert_eq!(vt(&v), VT_DATE.0);
+        assert_eq!(variant_date(&v), Some(date));
+    }
 
     /// A zone with a US-style 2 AM -> 3 AM spring-forward and 2 AM -> 1 AM fall-back,
     /// standard offset -5h, DST offset -4h, transitions on 2026-03-08 and 2026-11-01.

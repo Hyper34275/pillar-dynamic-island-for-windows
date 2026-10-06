@@ -4,14 +4,11 @@ use crate::{debug_log, window};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::AppHandle;
-use windows::Win32::Globalization::GetUserDefaultUILanguage;
 
 const TOGGLE: &str = "tray_toggle";
 const ABOUT: &str = "tray_about";
 const LOGS: &str = "tray_logs";
 const QUIT: &str = "tray_quit";
-
-const LANG_HEBREW: u16 = 0x0D;
 
 struct Labels {
     toggle: &'static str,
@@ -20,21 +17,11 @@ struct Labels {
     quit: &'static str,
 }
 
-const ENGLISH: Labels = Labels { toggle: "Show / Hide island", about: "About", logs: "Open logs", quit: "Quit" };
-const HEBREW: Labels = Labels { toggle: "הצג / הסתר", about: "אודות", logs: "פתח יומנים", quit: "יציאה" };
-
-/// Menu strings for a Windows UI language id (primary language = low 10 bits); anything
-/// but Hebrew gets English, like the frontend's string table.
-fn labels_for(lang_id: u16) -> &'static Labels {
-    if lang_id & 0x3FF == LANG_HEBREW {
-        &HEBREW
-    } else {
-        &ENGLISH
-    }
-}
+/// The app is Hebrew whatever language Windows runs in, like the island itself (main.tsx).
+const LABELS: Labels = Labels { toggle: "הצג / הסתר", about: "אודות", logs: "פתח יומנים", quit: "יציאה" };
 
 fn build(app: &AppHandle) -> tauri::Result<()> {
-    let labels = labels_for(unsafe { GetUserDefaultUILanguage() });
+    let labels = &LABELS;
     let toggle = MenuItem::with_id(app, TOGGLE, labels.toggle, true, None::<&str>)?;
     let about = MenuItem::with_id(app, ABOUT, labels.about, true, None::<&str>)?;
     let logs = MenuItem::with_id(app, LOGS, labels.logs, true, None::<&str>)?;
@@ -82,16 +69,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hebrew_ui_gets_hebrew_menu() {
-        assert_eq!(labels_for(0x040D).quit, "יציאה");
-        assert_eq!(labels_for(0x040D).toggle, HEBREW.toggle);
-    }
-
-    #[test]
-    fn other_languages_get_english() {
-        for lang in [0x0409, 0x0809, 0x0407, 0x040C, 0x0000] {
-            assert_eq!(labels_for(lang).quit, "Quit", "lang {lang:#x}");
-        }
-        assert_eq!(labels_for(0x0409).toggle, "Show / Hide island");
+    fn the_menu_is_hebrew() {
+        assert_eq!(LABELS.quit, "יציאה");
+        assert_eq!(LABELS.toggle, "הצג / הסתר");
+        assert_eq!(LABELS.about, "אודות");
     }
 }

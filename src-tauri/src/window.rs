@@ -2,9 +2,10 @@
 //!
 //! The window never takes focus: `WS_EX_NOACTIVATE` keeps clicks from activating
 //! it and `WS_EX_TOOLWINDOW` removes it from Alt+Tab. This app's own code never calls
-//! `SetForegroundWindow`, `set_focus` or `AllowSetForegroundWindow`. (The single-instance
-//! plugin makes the second process call `AllowSetForegroundWindow` for the first one; the
-//! first instance never uses that right.)
+//! `SetForegroundWindow` or `set_focus`. (The single-instance plugin makes the second process
+//! call `AllowSetForegroundWindow` for the first one; the first instance never uses that right.)
+//! The only `AllowSetForegroundWindow` of its own is `outlook::open_calendar`: after a click
+//! on a meeting invitation it lets the user's own Outlook come forward, for that one click.
 //!
 //! There is no global mouse hook. Instead the native window is sized *exactly* to
 //! the island (the frontend sends logical px), so no large transparent area exists
