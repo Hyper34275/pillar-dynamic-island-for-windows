@@ -42,7 +42,6 @@ pub struct Settings {
     )]
     pub monitor: String,
     pub notifications_enabled: bool,
-    pub reduced_effects: bool,
     /// Opt-in debug-level logging (`COMPANYISLAND_LOG=debug` does the same).
     pub debug_logging: bool,
 }
@@ -57,7 +56,6 @@ impl Default for Settings {
             reminder_minutes: DEFAULT_REMINDER_MINUTES,
             monitor: PRIMARY_MONITOR.to_string(),
             notifications_enabled: true,
-            reduced_effects: false,
             debug_logging: false,
         }
     }
@@ -76,7 +74,6 @@ pub struct SettingsPatch {
     #[serde(default, rename = "monitorId", alias = "monitor", deserialize_with = "de_monitor_patch")]
     monitor: Option<String>,
     notifications_enabled: Option<bool>,
-    reduced_effects: Option<bool>,
     debug_logging: Option<bool>,
 }
 
@@ -164,9 +161,6 @@ impl Settings {
         }
         if let Some(v) = patch.notifications_enabled {
             next.notifications_enabled = v;
-        }
-        if let Some(v) = patch.reduced_effects {
-            next.reduced_effects = v;
         }
         if let Some(v) = patch.debug_logging {
             next.debug_logging = v;
@@ -366,7 +360,7 @@ mod tests {
         assert_eq!(s.reminder_minutes, 30);
         assert_eq!(s.monitor, "primary");
         assert!(s.notifications_enabled);
-        assert!(!s.reduced_effects && !s.debug_logging);
+        assert!(!s.debug_logging);
     }
 
     #[test]
@@ -405,7 +399,7 @@ mod tests {
         assert_eq!(serde_json::to_value(&second).unwrap()["monitorId"], "1");
         // null selects the primary monitor again; an absent key changes nothing
         assert_eq!(second.patched(patch(r#"{"monitorId": null}"#)).monitor, "primary");
-        assert_eq!(second.patched(patch(r#"{"reducedEffects": true}"#)).monitor, "1");
+        assert_eq!(second.patched(patch(r#"{"debugLogging": true}"#)).monitor, "1");
         // numbers and junk are tolerated
         assert_eq!(base.patched(patch(r#"{"monitorId": 2}"#)).monitor, "2");
         assert_eq!(base.patched(patch(r#"{"monitorId": {"a": 1}}"#)).monitor, "primary");
@@ -444,7 +438,7 @@ mod tests {
         let path = dir.join("settings.json");
         let first = Settings::default().patched(patch(r#"{"reminderMinutes": 15}"#));
         write_atomic(&path, &serde_json::to_vec_pretty(&first).unwrap()).unwrap();
-        let second = first.patched(patch(r#"{"reducedEffects": true}"#));
+        let second = first.patched(patch(r#"{"debugLogging": true}"#));
         write_atomic(&path, &serde_json::to_vec_pretty(&second).unwrap()).unwrap();
         assert_eq!(load_from(&path), second);
         assert!(!path.with_extension("json.tmp").exists());

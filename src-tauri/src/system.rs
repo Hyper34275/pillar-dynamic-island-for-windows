@@ -14,6 +14,7 @@ use std::sync::{Mutex, Once, OnceLock};
 use windows::core::{HSTRING, PWSTR};
 use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS, HANDLE};
+use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GetAdaptersAddresses, GetIpForwardTable2, NotifyIpInterfaceChange, NotifyUnicastIpAddressChange,
     GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
@@ -33,6 +34,8 @@ const IF_TYPE_LOOPBACK: u32 = 24;
 const IF_TYPE_WIFI: u32 = 71;
 const IF_TYPE_TUNNEL: u32 = 131;
 const WINDOWS_11_FIRST_BUILD: u32 = 22000;
+/// `LOCALE_NAME_MAX_LENGTH`, including the terminating NUL.
+const LOCALE_NAME_MAX: usize = 85;
 const CURRENT_VERSION_KEY: &str = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
 
 #[derive(Serialize, Clone, Debug)]
@@ -212,6 +215,25 @@ pub fn info() -> SystemInfo {
 #[tauri::command]
 pub async fn get_system_info() -> Result<SystemInfo, String> {
     rt::run_blocking("get_system_info", || Ok(info())).await
+}
+
+/// The user's regional format (Settings > Time & language > Region > Regional format) as a
+/// BCP-47 tag such as `he-IL`. WebView2's `navigator.language` follows the display language
+/// instead, so dates and weekdays take their locale from here and strings from the UI language.
+pub fn format_locale() -> Option<String> {
+    let mut buffer = [0u16; LOCALE_NAME_MAX];
+    let written = unsafe { GetUserDefaultLocaleName(&mut buffer) };
+    if written <= 1 {
+        return None;
+    }
+    // `written` counts the terminating NUL.
+    let tag = String::from_utf16(&buffer[..written as usize - 1]).ok()?;
+    Some(tag)
+}
+
+#[tauri::command]
+pub fn get_format_locale() -> Option<String> {
+    format_locale()
 }
 
 // =============================================================================
@@ -614,6 +636,12 @@ mod tests {
         assert!(is_vpn(&ppp));
         let attach = adapter(6, "Attachments", "Attachment Gigabit Ethernet", IF_TYPE_ETHERNET, [10, 1, 1, 2]);
         assert!(!is_virtual(&attach), "'tun'/'tap' must match whole tokens only");
+    }
+
+    #[test]
+    fn format_locale_is_a_bcp47_style_tag() {
+        let tag = format_locale().expect("every Windows user has a regional format");
+        assert!(tag.len() >= 2 && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'), "{tag}");
     }
 
     #[test]

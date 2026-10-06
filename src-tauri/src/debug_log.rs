@@ -251,8 +251,8 @@ pub fn init(version: &str) {
 }
 
 /// Warn when the previous run ended without the clean-exit marker. Called from setup,
-/// not `init`: a second launch also runs `init` before the single-instance plugin ends
-/// it, and it would report the still-running first instance as a crash.
+/// after the single-instance check, so a duplicate launch can never report the still-running
+/// first instance as a crash.
 pub fn report_previous_session() {
     if !PREVIOUS_CLEAN.load(Ordering::Relaxed) {
         write("WARN", "app", "previous session did not exit cleanly");
@@ -272,7 +272,8 @@ pub fn set_debug(enabled: bool) {
 
 /// Record a clean shutdown so the next start can tell it from a crash.
 pub fn mark_clean_exit() {
-    write_capped(None, Level::Error, "app", CLEAN_EXIT_MARKER, MAX_MESSAGE_BYTES);
+    // Info, not Error: a normal quit is not an error, and Info is written at every log level.
+    write_capped(None, Level::Info, "app", CLEAN_EXIT_MARKER, MAX_MESSAGE_BYTES);
 }
 
 pub fn write(level: &str, scope: &str, message: &str) {

@@ -41,9 +41,24 @@ fn prepare(context: &mut tauri::Context) {
     }
 }
 
-pub fn run() {
-    debug_log::init(env!("CARGO_PKG_VERSION"));
+/// Logging and the managed state, as a plugin so it initializes AFTER the single-instance
+/// plugin. `tauri-plugin-single-instance` runs its check in its plugin setup (during
+/// `Builder::build`, plugins in registration order), and a duplicate launch signals the
+/// first instance and exits right there. Doing this earlier (before `build`) made the
+/// duplicate write a session banner, rotate the log and quarantine settings under the
+/// running instance; here it never touches a file.
+fn core_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("companyisland-core")
+        .setup(|app, _api| {
+            debug_log::init(env!("CARGO_PKG_VERSION"));
+            app.manage(settings::SettingsStore::load());
+            app.manage(calendar::CalendarState::default());
+            Ok(())
+        })
+        .build()
+}
 
+pub fn run() {
     let mut context = tauri::generate_context!();
     prepare(&mut context);
 
@@ -60,8 +75,8 @@ pub fn run() {
             window::show(app);
             window::emit_island_toggle(app, None);
         }))
-        .manage(settings::SettingsStore::load())
-        .manage(calendar::CalendarState::default())
+        // Must stay after the single-instance plugin (see `core_plugin`).
+        .plugin(core_plugin())
         .invoke_handler(tauri::generate_handler![
             debug_log::write_logs,
             debug_log::log_frontend_error,
@@ -72,10 +87,11 @@ pub fn run() {
             calendar::calendar_refresh,
             reminder_state::reminder_state_load,
             reminder_state::reminder_state_save,
-            window::set_click_through,
             window::set_island_geometry,
             window::get_monitors,
+            fullscreen::get_fullscreen_state,
             system::get_system_info,
+            system::get_format_locale,
             diagnostics::get_diagnostics,
             clipboard::copy_text_to_clipboard,
             notifications::notifications_get_status,
@@ -94,12 +110,11 @@ pub fn run() {
             notifications::start(handle.clone());
             calendar::start(handle.clone());
 
-            // Registry read/write and the hook install handshake stay off the UI thread.
+            // Registry read/write and the hook install handshake stay off the UI thread. Each step
+            // is guarded on its own: a panic in one must not skip the other.
             std::thread::spawn(move || {
-                debug_log::catch("startup", || {
-                    settings::sync_autostart(&handle);
-                    fullscreen::start(handle.clone());
-                });
+                debug_log::catch("startup autostart", || settings::sync_autostart(&handle));
+                debug_log::catch("startup fullscreen", || fullscreen::start(handle.clone()));
             });
             Ok(())
         })

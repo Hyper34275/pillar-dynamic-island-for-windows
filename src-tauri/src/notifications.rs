@@ -8,12 +8,21 @@
 //! Notification text is never logged.
 //!
 //! Events: `notification-received` (one toast) and `notification-status` (string).
-//! The listener subscribes only while access is allowed *and*
-//! `settings.notificationsEnabled` is on, and follows both changes live.
+//! Delivery runs only while access is allowed *and* `settings.notificationsEnabled` is on,
+//! and follows both changes live.
+//!
+//! Delivery mode (`events` | `polling` | `none`, reported by diagnostics as
+//! `notificationMode`): the `NotificationChanged` event is preferred. An unpackaged exe
+//! usually cannot subscribe to it (`NOTIF-204 ... (0x80070490)`, "element not found"); the
+//! access status is still `allowed` then, so the module falls back to ONE poller thread that
+//! reads `GetNotificationsAsync(Toast)` and forwards only ids it has not seen. `NOTIF-204`
+//! in general means "listener error" (docs/ENTERPRISE_DESIGN.md section 3): a failed
+//! subscription, read or access query. It never disables the app.
 
 use crate::{debug_log, diagnostics, paths, rt, settings::SettingsStore, system};
 use serde::Serialize;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -34,6 +43,12 @@ const POLICY_FORCE_DENY: u32 = 2;
 const E_ELEMENT_NOT_FOUND: i32 = 0x80070490u32 as i32;
 const SUBSCRIBE_RETRIES: usize = 3;
 const SUBSCRIBE_RETRY_MS: u64 = 500;
+/// Fallback poller: cheap read of the Action Center every 5 s, 30 s after repeated failures.
+const POLL_INTERVAL: Duration = Duration::from_secs(5);
+const POLL_BACKOFF: Duration = Duration::from_secs(30);
+const POLL_BACKOFF_AFTER_FAILURES: u32 = 3;
+/// Notification ids remembered by the poller (the newest ones, ids only ever grow).
+const SEEN_MAX: usize = 256;
 
 /// The notification as sent to the frontend (`normalizeNotification` in `src/lib/ipc.ts`).
 #[derive(Debug, Clone, Serialize)]
@@ -127,9 +142,71 @@ static RECENT_AUMIDS: Mutex<RecentAumids> = Mutex::new(RecentAumids(VecDeque::ne
 
 /// Last published status (`None` before the first check).
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
-/// Registration token of the live `NotificationChanged` subscription. Also serializes
-/// `sync` so concurrent callers cannot double-subscribe.
-static SUBSCRIPTION: Mutex<Option<i64>> = Mutex::new(None);
+/// How toasts reach the island right now. Kept apart from [`DELIVERY`] so diagnostics never
+/// wait for a subscription attempt.
+static MODE: Mutex<Mode> = Mutex::new(Mode::None);
+/// The live delivery. Also serializes `sync` so concurrent callers cannot double-start.
+static DELIVERY: Mutex<Delivery> = Mutex::new(Delivery { token: None, events_unavailable: false, poller: None });
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    None,
+    Events,
+    Polling,
+}
+
+impl Mode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Mode::None => "none",
+            Mode::Events => "events",
+            Mode::Polling => "polling",
+        }
+    }
+}
+
+struct Delivery {
+    /// Registration token of the live `NotificationChanged` subscription.
+    token: Option<i64>,
+    /// Subscribing failed for good: do not retry (each try costs ~1 s) until access has
+    /// been lost and regained.
+    events_unavailable: bool,
+    /// Dropping the sender stops the poller thread.
+    poller: Option<mpsc::Sender<()>>,
+}
+
+impl Delivery {
+    fn mode(&self) -> Mode {
+        if self.token.is_some() {
+            Mode::Events
+        } else if self.poller.is_some() {
+            Mode::Polling
+        } else {
+            Mode::None
+        }
+    }
+
+    fn start(&mut self, app: &AppHandle, listener: &UserNotificationListener) {
+        if self.mode() != Mode::None {
+            return;
+        }
+        if !self.events_unavailable {
+            self.token = subscribe(app, listener);
+            self.events_unavailable = self.token.is_none();
+        }
+        if self.token.is_none() {
+            self.poller = spawn_poller(app);
+        }
+    }
+
+    fn stop(&mut self, listener: Option<&UserNotificationListener>) {
+        if let (Some(token), Some(listener)) = (self.token, listener) {
+            unsubscribe(listener, token);
+            self.token = None;
+        }
+        self.poller = None;
+    }
+}
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -141,6 +218,23 @@ fn enabled(app: &AppHandle) -> bool {
 
 pub fn current_status() -> Option<String> {
     lock(&STATUS).map(|s| s.as_str().to_string())
+}
+
+/// `events` | `polling` | `none`.
+pub fn current_mode() -> &'static str {
+    lock(&MODE).as_str()
+}
+
+/// Record the delivery mode, logged once per change.
+fn set_mode(mode: Mode) {
+    {
+        let mut current = lock(&MODE);
+        if *current == mode {
+            return;
+        }
+        *current = mode;
+    }
+    dlog!("INFO", "notifications", "notification delivery mode: {}", mode.as_str());
 }
 
 /// Record and announce a status, once per change.
@@ -250,21 +344,30 @@ fn unsubscribe(listener: &UserNotificationListener, token: i64) {
     }
 }
 
-/// Bring status and subscription in line with Windows' access state and the setting.
+/// Bring status and delivery in line with Windows' access state and the setting.
 fn sync(app: &AppHandle, request: bool) -> Status {
-    let mut subscription = lock(&SUBSCRIPTION);
+    let mut delivery = lock(&DELIVERY);
     let (status, listener) = query(app, request);
     publish(app, status);
-    let wanted = status == Status::Allowed && enabled(app);
-    match (&listener, wanted, *subscription) {
-        (Some(listener), true, None) => *subscription = subscribe(app, listener),
-        (Some(listener), false, Some(token)) => {
-            unsubscribe(listener, token);
-            *subscription = None;
-        }
-        _ => {}
+    if status != Status::Allowed {
+        delivery.events_unavailable = false;
     }
+    match (&listener, status == Status::Allowed && enabled(app)) {
+        (Some(listener), true) => delivery.start(app, listener),
+        _ => delivery.stop(listener.as_ref()),
+    }
+    set_mode(delivery.mode());
     status
+}
+
+/// Remember the sender (so the toast can be activated later) and hand the toast to the island.
+fn forward(app: &AppHandle, notification: &SystemNotification) {
+    if let Some(aumid) = &notification.aumid {
+        lock(&RECENT_AUMIDS).remember(aumid);
+    }
+    if let Err(e) = app.emit("notification-received", notification) {
+        dlog!("WARN", "notifications", "emit notification-received failed: {}", e);
+    }
 }
 
 fn on_changed(app: &AppHandle, args: Option<&UserNotificationChangedEventArgs>) {
@@ -279,12 +382,116 @@ fn on_changed(app: &AppHandle, args: Option<&UserNotificationChangedEventArgs>) 
     let Some(notification) = listener.GetNotification(id).ok().and_then(|n| extract_notification(&n)) else {
         return;
     };
-    if let Some(aumid) = &notification.aumid {
-        lock(&RECENT_AUMIDS).remember(aumid);
+    forward(app, &notification);
+}
+
+// ---------------------------------------------------------------------------
+// Polling fallback
+// ---------------------------------------------------------------------------
+
+/// Ids already seen by the poller. The first poll only records (the Action Center's old
+/// items must not flood the island); afterwards only ids that were not in the previous
+/// poll are new. An id that left the list and comes back counts as new again. Only the
+/// newest [`SEEN_MAX`] ids are kept, so the set stays bounded.
+#[derive(Default)]
+struct Seen {
+    ids: HashSet<u32>,
+    primed: bool,
+}
+
+/// Ids in `current` that `seen` has not seen, oldest first; `seen` then becomes `current`.
+fn new_since(seen: &mut Seen, current: &[u32]) -> Vec<u32> {
+    let mut ids = current.to_vec();
+    ids.sort_unstable_by(|a, b| b.cmp(a));
+    ids.dedup();
+    ids.truncate(SEEN_MAX);
+    ids.reverse();
+    let fresh = if seen.primed { ids.iter().copied().filter(|id| !seen.ids.contains(id)).collect() } else { Vec::new() };
+    seen.ids = ids.into_iter().collect();
+    seen.primed = true;
+    fresh
+}
+
+fn poll_interval(consecutive_failures: u32) -> Duration {
+    if consecutive_failures >= POLL_BACKOFF_AFTER_FAILURES {
+        POLL_BACKOFF
+    } else {
+        POLL_INTERVAL
     }
-    if let Err(e) = app.emit("notification-received", &notification) {
-        dlog!("WARN", "notifications", "emit notification-received failed: {}", e);
+}
+
+enum PollFailure {
+    /// Access is no longer `Allowed`: let `sync` publish it and stop the poller.
+    AccessLost,
+    Failed(String),
+}
+
+fn spawn_poller(app: &AppHandle) -> Option<mpsc::Sender<()>> {
+    let (stop, stopped) = mpsc::channel();
+    let app = app.clone();
+    let spawned = thread::Builder::new().name("companyisland-notif-poll".into()).spawn(move || poll_loop(&app, &stopped));
+    match spawned {
+        Ok(_) => Some(stop),
+        Err(e) => {
+            dlog!("WARN", "notifications", "NOTIF-204 could not start the poller thread: {}", e);
+            None
+        }
     }
+}
+
+/// Runs until the sender is dropped. Waits on the channel, so a stop is immediate and
+/// there is no tight loop.
+fn poll_loop(app: &AppHandle, stopped: &mpsc::Receiver<()>) {
+    rt::ensure_com_initialized();
+    let mut seen = Seen::default();
+    let mut failures = 0u32;
+    loop {
+        let outcome = debug_log::catch("notifications", || poll_once(app, stopped, &mut seen))
+            .unwrap_or_else(|| Err(PollFailure::Failed("NOTIF-204: poll panicked".to_string())));
+        match outcome {
+            Ok(()) => failures = 0,
+            Err(PollFailure::AccessLost) => {
+                failures = 0;
+                sync(app, false);
+            }
+            Err(PollFailure::Failed(message)) => {
+                failures += 1;
+                if failures == 1 || failures == POLL_BACKOFF_AFTER_FAILURES {
+                    dlog!("WARN", "notifications", "{} (failure {})", message, failures);
+                }
+            }
+        }
+        match stopped.recv_timeout(poll_interval(failures)) {
+            Err(RecvTimeoutError::Timeout) => {}
+            _ => return,
+        }
+    }
+}
+
+/// One read-only pass over the Action Center's toasts.
+fn poll_once(app: &AppHandle, stopped: &mpsc::Receiver<()>, seen: &mut Seen) -> Result<(), PollFailure> {
+    let listener = UserNotificationListener::Current()
+        .map_err(|e| PollFailure::Failed(format!("NOTIF-204: listener unavailable: {e}")))?;
+    match listener.GetAccessStatus() {
+        Ok(UserNotificationListenerAccessStatus::Allowed) => {}
+        Ok(_) => return Err(PollFailure::AccessLost),
+        Err(e) => return Err(PollFailure::Failed(format!("NOTIF-204: access status failed: {e}"))),
+    }
+    let list = poll_notifications_list(&listener).map_err(PollFailure::Failed)?;
+    let ids: Vec<u32> = list.iter().filter_map(|n| n.Id().ok()).collect();
+    let fresh = new_since(seen, &ids);
+    // Stopped or disabled while reading: record, emit nothing.
+    if matches!(stopped.try_recv(), Err(TryRecvError::Disconnected)) || !enabled(app) {
+        return Ok(());
+    }
+    if !fresh.is_empty() {
+        dlog!("DEBUG", "notifications", "poll: {} new of {} toasts", fresh.len(), ids.len());
+    }
+    let new = list.iter().filter(|n| n.Id().is_ok_and(|id| fresh.contains(&id)));
+    for notification in new.filter_map(extract_notification) {
+        forward(app, &notification);
+    }
+    Ok(())
 }
 
 /// Start the listener on a worker thread; never blocks setup.
@@ -306,11 +513,23 @@ fn spawn_sync(app: AppHandle, name: &str) {
     }
 }
 
-/// Current access status; also picks up a grant made in Windows Settings since the last
-/// check (subscribing without a restart).
+/// Last known access status, returned at once. A background `sync` refreshes it (picking
+/// up a grant made in Windows Settings since the last check) and announces a change through
+/// `notification-status`; waiting for it would queue behind a subscription attempt.
 #[tauri::command]
 pub async fn notifications_get_status(app: AppHandle) -> Result<String, String> {
-    rt::run_blocking("notifications_get_status", move || Ok(sync(&app, false).as_str().to_string())).await
+    rt::run_blocking("notifications_get_status", move || {
+        let known = *lock(&STATUS);
+        let status = known.unwrap_or_else(|| {
+            // Before the boot check has published anything: ask Windows (never prompts).
+            let (status, _) = query(&app, false);
+            publish(&app, status);
+            status
+        });
+        spawn_sync(app, "companyisland-notif-sync");
+        Ok(status.as_str().to_string())
+    })
+    .await
 }
 
 /// Raise the Windows consent prompt. Only ever called from an explicit user click.
@@ -509,6 +728,63 @@ mod tests {
             assert_eq!(status.as_str(), text);
             assert_eq!(status.code(), code);
         }
+    }
+
+    #[test]
+    fn delivery_mode_strings() {
+        assert_eq!(Mode::None.as_str(), "none");
+        assert_eq!(Mode::Events.as_str(), "events");
+        assert_eq!(Mode::Polling.as_str(), "polling");
+        assert_eq!(Delivery { token: None, events_unavailable: false, poller: None }.mode(), Mode::None);
+        assert_eq!(Delivery { token: Some(1), events_unavailable: false, poller: None }.mode(), Mode::Events);
+        let (stop, _stopped) = mpsc::channel();
+        assert_eq!(Delivery { token: None, events_unavailable: true, poller: Some(stop) }.mode(), Mode::Polling);
+    }
+
+    #[test]
+    fn first_poll_only_records_existing_items() {
+        let mut seen = Seen::default();
+        assert!(new_since(&mut seen, &[3, 1, 2]).is_empty());
+        assert!(new_since(&mut seen, &[3, 1, 2]).is_empty());
+    }
+
+    #[test]
+    fn only_unseen_ids_are_new_oldest_first_and_never_twice() {
+        let mut seen = Seen::default();
+        new_since(&mut seen, &[1, 2]);
+        assert_eq!(new_since(&mut seen, &[5, 2, 1, 4, 4]), vec![4, 5]);
+        assert!(new_since(&mut seen, &[5, 4, 2, 1]).is_empty());
+        // An empty Action Center is a valid poll, not a reset.
+        assert!(new_since(&mut seen, &[]).is_empty());
+    }
+
+    #[test]
+    fn an_id_that_left_and_returned_is_new_again() {
+        let mut seen = Seen::default();
+        new_since(&mut seen, &[7]);
+        assert!(new_since(&mut seen, &[]).is_empty());
+        assert_eq!(new_since(&mut seen, &[7]), vec![7]);
+    }
+
+    #[test]
+    fn seen_ids_are_bounded_and_old_ones_do_not_resurface() {
+        let mut seen = Seen::default();
+        let newest = SEEN_MAX as u32 + 50;
+        let many: Vec<u32> = (1..=newest).collect();
+        new_since(&mut seen, &many);
+        assert_eq!(seen.ids.len(), SEEN_MAX);
+        assert!(!seen.ids.contains(&1) && seen.ids.contains(&newest));
+        // The same oversized list again reports nothing: evicted ids are not re-emitted.
+        assert!(new_since(&mut seen, &many).is_empty());
+        assert_eq!(new_since(&mut seen, &[newest + 1]), vec![newest + 1]);
+    }
+
+    #[test]
+    fn poll_interval_backs_off_after_repeated_failures() {
+        assert_eq!(poll_interval(0), POLL_INTERVAL);
+        assert_eq!(poll_interval(POLL_BACKOFF_AFTER_FAILURES - 1), POLL_INTERVAL);
+        assert_eq!(poll_interval(POLL_BACKOFF_AFTER_FAILURES), POLL_BACKOFF);
+        assert_eq!(poll_interval(100), POLL_BACKOFF);
     }
 
     #[test]

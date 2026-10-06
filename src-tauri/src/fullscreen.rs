@@ -168,6 +168,13 @@ fn evaluate_now(app: &AppHandle) -> bool {
     decide(shell, info.as_ref())
 }
 
+/// The last published state, for a page that attached its listener after the event fired
+/// (a fullscreen app already in front when CompanyIsland starts at logon).
+#[tauri::command]
+pub fn get_fullscreen_state() -> bool {
+    STATE.lock().unwrap_or_else(|e| e.into_inner()).unwrap_or(false)
+}
+
 /// Re-evaluate, publish a transition and apply the hide/restore policy (idempotent).
 fn evaluate(app: &AppHandle) {
     let fullscreen = evaluate_now(app);

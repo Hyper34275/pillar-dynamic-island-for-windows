@@ -14,13 +14,13 @@ Implementation agents MUST follow it. If something here is wrong, stop and repor
 | Installer | NSIS only, `installMode: perMachine`, x64, WebView2 `offlineInstaller` (embedded), MSI target dropped. Machine-wide autostart = HKLM `Run` value written by NSIS hook. App itself never writes HKLM. |
 | Per-user autostart opt-out | Setting `launchWithWindows` (default true). Toggled by writing HKCU `Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` value (same mechanism as Task Manager): `02 00 00 00 + 8 zero bytes` = enabled, `03 00 00 00 + 8 zero bytes` = disabled. No admin needed. |
 | Outlook | Classic Outlook OOM via in-process Rust late-bound `IDispatch` (windows crate) on ONE dedicated STA worker thread. **Attach only** (`GetActiveObject` / ROT) — never `CoCreateInstance` of Outlook.Application. No sidecar, no .NET. |
-| Calendar reads | Default Calendar only (`GetDefaultFolder(9)` of the *default store of the running session*). Properties read: EntryID(hashed), Subject, Start, End, Location, Organizer(display name), AllDayEvent, IsRecurring, BusyStatus, ResponseStatus. **Never** Body, Recipients, SenderEmailAddress, attachments. Meeting URL = regex over Location only. |
+| Calendar reads | Default Calendar only (`GetDefaultFolder(9)` of the *default store of the running session*). Properties read: EntryID(hashed), Subject, Start, End, Location, Organizer(display name), AllDayEvent, IsRecurring, BusyStatus, ResponseStatus, MeetingStatus (a number; canceled meetings 5/7 are skipped). Organizer, IsRecurring and the meeting URL are not used by any V1 screen (reserved for a Join action). **Never** Body, Recipients, SenderEmailAddress, attachments. Meeting URL = regex over Location only. |
 | Cloud/AI/internet | None. Prism/Groq, `reqwest`, productivity/Focus, brightness, per-app mixer, battery, system monitor, SMTC music, foreground-app context are REMOVED. |
 | Notifications | Keep Windows toast mirroring, best-effort: `UserNotificationListener`. Never call `RemoveNotification` (non-destructive). Access status is an enum, never a panic. Denied/policy/unsupported ⇒ feature off + diagnostic code, app continues. |
 | Single instance | Per Windows session (named mutex `Local\CompanyIsland-<identifier-hash>` semantics; NOT `Global\`). Second launch in same session ⇒ signal first instance (toggle expand), exit. Different sessions run independently. |
 | Focus | Window is non-activating: `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, never calls `set_focus`/`SetForegroundWindow`/`AllowSetForegroundWindow(ASFW_ANY)`. Island has no text inputs in V1, so no activation toggle is needed. |
 | Reminder semantics | Fixed offset before event *start* (default 30 min, setting `reminderMinutes`; engine supports a list of offsets later: 30/15/5/0). Skipped: all-day events, `BusyStatus` = free(0), `ResponseStatus` = declined(4), events already started, events ended. Fired-set persisted per user in `state\reminders.json`, key `"<eventHash>|<startUtcIso>|<reminderType>"`, pruned after 7 days. A missed window (PC asleep) fires late only if event hasn't started and ≥ 1 min remains; otherwise marked skipped. |
-| Locale | Intl API with the WebView2/Windows UI language (`navigator.language`, he/en strings table in `src/lib/i18n.ts`, other locales fall back to English strings but still get Intl-formatted dates). RTL strings correct, but island layout is physically LTR: date left, weekday right (`dir="ltr"` on layout containers; text spans use `dir="auto"`/`unicode-bidi: plaintext`). |
+| Locale | Two sources. Strings and text direction follow the Windows UI language (`navigator.language`, he/en table in `src/lib/i18n.ts`, other languages fall back to English strings). Dates, weekdays and times follow the Windows REGIONAL FORMAT (`GetUserDefaultLocaleName` via the `get_format_locale` command, read once before the first render; falls back to the UI language), formatted by Intl, so an English UI with an Israel region shows 6/10, as Windows does. RTL strings correct, but island layout is physically LTR: date left, weekday right (`dir="ltr"` on layout containers; text spans use `dir="auto"`/`unicode-bidi: plaintext`). |
 | Notification/Alert priority | `meetingAlert (3) > notification (2) > userExpanded (1) > idle (0)`. Lower never interrupts higher; higher preempts lower and the preempted state is restored afterwards (except notification which is dropped if stale). |
 
 ## 1. Rust ⇄ TypeScript contract
@@ -30,6 +30,7 @@ Command errors are `Result<T, String>` where the string is `"CODE: short message
 
 ### Commands
 - `get_system_info() -> SystemInfo`
+- `get_format_locale() -> string | null` (BCP-47 regional format tag), `get_fullscreen_state() -> bool` (the event only reports changes; the page asks once on mount)
 - `get_diagnostics() -> Diagnostics` (privacy-safe: no subjects, no emails)
 - `copy_text_to_clipboard(text: String) -> ()` (Win32 clipboard; no webview focus needed)
 - `open_log_dir() -> ()`
@@ -37,7 +38,7 @@ Command errors are `Result<T, String>` where the string is `"CODE: short message
 - `calendar_get_snapshot() -> CalendarSnapshot`, `calendar_refresh() -> ()`
 - `reminder_state_load() -> Record<string, number>` (key → firedAtUnixMs), `reminder_state_save(map)`.
 - `notifications_get_status() -> NotificationStatus`, `notifications_request_access() -> NotificationStatus` (only on explicit user click), plus existing notification list/activate commands, trimmed.
-- Window: `set_island_geometry(width, height, radius)` (flat logical px; native window is sized EXACTLY to the island, rounded SetWindowRgn, no global mouse hook), `set_click_through(bool)`, `get_monitors() -> [{id,name,primary,isPrimary,width,height,scale}]`; setting key is `monitorId` (null = primary).
+- Window: `set_island_geometry(width, height, radius)` (flat logical px; native window is sized EXACTLY to the island, rounded SetWindowRgn, no global mouse hook), `get_monitors() -> [{id,name,primary,isPrimary,width,height,scale}]`; setting key is `monitorId` (null = primary).
 
 ### Events (Rust → JS)
 - `calendar-snapshot` (payload `CalendarSnapshot`) — emitted on every state change and after each successful sync.

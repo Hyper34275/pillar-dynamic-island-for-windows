@@ -90,6 +90,8 @@ pub struct Diagnostics {
     pub cached_events: usize,
     /// None until the first access check has run.
     pub notification_status: Option<String>,
+    /// How toasts reach the island: events | polling | none.
+    pub notification_mode: String,
     /// Newest first, at most 10.
     pub recent_error_codes: Vec<String>,
     pub recent_errors: Vec<RecentError>,
@@ -116,6 +118,7 @@ pub fn collect() -> Diagnostics {
         calendar_last_sync_unix_ms: outlook.last_sync_unix_ms,
         cached_events: outlook.cached_count,
         notification_status: notifications::current_status(),
+        notification_mode: notifications::current_mode().to_string(),
         recent_error_codes: recent.iter().map(|e| e.code.clone()).collect(),
         recent_errors: recent,
         log_dir: crate::paths::logs_dir().ok().map(|p| p.display().to_string()),
@@ -188,6 +191,7 @@ mod tests {
             "calendarLastSyncUnixMs",
             "cachedEvents",
             "notificationStatus",
+            "notificationMode",
             "recentErrorCodes",
             "recentErrors",
             "logDir",

@@ -490,10 +490,20 @@ fn date_prop(d: &mut Dispatch, name: &'static str) -> ComResult<Option<DateTime<
     Ok(optional(d.get(name))?.and_then(|v| com::variant_date(&v)).and_then(com::date_to_utc))
 }
 
+/// `OlMeetingStatus`: olMeetingCanceled (5) and olMeetingReceivedAndCanceled (7) are meetings the
+/// organizer called off; Outlook can leave them on the calendar until the user deletes them.
+fn is_canceled(meeting_status: i32) -> bool {
+    matches!(meeting_status, 5 | 7)
+}
+
 fn read_item(item: &mut Dispatch) -> ComResult<Option<RawItem>> {
     let (Some(start), Some(end)) = (date_prop(item, "Start")?, date_prop(item, "End")?) else {
         return Ok(None);
     };
+    // A number, never content. A canceled meeting is neither listed nor reminded about.
+    if is_canceled(i32_prop(item, "MeetingStatus")?.unwrap_or(0)) {
+        return Ok(None);
+    }
     Ok(Some(RawItem {
         entry_id: str_prop(item, "EntryID")?.unwrap_or_default(),
         subject: str_prop(item, "Subject")?.unwrap_or_default(),
@@ -788,6 +798,15 @@ mod tests {
         // Their new Outlook does not make ours "new outlook only" either.
         let other_new = proc("olk.exe", 2, Some(&[9, 9, 9]), Some(false));
         assert_eq!(classify(&me(), &[other_new]), Discovery::Waiting);
+    }
+
+    #[test]
+    fn only_canceled_meeting_statuses_are_hidden() {
+        // 0 non-meeting, 1 meeting, 3 received: shown. 5 canceled, 7 received and canceled: hidden.
+        for shown in [0, 1, 3] {
+            assert!(!is_canceled(shown), "{shown}");
+        }
+        assert!(is_canceled(5) && is_canceled(7));
     }
 
     #[test]

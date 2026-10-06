@@ -1,9 +1,10 @@
-//! The island window: non-activating styles, placement, display-change handling,
-//! click-through and show/hide.
+//! The island window: non-activating styles, placement, display-change handling and show/hide.
 //!
 //! The window never takes focus: `WS_EX_NOACTIVATE` keeps clicks from activating
-//! it and `WS_EX_TOOLWINDOW` removes it from Alt+Tab. Nothing in this app calls
-//! `SetForegroundWindow`, `set_focus` or `AllowSetForegroundWindow`.
+//! it and `WS_EX_TOOLWINDOW` removes it from Alt+Tab. This app's own code never calls
+//! `SetForegroundWindow`, `set_focus` or `AllowSetForegroundWindow`. (The single-instance
+//! plugin makes the second process call `AllowSetForegroundWindow` for the first one; the
+//! first instance never uses that right.)
 //!
 //! There is no global mouse hook. Instead the native window is sized *exactly* to
 //! the island (the frontend sends logical px), so no large transparent area exists
@@ -112,9 +113,8 @@ fn restyle_later(window: &Window) {
 }
 
 /// Show or hide through tauri/tao rather than `ShowWindow`: tao keeps its own VISIBLE
-/// flag and re-applies it on every later flag change (e.g. click-through), so a raw
-/// `ShowWindow` would be undone by the next `set_click_through`. Activation is
-/// prevented by WS_EX_NOACTIVATE (`focusable: false` makes tao use SW_SHOWNOACTIVATE).
+/// flag and re-applies it on every later flag change, so a raw `ShowWindow` could be
+/// undone behind its back. Activation is prevented by WS_EX_NOACTIVATE (`focusable: false` makes tao use SW_SHOWNOACTIVATE).
 fn set_shown(window: &Window, shown: bool) {
     let result = if shown { window.show() } else { window.hide() };
     match result {
@@ -330,16 +330,6 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         api.prevent_close();
         set_shown(window, false);
     }
-}
-
-/// Set click-through mode: when enabled, mouse events pass to the apps behind.
-#[tauri::command]
-pub fn set_click_through(window: Window, ignore: bool) -> Result<(), String> {
-    window
-        .set_ignore_cursor_events(ignore)
-        .map_err(|e| format!("WIN-501: failed to set click-through: {e}"))?;
-    restyle_later(&window);
-    Ok(())
 }
 
 /// Resize the island (logical px) and keep it top-centered on the target monitor in
