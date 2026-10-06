@@ -1,10 +1,9 @@
 import { useEffect, useRef } from "react";
 import { onEvent } from "../lib/ipc";
 import { isTabId, type TabId } from "../components/Pill/tabs";
-import type { WorkflowActionEnvelope } from "../types/workflows";
 
 interface IslandEventHandlers {
-  /** Tray click, second launch or global shortcut: toggle the island, optionally on a tab. */
+  /** Tray click or second launch: toggle the island, optionally on a tab. */
   onToggle?: (tab?: TabId) => void;
   onFullscreenChanged?: (fullscreen: boolean) => void;
   /** Monitor layout or DPI changed: the native window must be re-sized and re-centred. */
@@ -38,10 +37,6 @@ export function useIslandEvents(handlers: IslandEventHandlers): void {
         onEvent<{ tab?: unknown } | null>("island-toggle", (payload) => {
           const tab = payload?.tab;
           ref.current.onToggle?.(isTabId(tab) ? tab : undefined);
-        }),
-        // The global shortcut still emits the original workflow envelope.
-        onEvent<WorkflowActionEnvelope>("workflow-action", (action) => {
-          if (action?.id === "toggle_expand") ref.current.onToggle?.();
         })
       );
     }

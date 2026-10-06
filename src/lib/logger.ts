@@ -11,6 +11,7 @@
  * Never import this from inside `src/lib/tauri.ts` (cyclic).
  */
 
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { describeError, stackFrames } from "./errors";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -34,18 +35,8 @@ function format(scope: string, message: string): string {
   return `[${scope}] ${message}`;
 }
 
-// Lazy import the tauri invoker without depending on `lib/tauri.ts` (avoids cycles).
-function getTauriInvoke(): ((cmd: string, args?: Record<string, unknown>) => Promise<unknown>) | null {
-  if (typeof window === "undefined") return null;
-  const win = window as Window & {
-    __TAURI__?: { core?: { invoke?: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
-  };
-  return win.__TAURI__?.core?.invoke ?? null;
-}
-
 function forwardToBackend(scope: string, message: string, detail?: unknown): void {
-  const invoke = getTauriInvoke();
-  if (!invoke) return;
+  if (!isTauri()) return;
   // Backend command is optional; missing implementations should not throw.
   invoke("log_frontend_error", {
     payload: {

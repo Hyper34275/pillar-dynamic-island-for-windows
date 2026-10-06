@@ -1,22 +1,10 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { createLogger } from "./logger";
 import { dlog } from "./debugLog";
 import { describeError } from "./errors";
 
-type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-
-interface TauriCoreApi {
-  invoke: TauriInvoke;
-}
-
-interface TauriApi {
-  core?: TauriCoreApi;
-}
-
-declare global {
-  interface Window {
-    __TAURI__?: TauriApi;
-  }
-}
+// The page talks to Rust through the imported API (window.__TAURI_INTERNALS__), never through
+// the window.__TAURI__ global, so `app.withGlobalTauri` can stay off.
 
 const log = createLogger("tauri");
 
@@ -31,14 +19,7 @@ export interface InvokeOptions {
   silent?: boolean;
 }
 
-/** Distinguishable error types so callers can branch on the failure mode. */
-export class TauriUnavailableError extends Error {
-  constructor() {
-    super("Tauri runtime not available (likely running in a plain browser).");
-    this.name = "TauriUnavailableError";
-  }
-}
-
+/** Distinguishable error type so callers can branch on the failure mode. */
 export class TauriTimeoutError extends Error {
   constructor(cmd: string, timeoutMs: number) {
     super(`Tauri command "${cmd}" timed out after ${timeoutMs}ms.`);
@@ -46,24 +27,17 @@ export class TauriTimeoutError extends Error {
   }
 }
 
-function getInvoker(): TauriInvoke | null {
-  if (typeof window === "undefined") return null;
-  const invoke = window.__TAURI__?.core?.invoke;
-  return invoke ?? null;
-}
-
 export function isTauriAvailable(): boolean {
-  return getInvoker() !== null;
+  return isTauri();
 }
 
 /**
  * Invoke a Tauri backend command.
  *
- * Returns `null` in two cases:
- *   1. Tauri runtime is not present (dev in plain browser). Use {@link isTauriAvailable}
- *      first if you need to distinguish this from a legitimate `null` result.
- *   2. The command threw — the error is logged and re-thrown so callers can catch.
- *      (Callers that prefer "best effort" should wrap in try/catch and ignore.)
+ * Returns `null` when the Tauri runtime is not present (dev in plain browser); use
+ * {@link isTauriAvailable} first if you need to distinguish this from a legitimate `null`
+ * result. A command that threw is logged and re-thrown so callers can catch it (callers
+ * that prefer "best effort" should wrap in try/catch and ignore).
  *
  * Throws {@link TauriTimeoutError} if the command does not resolve within the
  * configured timeout. The Rust call will keep running on the backend, but the
@@ -74,8 +48,7 @@ export async function tauriInvoke<T>(
   args?: Record<string, unknown>,
   options: InvokeOptions = {}
 ): Promise<T | null> {
-  const invoke = getInvoker();
-  if (!invoke) return null;
+  if (!isTauri()) return null;
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS;
   const shouldTrace = !UNTRACED_COMMANDS.has(cmd);

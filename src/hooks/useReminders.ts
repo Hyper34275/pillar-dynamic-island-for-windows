@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createReminderEngine, type ReminderEngine } from "../lib/reminders/engine";
 import { createIpcReminderStore } from "../lib/reminders/store";
 import type { ReminderAlert, ReminderStore } from "../lib/reminders/types";
-import { useCalendar } from "./useCalendar";
+import { useCalendarEvents } from "./useCalendar";
 import { useSettings } from "./useSettings";
 
 /**
@@ -11,7 +11,7 @@ import { useSettings } from "./useSettings";
  * reminder, ever. `store` is injectable for tests.
  */
 export function useReminders(onAlert: (alert: ReminderAlert) => void, store?: ReminderStore): void {
-  const { events } = useCalendar();
+  const events = useCalendarEvents();
   const { settings } = useSettings();
   const [engine, setEngine] = useState<ReminderEngine | null>(null);
   const onAlertRef = useRef(onAlert);

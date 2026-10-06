@@ -31,6 +31,7 @@ export function createClassicOutlookProvider(options: ClassicOutlookOptions = {}
   const minRefreshIntervalMs = options.minRefreshIntervalMs ?? 5_000;
 
   let snapshot: CalendarSnapshot = WAITING_SNAPSHOT;
+  let eventsKey = JSON.stringify(snapshot.events);
   let disposed = false;
   let pushed = false;
   let inFlight: Promise<void> | null = null;
@@ -38,12 +39,18 @@ export function createClassicOutlookProvider(options: ClassicOutlookOptions = {}
   const listeners = new Set<(snapshot: CalendarSnapshot) => void>();
 
   function publish(raw: unknown): void {
-    const next = normalizeSnapshot(raw);
-    if (!next) {
+    const parsed = normalizeSnapshot(raw);
+    if (!parsed) {
       if (raw !== null) dlog("warn", "calendar", "ignored a snapshot that is not an object");
       return;
     }
+    // Every sync re-sends the snapshot (its sync time moves), nearly always with the same
+    // meetings. Keep the old events array then, so what depends on it (reminder schedule,
+    // memoised lists) is not recomputed once a minute for nothing.
+    const key = JSON.stringify(parsed.events);
+    const next = key === eventsKey ? { ...parsed, events: snapshot.events } : parsed;
     if (JSON.stringify(next) === JSON.stringify(snapshot)) return;
+    eventsKey = key;
     if (next.status !== snapshot.status || next.errorCode !== snapshot.errorCode) {
       dlog("info", "calendar", `status ${snapshot.status} -> ${next.status}${next.errorCode ? ` [${next.errorCode}]` : ""}, ${next.events.length} events`);
     }

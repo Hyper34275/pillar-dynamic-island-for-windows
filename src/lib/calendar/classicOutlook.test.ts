@@ -63,6 +63,26 @@ describe("ClassicOutlookCalendarProvider", () => {
     expect(provider.getSnapshot().errorCode).toBe("OUTLOOK-108");
   });
 
+  it("keeps the events array identity while only the sync time moves", async () => {
+    const meeting = { id: "m1", startUtc: "2026-10-06T10:00:00Z", endUtc: "2026-10-06T10:30:00Z", subject: "Review" };
+    const { backend, push } = fakeBackend(wire("connected", { events: [meeting] }));
+    const provider = createClassicOutlookProvider({ backend });
+    await flush();
+    const first = provider.getSnapshot();
+    const seen: CalendarSnapshot[] = [];
+    provider.subscribe((s) => seen.push(s));
+
+    push(wire("connected", { events: [{ ...meeting }], lastSyncUnixMs: 60_001 })); // next minute's sync, same meeting
+    expect(seen).toHaveLength(1);
+    expect(seen[0].lastSyncUnixMs).toBe(60_001);
+    expect(seen[0].events).toBe(first.events);
+
+    push(wire("connected", { events: [{ ...meeting, subject: "Moved" }], lastSyncUnixMs: 120_002 }));
+    expect(seen).toHaveLength(2);
+    expect(seen[1].events).not.toBe(first.events);
+    expect(seen[1].events[0].subject).toBe("Moved");
+  });
+
   it("lets a push that arrives before the initial read win over it", async () => {
     const { backend, push } = fakeBackend(wire("waiting"));
     const provider = createClassicOutlookProvider({ backend });

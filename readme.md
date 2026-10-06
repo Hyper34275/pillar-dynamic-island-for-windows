@@ -15,7 +15,8 @@ date and time view, your next Outlook meetings, and an About page with diagnosti
   island itself keeps a fixed left-to-right layout (date left, weekday right).
 
 The design contract (IPC commands, events, error codes, privacy rules) is in
-[`docs/ENTERPRISE_DESIGN.md`](docs/ENTERPRISE_DESIGN.md).
+[`docs/ENTERPRISE_DESIGN.md`](docs/ENTERPRISE_DESIGN.md); building, deploying and signing the installer
+is described in [`docs/INSTALLER.md`](docs/INSTALLER.md).
 
 ## Development
 
@@ -26,7 +27,7 @@ npm install
 npm run tauri dev     # run the app
 npm test              # unit tests (vitest)
 npx tsc --noEmit      # type check
-npm run tauri build   # installer
+npm run build:installer  # NSIS installer, see docs/INSTALLER.md
 ```
 
 The frontend is React 18 + TypeScript + Tailwind + Motion on Vite; the backend is Tauri 2 (Rust).

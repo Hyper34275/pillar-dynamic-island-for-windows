@@ -44,6 +44,21 @@ describe("PillShell", () => {
     expect(island().textContent).toContain("Tuesday");
   });
 
+  it("runs a single timer while collapsed and idle: the clock's", async () => {
+    await mountBooted();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000); // let the debug-log flush and boot leftovers settle
+    });
+    // Measured: exactly the clock's day timer (<= 60 s). The reminder engine adds one more only
+    // while a reminder is pending. A per-second or per-frame timer would raise this count or
+    // re-arm inside the minute below.
+    expect(vi.getTimerCount()).toBe(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(59_000);
+    });
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
   it("expands on click into exactly three tabs and switches between them", async () => {
     await mountBooted();
     await act(async () => {

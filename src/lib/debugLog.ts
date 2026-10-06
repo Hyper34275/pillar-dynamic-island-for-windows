@@ -7,11 +7,12 @@
  * reduced to name + code + stack frames here (see errors.ts), and DOM descriptions never
  * include text or labels.
  *
- * IMPORTANT: this module talks to Tauri through the RAW `window.__TAURI__.core.invoke` —
+ * IMPORTANT: this module talks to Tauri through the raw `invoke` of `@tauri-apps/api/core` —
  * never through `tauriInvoke` — because `tauriInvoke` itself logs through here (that
  * would recurse).
  */
 
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { describeError, stackFrames } from "./errors";
 
 export type DebugLevel = "debug" | "info" | "warn" | "error";
@@ -42,14 +43,6 @@ interface DedupeState {
   repeats: number;
 }
 const recent = new Map<string, DedupeState>();
-
-type RawInvoke = (cmd: string, args?: Record<string, unknown>) => Promise<unknown>;
-
-function getRawInvoke(): RawInvoke | null {
-  if (typeof window === "undefined") return null;
-  const win = window as unknown as { __TAURI__?: { core?: { invoke?: RawInvoke } } };
-  return win.__TAURI__?.core?.invoke ?? null;
-}
 
 function push(entry: DebugEntry): void {
   if (queue.length >= MAX_QUEUE) {
@@ -113,8 +106,7 @@ export async function flushDebugLog(force = false): Promise<void> {
     flushTimer = null;
   }
   sweepRepeats(Date.now(), force);
-  const invoke = getRawInvoke();
-  if (!invoke) {
+  if (!isTauri()) {
     // No Tauri (plain browser dev) — drop, so the queue doesn't grow forever.
     queue = [];
     droppedCount = 0;
