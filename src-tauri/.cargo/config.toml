@@ -1,0 +1,4 @@
+# Statically link the MSVC C runtime so the exe does not need the VC++ redistributable
+# on locked-down machines.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

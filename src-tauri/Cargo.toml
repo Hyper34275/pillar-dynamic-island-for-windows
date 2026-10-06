@@ -1,70 +1,56 @@
 [package]
-name = "pillar"
-version = "0.2.2"
-description = "Dynamic Island-style system overlay for Windows"
-authors = ["you"]
+name = "companyisland"
+version = "1.0.0"
+description = "CompanyIsland - a Dynamic Island style date, time and calendar overlay for Windows"
+authors = ["CompanyIsland"]
+license = "MIT"
 edition = "2021"
 
 [lib]
-name = "pillar_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+name = "companyisland_lib"
+crate-type = ["lib"]
+
+[[bin]]
+name = "CompanyIsland"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-once_cell = "1.20"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# System monitor (CPU / RAM) â€” cross-platform
-sysinfo = "0.33"
 
-# Windows-only deps (Android builds must not pull these)
-[target.'cfg(target_os = "windows")'.dependencies]
-# Brightness (WMI on Windows laptops, DDC/CI fallback in our code)
-brightness = "0.8"
-
-[target.'cfg(target_os = "windows")'.dependencies.windows]
+[dependencies.windows]
 version = "0.58"
 features = [
-  # Core
   "Win32_Foundation",
-  "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
-  # Media Session (for now playing info)
-  "Media_Control",
-  # Audio (for volume control + device enumeration)
-  "Win32_Media_Audio",
-  "Win32_Media_Audio_Endpoints",
+  "Win32_Security",
   "Win32_System_Com",
-  "Win32_System_Com_StructuredStorage",
-  "Win32_Devices_Properties",
-  # Property Store for device friendly names
-  "Win32_UI_Shell_PropertiesSystem",
-  # Activate app from notification (IApplicationActivationManager)
-  "Win32_UI_Shell",
-  "Win32_Devices_FunctionDiscovery",
-  # Brightness control (DDC/CI for monitors)
-  "Win32_Devices_Display",
-  # Battery / Power (Win32 - simple, no WinRT apartment needed)
-  "Win32_System_Power",
-  # Foreground app context for Prism (window title + exe name; no screenshots)
-  "Win32_System_Threading",
-  # Global pointer monitor (WH_MOUSE_LL hook: GetModuleHandleW, GetAsyncKeyState)
   "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_System_Threading",
   "Win32_UI_Input_KeyboardAndMouse",
-  # Async support
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
   "Foundation",
   "Foundation_Collections",
-  "Storage_Streams",
   "implement",
-  # Notifications (includes UserNotification.AppInfo -> need ApplicationModel for DisplayInfo)
   "UI_Notifications",
   "UI_Notifications_Management",
   "ApplicationModel",
 ]
+
+[profile.release]
+# "s": this is an idle UI overlay, not compute-bound; a smaller binary loads faster.
+opt-level = "s"
+lto = true
+codegen-units = 1
+# We rely on catch_unwind around WinRT callbacks and thread entries.
+panic = "unwind"
+strip = true

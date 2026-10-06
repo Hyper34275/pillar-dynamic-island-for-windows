@@ -1,4 +1,4 @@
-//! Global pointer monitor for the pill window.
+//! Global pointer monitor for the island window.
 //!
 //! The webview only receives mouse events inside its own (transparent) window,
 //! so it cannot tell when the user clicks the desktop / taskbar / another app,
@@ -34,17 +34,35 @@ pub struct HitRect {
 /// Update the region the pointer monitor hit-tests against. Returns `true` when
 /// the native hook is installed and running (the frontend falls back to DOM
 /// events when `false`).
+///
+/// `viewport_width` is the CSS width the rects were laid out against. The window
+/// always grows/shrinks symmetrically around the screen's horizontal center, so
+/// when it was resized after the rects were computed (the frontend only re-pushes
+/// a frame later), they are shifted by half the width difference instead of being
+/// off by up to ~100px for that frame.
 #[cfg(target_os = "windows")]
 #[tauri::command]
-pub fn set_pill_hit_region(window: tauri::Window, rects: Vec<HitRect>, dpr: f64, armed: bool) -> bool {
+pub fn set_pill_hit_region(
+    window: tauri::Window,
+    rects: Vec<HitRect>,
+    dpr: f64,
+    armed: bool,
+    viewport_width: Option<f64>,
+) -> bool {
     let hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
-    imp::set_region(hwnd, rects, dpr, armed)
+    imp::set_region(hwnd, rects, dpr, armed, viewport_width)
 }
 
 #[cfg(not(target_os = "windows"))]
 #[tauri::command]
-pub fn set_pill_hit_region(window: tauri::Window, rects: Vec<HitRect>, dpr: f64, armed: bool) -> bool {
-    let _ = (window, rects, dpr, armed);
+pub fn set_pill_hit_region(
+    window: tauri::Window,
+    rects: Vec<HitRect>,
+    dpr: f64,
+    armed: bool,
+    viewport_width: Option<f64>,
+) -> bool {
+    let _ = (window, rects, dpr, armed, viewport_width);
     false
 }
 
@@ -67,16 +85,15 @@ pub use imp::start;
 #[cfg(target_os = "windows")]
 mod imp {
     use super::HitRect;
-    use once_cell::sync::Lazy;
     use serde::Serialize;
     use std::cell::{Cell, RefCell};
     use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
-    use std::sync::{Mutex, MutexGuard, TryLockError};
+    use std::sync::{LazyLock, Mutex, MutexGuard, TryLockError};
     use std::thread;
     use std::time::{Duration, Instant};
     use tauri::Emitter;
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
     use windows::Win32::Graphics::Gdi::ClientToScreen;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::System::Threading::{
@@ -86,7 +103,7 @@ mod imp {
         GetAsyncKeyState, VK_LBUTTON, VK_MBUTTON, VK_RBUTTON, VK_XBUTTON1, VK_XBUTTON2,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CallNextHookEx, DispatchMessageW, GetCursorPos, GetMessageW, IsWindowVisible, PeekMessageW,
+        CallNextHookEx, DispatchMessageW, GetClientRect, GetCursorPos, GetMessageW, IsWindowVisible, PeekMessageW,
         PostThreadMessageW, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
         HC_ACTION, HHOOK, MSG, MSLLHOOKSTRUCT, PM_NOREMOVE, WH_MOUSE_LL, WM_APP, WM_LBUTTONDOWN,
         WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_RBUTTONDOWN, WM_RBUTTONUP,
@@ -123,11 +140,14 @@ mod imp {
         rects: Vec<HitRect>,
         /// window.devicePixelRatio at the time the rects were measured.
         dpr: f64,
+        /// CSS viewport width the rects were laid out against (0 = unknown).
+        viewport_width: f64,
     }
 
     /// Writers hold this for nanoseconds (swap a Vec). The hook `try_lock`s it
     /// on mouse moves and blocks only on button transitions.
-    static REGION: Mutex<Region> = Mutex::new(Region { hwnd: 0, rects: Vec::new(), dpr: 1.0 });
+    static REGION: Mutex<Region> =
+        Mutex::new(Region { hwnd: 0, rects: Vec::new(), dpr: 1.0, viewport_width: 0.0 });
     static ARMED: AtomicBool = AtomicBool::new(false);
     static HOOK_ALIVE: AtomicBool = AtomicBool::new(false);
     static HOOK_HANDLE: AtomicIsize = AtomicIsize::new(0);
@@ -136,7 +156,7 @@ mod imp {
     /// Monotonic ms (see `now_ms`) of the last event the hook received.
     static LAST_EVENT_MS: AtomicU64 = AtomicU64::new(0);
 
-    static CLOCK_BASE: Lazy<Instant> = Lazy::new(Instant::now);
+    static CLOCK_BASE: LazyLock<Instant> = LazyLock::new(Instant::now);
 
     fn now_ms() -> u64 {
         CLOCK_BASE.elapsed().as_millis() as u64
@@ -211,9 +231,18 @@ mod imp {
                 return false;
             }
         }
-        let px = (pt.x - origin.x) as f64;
-        let py = (pt.y - origin.y) as f64;
         let dpr = region.dpr;
+        // Re-center rects laid out for a different window width (see set_pill_hit_region).
+        let mut shift_x = 0.0;
+        if region.viewport_width > 0.0 {
+            let mut client = RECT::default();
+            if unsafe { GetClientRect(hwnd, &mut client) }.is_ok() {
+                let client_w = (client.right - client.left) as f64;
+                shift_x = (client_w - region.viewport_width * dpr) / 2.0;
+            }
+        }
+        let px = (pt.x - origin.x) as f64 - shift_x;
+        let py = (pt.y - origin.y) as f64;
         region.rects.iter().any(|r| {
             let left = r.x * dpr;
             let top = r.y * dpr;
@@ -497,21 +526,25 @@ mod imp {
         if STARTED.swap(true, Ordering::SeqCst) {
             return;
         }
-        Lazy::force(&CLOCK_BASE);
+        LazyLock::force(&CLOCK_BASE);
         let (tx, rx) = mpsc::channel::<PointerEvent>();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
 
         if let Err(e) = thread::Builder::new()
-            .name("pillar-pointer-emit".into())
-            .spawn(move || worker_main(app, rx))
+            .name("companyisland-pointer-emit".into())
+            .spawn(move || {
+                crate::debug_log::catch("pointer", || worker_main(app, rx));
+            })
         {
             dlog!("ERROR", "pointer", "failed to spawn pointer worker thread: {}", e);
             return;
         }
 
         if let Err(e) = thread::Builder::new()
-            .name("pillar-pointer-hook".into())
-            .spawn(move || hook_thread_main(tx, ready_tx))
+            .name("companyisland-pointer-hook".into())
+            .spawn(move || {
+                crate::debug_log::catch("pointer", || hook_thread_main(tx, ready_tx));
+            })
         {
             dlog!("ERROR", "pointer", "failed to spawn pointer hook thread: {}", e);
             return;
@@ -528,7 +561,7 @@ mod imp {
         HOOK_ALIVE.load(Ordering::Relaxed)
     }
 
-    pub fn set_region(hwnd: isize, rects: Vec<HitRect>, dpr: f64, armed: bool) -> bool {
+    pub fn set_region(hwnd: isize, rects: Vec<HitRect>, dpr: f64, armed: bool, viewport_width: Option<f64>) -> bool {
         let rects: Vec<HitRect> = rects
             .into_iter()
             .filter(|r| {
@@ -536,6 +569,7 @@ mod imp {
             })
             .collect();
         let dpr = if dpr.is_finite() && dpr > 0.0 { dpr } else { 1.0 };
+        let viewport_width = viewport_width.filter(|w| w.is_finite() && *w > 0.0).unwrap_or(0.0);
 
         let old_rects = {
             let mut region = lock_region();
@@ -543,6 +577,7 @@ mod imp {
                 region.hwnd = hwnd;
             }
             region.dpr = dpr;
+            region.viewport_width = viewport_width;
             std::mem::replace(&mut region.rects, rects)
         };
         drop(old_rects); // free outside the lock
