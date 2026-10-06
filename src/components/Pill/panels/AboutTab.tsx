@@ -1,259 +1,153 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { useCalendar } from "../../../hooks/useCalendar";
-import { useSettings } from "../../../hooks/useSettings";
+import { useEffect, useState } from "react";
 import { useSystemInfo } from "../../../hooks/useSystemInfo";
-import { APP_VERSION } from "../../../lib/appInfo";
-import { formatDateTime } from "../../../lib/dateFormat";
-import {
-  buildDiagnosticsText,
-  formatOs,
-  internalErrorOf,
-  notificationCodeOf,
-  outlookModeOf,
-  outlookRunningOf,
-  type NotificationDiagnostic,
-} from "../../../lib/diagnostics";
-import { ipc, onEvent, REMINDER_MINUTE_OPTIONS, type MonitorInfo, type NotificationStatus } from "../../../lib/ipc";
-import { t, type MessageKey } from "../../../lib/i18n";
-import type { CalendarStatus } from "../../../lib/calendar/types";
-import { Group, PillButton, SectionLabel, Segmented, Switch, SYSTEM_COLORS } from "../ui/primitives";
+import { fullDate, timeParts } from "../../../lib/dateFormat";
+import { t } from "../../../lib/i18n";
+import { ipc } from "../../../lib/ipc";
+import { SYSTEM_COLORS } from "../ui/primitives";
 
 const NONE = "—";
-const FLASH_MS = 1800;
 
-const STATUS_LABEL: Record<CalendarStatus, MessageKey> = {
-  waiting: "status.waiting",
-  connecting: "status.connecting",
-  connected: "status.connected",
-  newOutlookOnly: "status.newOutlookOnly",
-  elevationMismatch: "status.elevationMismatch",
-  unresponsive: "status.unresponsive",
-  failed: "status.failed",
-};
-
-const DELIVERY_LABEL = {
-  events: "about.deliveryEvents",
-  polling: "about.deliveryPolling",
-  none: "about.deliveryNone",
-} as const satisfies Record<string, MessageKey>;
-
-const MODE_LABEL = { classic: "about.modeClassic", new: "about.modeNew", none: "about.modeNone" } as const satisfies Record<string, MessageKey>;
-
-function Row({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div dir="ltr" className="flex items-center justify-between gap-4 px-3.5 min-h-[34px] py-1.5">
-      <span className="text-[12.5px] text-white/55 flex-shrink-0" dir="auto">
-        {label}
-      </span>
-      <span className="min-w-0 text-[12.5px] font-medium text-white/90 text-right truncate tabular-nums" dir="auto" style={{ unicodeBidi: "plaintext" }}>
-        {children}
-      </span>
-    </div>
-  );
-}
-
-function SwitchRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
-  return (
-    <div dir="ltr" className="flex items-center justify-between gap-4 px-3.5 min-h-[40px] py-1.5">
-      <span className="text-[13px] font-medium text-white/90" dir="auto">
-        {label}
-      </span>
-      <Switch checked={checked} onChange={onChange} label={label} />
-    </div>
-  );
-}
-
-function monitorLabel(monitor: MonitorInfo, index: number): string {
-  return monitor.name || (monitor.isPrimary ? t("settings.monitorPrimary") : t("settings.monitorN", { n: index + 1 }));
-}
-
-interface AboutTabProps {
-  notificationStatus: NotificationStatus | null;
-  onRequestNotificationAccess: () => void;
-}
-
-export function AboutTab({ notificationStatus, onRequestNotificationAccess }: AboutTabProps) {
-  const { info, diagnostics } = useSystemInfo();
-  const snapshot = useCalendar();
-  const { settings, update } = useSettings();
-
-  const notificationDiagnostic: NotificationDiagnostic | null = settings.notificationsEnabled ? notificationStatus : "off";
-
-  // Transient button feedback; one timer, always cleared.
-  const [flash, setFlash] = useState<"copied" | "failed" | "saveFailed" | null>(null);
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showFlash = useCallback((kind: "copied" | "failed" | "saveFailed") => {
-    if (flashTimer.current !== null) clearTimeout(flashTimer.current);
-    setFlash(kind);
-    flashTimer.current = setTimeout(() => {
-      flashTimer.current = null;
-      setFlash(null);
-    }, FLASH_MS);
-  }, []);
-  useEffect(
-    () => () => {
-      if (flashTimer.current !== null) clearTimeout(flashTimer.current);
-    },
-    []
-  );
-
-  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+/** Re-renders on every new wall-clock second while mounted (About is open); nothing runs otherwise. */
+function useSecond(): Date {
+  const [now, setNow] = useState(() => new Date());
   useEffect(() => {
-    let disposed = false;
-    const load = () =>
-      void ipc.getMonitors().then((list) => {
-        if (!disposed && list) setMonitors(list);
-      });
-    load();
-    // A display plugged in or removed while About is open.
-    const off = onEvent("display-changed", load);
-    return () => {
-      disposed = true;
-      off();
+    let handle: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      const at = new Date();
+      setNow(at);
+      // Re-aligned every time, so the hand never drifts off the real second.
+      handle = setTimeout(tick, 1000 - at.getMilliseconds());
     };
+    handle = setTimeout(tick, 1000 - new Date().getMilliseconds());
+    return () => clearTimeout(handle);
   }, []);
+  return now;
+}
 
-  const copyDiagnostics = () => {
-    const text = buildDiagnosticsText({ info, diagnostics, snapshot, notifications: notificationDiagnostic, generatedAt: new Date() });
-    void ipc.copyTextToClipboard(text).then((ok) => showFlash(ok ? "copied" : "failed"));
-  };
+const TICKS = Array.from({ length: 60 }, (_, i) => i);
 
-  const change = (patch: Parameters<typeof update>[0]) => {
-    void update(patch).then((ok) => {
-      if (!ok) showFlash("saveFailed");
+function Hand({ angle, length, tail = 0, width, color }: { angle: number; length: number; tail?: number; width: number; color: string }) {
+  return (
+    <line
+      x1={50}
+      y1={50 + tail}
+      x2={50}
+      y2={50 - length}
+      stroke={color}
+      strokeWidth={width}
+      strokeLinecap="round"
+      transform={`rotate(${angle} 50 50)`}
+    />
+  );
+}
+
+function AnalogClock({ now, size }: { now: Date; size: number }) {
+  const s = now.getSeconds();
+  const m = now.getMinutes();
+  const h = now.getHours() % 12;
+  return (
+    <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true" focusable="false" className="flex-shrink-0">
+      <circle cx={50} cy={50} r={48.5} fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.12)" strokeWidth={0.6} />
+      {TICKS.map((i) => {
+        const hour = i % 5 === 0;
+        return (
+          <line
+            key={i}
+            x1={50}
+            y1={hour ? 6.5 : 6}
+            x2={50}
+            y2={hour ? 13 : 8.8}
+            stroke={hour ? "rgba(255,255,255,0.85)" : "rgba(255,255,255,0.28)"}
+            strokeWidth={hour ? 1.8 : 0.7}
+            strokeLinecap="round"
+            transform={`rotate(${i * 6} 50 50)`}
+          />
+        );
+      })}
+      <Hand angle={h * 30 + m * 0.5} length={23} width={3.4} color="#f5f5f7" />
+      <Hand angle={m * 6 + s * 0.1} length={34} width={2.3} color="#f5f5f7" />
+      <Hand angle={s * 6} length={38} tail={9} width={0.9} color={SYSTEM_COLORS.orange} />
+      <circle cx={50} cy={50} r={2.4} fill={SYSTEM_COLORS.orange} />
+      <circle cx={50} cy={50} r={0.9} fill="#000" />
+    </svg>
+  );
+}
+
+function Clock() {
+  const now = useSecond();
+  const { digits, period } = timeParts(now);
+  const seconds = String(now.getSeconds()).padStart(2, "0");
+  return (
+    <div dir="ltr" className="flex items-center justify-center gap-5 py-1" role="timer" aria-label={t("about.time")}>
+      <AnalogClock now={now} size={118} />
+      <div className="flex flex-col min-w-0" style={{ fontVariantNumeric: "tabular-nums" }}>
+        <div className="flex items-baseline gap-1 leading-none text-white">
+          <span className="text-[40px] font-semibold tracking-tight" style={{ direction: "ltr", unicodeBidi: "isolate" }}>
+            {digits}
+          </span>
+          <span className="text-[17px] font-semibold text-white/40">{seconds}</span>
+          {period && <span className="ml-1 text-[15px] font-semibold text-white/55">{period}</span>}
+        </div>
+        <p className="mt-2 text-[13px] font-medium text-white/55 leading-snug" style={{ unicodeBidi: "isolate" }}>
+          <span dir="auto">{fullDate(now)}</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const COPIED_MS = 1500;
+
+/** A big value IT reads out over the phone; a click copies it (the label says "Copied" for a moment). */
+function BigValue({ label, value, copyable }: { label: string; value: string; copyable: boolean }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const handle = setTimeout(() => setCopied(false), COPIED_MS);
+    return () => clearTimeout(handle);
+  }, [copied]);
+  const copy = () => {
+    void ipc.copyTextToClipboard(value).then((ok) => {
+      if (ok) setCopied(true);
     });
   };
-
-  const mode = outlookModeOf(snapshot, diagnostics);
-  const running = outlookRunningOf(snapshot, diagnostics);
-  const internalError = internalErrorOf(snapshot);
-  const notificationCode = notificationCodeOf(notificationDiagnostic);
-  const recentCodes = diagnostics?.recentErrorCodes ?? [];
-  const reminderOptions = [...new Set<number>([...REMINDER_MINUTE_OPTIONS, settings.reminderMinutes])]
-    .sort((a, b) => a - b)
-    .map((n) => ({ id: String(n), label: t("settings.minutes", { n }) }));
-
-  const copyLabel = flash === "copied" ? t("about.copied") : flash === "failed" ? t("about.copyFailed") : t("about.copy");
-
   return (
-    <div className="flex flex-col gap-4">
-      <header dir="ltr" className="flex flex-col gap-0.5 px-1 pt-0.5">
-        <h3 className="text-[26px] font-semibold leading-tight tracking-tight text-white truncate" dir="auto" style={{ unicodeBidi: "plaintext" }}>
-          {info?.computerName ?? NONE}
-        </h3>
-        <p className="text-[15px] font-medium tabular-nums text-white/55" aria-label={t("about.ip")}>
-          {info?.localIpv4 ?? NONE}
-        </p>
-      </header>
+    <button
+      type="button"
+      dir="ltr"
+      disabled={!copyable}
+      className="group flex flex-col items-center gap-1 px-3 py-1 mx-auto max-w-full text-center min-w-0 rounded-[14px] hover:bg-white/[0.06] disabled:hover:bg-transparent transition-colors"
+      title={copyable ? t("about.copyHint") : undefined}
+      aria-label={`${label}: ${value}. ${t("about.copyHint")}`}
+      onClick={copy}
+    >
+      <span
+        className="text-[10.5px] font-semibold uppercase tracking-[0.08em] transition-colors"
+        style={{ color: copied ? SYSTEM_COLORS.green : "rgba(255,255,255,0.4)" }}
+        dir="auto"
+        aria-live="polite"
+      >
+        {copied ? t("about.copied") : label}
+      </span>
+      <span
+        className="max-w-full text-[28px] font-semibold leading-tight tracking-tight text-white truncate tabular-nums"
+        dir="auto"
+        style={{ unicodeBidi: "plaintext" }}
+      >
+        {value}
+      </span>
+    </button>
+  );
+}
 
-      <section>
-        <SectionLabel>{t("about.diagnostics")}</SectionLabel>
-        <Group>
-          <Row label={t("about.windowsUser")}>{info?.windowsUser ?? NONE}</Row>
-          <Row label={t("about.computer")}>{info?.computerName ?? NONE}</Row>
-          <Row label={t("about.ip")}>{info?.localIpv4 ?? NONE}</Row>
-          <Row label={t("about.os")}>{formatOs(info) ?? NONE}</Row>
-          <Row label={t("about.version")}>{info?.appVersion ?? APP_VERSION}</Row>
-          <Row label={t("about.outlook")}>{t(running ? "about.outlookRunning" : "about.outlookNotRunning")}</Row>
-          <Row label={t("about.outlookMode")}>{t(MODE_LABEL[mode])}</Row>
-          <Row label={t("about.calendar")}>{t(STATUS_LABEL[snapshot.status])}</Row>
-          {internalError && <Row label={t("about.internalError")}>{internalError}</Row>}
-          <Row label={t("about.cachedEvents")}>{snapshot.cachedCount}</Row>
-          <Row label={t("about.lastSync")}>{snapshot.lastSyncUnixMs === null ? NONE : formatDateTime(new Date(snapshot.lastSyncUnixMs))}</Row>
-          <Row label={t("about.notifications")}>
-            {notificationDiagnostic === null ? NONE : t(`notif.status.${notificationDiagnostic}` as MessageKey)}
-            {notificationCode ? ` · ${notificationCode}` : ""}
-          </Row>
-          {diagnostics?.notificationMode && <Row label={t("about.notificationDelivery")}>{t(DELIVERY_LABEL[diagnostics.notificationMode])}</Row>}
-          <Row label={t("about.recentErrors")}>{recentCodes.length > 0 ? recentCodes.join(", ") : NONE}</Row>
-        </Group>
-        <div dir="ltr" className="flex gap-2 mt-2.5">
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={copyDiagnostics}>
-            <span aria-live="polite">{copyLabel}</span>
-          </PillButton>
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={() => void ipc.openLogDir()}>
-            {t("about.openLogs")}
-          </PillButton>
-        </div>
-      </section>
-
-      <section>
-        <SectionLabel
-          trailing={
-            flash === "saveFailed" ? (
-              <span className="text-[11px] font-medium" style={{ color: SYSTEM_COLORS.orange }} role="alert">
-                {t("settings.saveFailed")}
-              </span>
-            ) : undefined
-          }
-        >
-          {t("about.settings")}
-        </SectionLabel>
-        <Group>
-          <SwitchRow
-            label={t("settings.launchWithWindows")}
-            checked={settings.launchWithWindows}
-            onChange={() => change({ launchWithWindows: !settings.launchWithWindows })}
-          />
-          <SwitchRow
-            label={t("settings.hideInFullscreen")}
-            checked={settings.hideInFullscreen}
-            onChange={() => change({ hideInFullscreen: !settings.hideInFullscreen })}
-          />
-          <SwitchRow
-            label={t("settings.meetingReminders")}
-            checked={settings.meetingReminderEnabled}
-            onChange={() => change({ meetingReminderEnabled: !settings.meetingReminderEnabled })}
-          />
-          <div
-            dir="ltr"
-            className={`flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5 transition-opacity ${settings.meetingReminderEnabled ? "" : "opacity-40 pointer-events-none"}`}
-            aria-disabled={!settings.meetingReminderEnabled}
-          >
-            <span className="text-[13px] font-medium text-white/90 flex-shrink-0" dir="auto">
-              {t("settings.reminderMinutes")}
-            </span>
-            <Segmented
-              options={reminderOptions}
-              value={String(settings.reminderMinutes)}
-              onChange={(id) => change({ reminderMinutes: Number(id) })}
-              ariaLabel={t("settings.reminderMinutes")}
-            />
-          </div>
-          <SwitchRow
-            label={t("settings.notifications")}
-            checked={settings.notificationsEnabled}
-            onChange={() => change({ notificationsEnabled: !settings.notificationsEnabled })}
-          />
-          {settings.notificationsEnabled && notificationStatus === "unspecified" && (
-            <div dir="ltr" className="flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5">
-              <span className="text-[12.5px] text-white/55" dir="auto">
-                {t("notif.status.unspecified")}
-              </span>
-              <PillButton className="h-[28px] px-3.5 text-[12px]" onClick={onRequestNotificationAccess}>
-                {t("notif.allow")}
-              </PillButton>
-            </div>
-          )}
-          {monitors.length > 1 && (
-            <div dir="ltr" className="flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5">
-              <span className="text-[13px] font-medium text-white/90 flex-shrink-0" dir="auto">
-                {t("settings.monitor")}
-              </span>
-              <Segmented
-                options={monitors.map((monitor, index) => ({ id: monitor.id, label: monitorLabel(monitor, index) }))}
-                value={settings.monitorId ?? monitors.find((m) => m.isPrimary)?.id ?? monitors[0].id}
-                onChange={(id) => change({ monitorId: id })}
-                ariaLabel={t("settings.monitor")}
-              />
-            </div>
-          )}
-        </Group>
-      </section>
-
-      <p className="text-center text-[11px] text-white/30 pb-1" dir="auto">
-        {t("about.credit")}
-      </p>
+/** What IT asks for first: this computer's name and IP, with the time between them. */
+export function AboutTab() {
+  const { info } = useSystemInfo();
+  return (
+    <div dir="ltr" className="flex-1 flex flex-col justify-center gap-4">
+      <BigValue label={t("about.computer")} value={info?.computerName ?? NONE} copyable={!!info?.computerName} />
+      <Clock />
+      <BigValue label={t("about.ip")} value={info?.localIpv4 ?? NONE} copyable={!!info?.localIpv4} />
     </div>
   );
 }

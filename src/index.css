@@ -73,6 +73,23 @@ body {
 .island-scroll {
   mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
+  overscroll-behavior: contain;
+}
+
+/* ...and give them a thin, quiet scrollbar so a long list visibly scrolls */
+.island-scroll::-webkit-scrollbar {
+  display: block;
+  width: 4px;
+}
+.island-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.island-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+.island-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.32);
 }
 
 /* High contrast mode support */
@@ -93,8 +110,9 @@ body {
   }
 }
 
-/* Safety net: a collapsed island must never let a leftover expanded layer eat clicks. */
+/* Safety net: a collapsed island must never let a leftover expanded layer eat clicks. Clicks
+   only: the layer stays visible while it fades out with the closing island (hiding it here
+   would empty the island in the first frame of every close). */
 [data-expanded="false"] > .island-expanded {
   pointer-events: none !important;
-  visibility: hidden !important;
 }

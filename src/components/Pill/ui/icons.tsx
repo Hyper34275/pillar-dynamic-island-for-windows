@@ -49,6 +49,13 @@ export const InfoIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const GearIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" />
+  </Svg>
+);
+
 export const BellIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M18 9.5a6 6 0 1 0-12 0c0 6-2.5 7.5-2.5 7.5h17S18 15.5 18 9.5Z" />
@@ -59,5 +66,52 @@ export const BellIcon = (p: IconProps) => (
 export const XIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M6 6l12 12M18 6 6 18" />
+  </Svg>
+);
+
+/** Filled bell, for the ring / silent pill. */
+export const BellFilledIcon = (p: IconProps) => (
+  <Svg {...p} fill="currentColor" stroke="none">
+    <path d="M12 2.5a6.5 6.5 0 0 0-6.5 6.5c0 5.2-2.2 6.9-2.6 7.2A1 1 0 0 0 3.5 18h17a1 1 0 0 0 .6-1.8c-.4-.3-2.6-2-2.6-7.2A6.5 6.5 0 0 0 12 2.5Z" />
+    <path d="M9.5 19.5h5a2.5 2.5 0 0 1-5 0Z" />
+  </Svg>
+);
+
+/** Filled bell with a slash, for silent. */
+export const BellSlashIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path
+      d="M12 2.5a6.5 6.5 0 0 0-6.5 6.5c0 5.2-2.2 6.9-2.6 7.2A1 1 0 0 0 3.5 18h17a1 1 0 0 0 .6-1.8c-.4-.3-2.6-2-2.6-7.2A6.5 6.5 0 0 0 12 2.5Z"
+      fill="currentColor"
+      stroke="none"
+    />
+    <path d="M9.5 19.5h5a2.5 2.5 0 0 1-5 0Z" fill="currentColor" stroke="none" />
+    <path d="M3 3l18 18" stroke="#000" strokeWidth={4.5} />
+    <path d="M3 3l18 18" strokeWidth={2.2} />
+  </Svg>
+);
+
+export const VideoIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="2.5" y="6" width="13" height="12" rx="3" />
+    <path d="M15.5 10.5 21 7.5v9l-5.5-3" />
+  </Svg>
+);
+
+export const ChevronLeftIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M14.5 6 8.5 12l6 6" />
+  </Svg>
+);
+
+export const ChevronRightIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m9.5 6 6 6-6 6" />
+  </Svg>
+);
+
+export const CheckIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
   </Svg>
 );
