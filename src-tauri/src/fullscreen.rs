@@ -9,6 +9,11 @@
 //! On a transition `fullscreen-changed` (bool) is emitted and, when
 //! `settings.hideInFullscreen` is on, the native window is hidden and later restored.
 //! The window is only restored if this module hid it.
+//!
+//! Every foreground change (another process's window became active) is also forwarded
+//! immediately as `foreground-changed`. The island window is non-activating, so this is
+//! how the UI learns that the user clicked the desktop, the taskbar or another app
+//! without any mouse hook: such a click activates that window.
 
 use crate::{debug_log, monitors, settings::SettingsStore, window};
 use std::cell::Cell;
@@ -265,6 +270,12 @@ unsafe extern "system" fn win_event_proc(
 ) {
     debug_log::catch("fullscreen", || match event {
         EVENT_SYSTEM_FOREGROUND => {
+            // Not debounced: the island closes on it, so it must arrive with the click.
+            if let Some(app) = APP.get() {
+                if let Err(e) = app.emit("foreground-changed", ()) {
+                    dlog!("WARN", "fullscreen", "emit foreground-changed failed: {}", e);
+                }
+            }
             retarget_location_hook(hwnd);
             schedule();
         }
