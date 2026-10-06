@@ -60,6 +60,7 @@ const meeting = (startInMin: number, extra: Partial<CalendarEventDto> = {}): Cal
   meetingUrl: null,
   busyStatus: "busy",
   responseStatus: "accepted",
+  color: null,
   ...extra,
 });
 
@@ -69,6 +70,7 @@ const connected = (events: CalendarEventDto[]): CalendarSnapshot => ({
   lastSyncUnixMs: NOW,
   cachedCount: events.length,
   nextRetryUnixMs: null,
+  invites: [],
   events,
 });
 

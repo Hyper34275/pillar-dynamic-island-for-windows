@@ -67,5 +67,6 @@ export function mergeSnapshots(snapshots: readonly CalendarSnapshot[]): Calendar
     cachedCount: snapshots.reduce((sum, s) => sum + s.cachedCount, 0),
     nextRetryUnixMs: retries.length > 0 ? Math.min(...retries) : null,
     events: selectEvents(snapshots),
+    invites: snapshots.flatMap((s) => s.invites).filter((invite, index, all) => all.findIndex((other) => other.id === invite.id) === index),
   };
 }

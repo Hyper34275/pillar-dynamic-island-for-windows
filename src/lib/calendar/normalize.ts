@@ -1,6 +1,6 @@
 // Tolerant normalisation of the backend's calendar payload: the UI never trusts the wire shape.
 
-import type { CalendarBusyStatus, CalendarEventDto, CalendarResponseStatus, CalendarSnapshot, CalendarStatus } from "./types";
+import type { CalendarBusyStatus, CalendarEventDto, CalendarResponseStatus, CalendarSnapshot, CalendarStatus, MeetingInviteDto } from "./types";
 
 const STATUSES: readonly CalendarStatus[] = ["waiting", "connecting", "connected", "newOutlookOnly", "elevationMismatch", "unresponsive", "failed"];
 const BUSY: readonly CalendarBusyStatus[] = ["free", "tentative", "busy", "oof", "workingElsewhere"];
@@ -24,6 +24,19 @@ function nonEmptyString(value: unknown): string | null {
 function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
+
+/** Only a plain "#RRGGBB" ever reaches a style attribute. */
+function hexColor(value: unknown): string | null {
+  return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : null;
+}
+
+function instant(value: unknown): string | null {
+  const text = nonEmptyString(value);
+  return text !== null && !Number.isNaN(Date.parse(text)) ? text : null;
+}
+
+/** At most this many invites are kept from one snapshot (the backend sends up to 10). */
+const MAX_INVITES = 10;
 
 /** Null for anything that cannot be scheduled or displayed (no id, unparseable instants, end before start). */
 export function normalizeEvent(raw: unknown): CalendarEventDto | null {
@@ -49,6 +62,27 @@ export function normalizeEvent(raw: unknown): CalendarEventDto | null {
     // Unknown availability counts as busy: better one extra reminder than a missed meeting.
     busyStatus: oneOf(raw.busyStatus, BUSY, "busy"),
     responseStatus: oneOf(raw.responseStatus, RESPONSE, "none"),
+    color: hexColor(raw.color),
+  };
+}
+
+/** Null without an id or a receive time. A missing or broken meeting time only drops the time. */
+export function normalizeInvite(raw: unknown): MeetingInviteDto | null {
+  if (!isRecord(raw)) return null;
+  const id = nonEmptyString(raw.id);
+  const receivedUtc = instant(raw.receivedUtc);
+  if (!id || !receivedUtc) return null;
+  const startUtc = instant(raw.startUtc);
+  const endUtc = instant(raw.endUtc);
+  const timed = startUtc !== null && endUtc !== null && Date.parse(endUtc) >= Date.parse(startUtc);
+  return {
+    id,
+    subject: typeof raw.subject === "string" ? raw.subject : "",
+    organizer: nonEmptyString(raw.organizer),
+    startUtc: timed ? startUtc : null,
+    endUtc: timed ? endUtc : null,
+    location: nonEmptyString(raw.location),
+    receivedUtc,
   };
 }
 
@@ -72,5 +106,9 @@ export function normalizeSnapshot(raw: unknown): CalendarSnapshot | null {
     cachedCount: Math.max(0, Math.round(finiteNumber(raw.cachedCount) ?? events.length)),
     nextRetryUnixMs: finiteNumber(raw.nextRetryUnixMs),
     events,
+    invites: (Array.isArray(raw.invites) ? raw.invites : [])
+      .map(normalizeInvite)
+      .filter((invite): invite is MeetingInviteDto => invite !== null)
+      .slice(0, MAX_INVITES),
   };
 }

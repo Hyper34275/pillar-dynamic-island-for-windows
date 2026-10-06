@@ -126,6 +126,7 @@ export function createReminderEngine(options: ReminderEngineOptions): ReminderEn
           startUtc: event.startUtc,
           endUtc: event.endUtc,
           location: event.location,
+          meetingUrl: event.meetingUrl,
           minutesRemaining: Math.max(0, Math.round((candidate.startMs - at) / 60_000)),
           reminderType: type,
         });

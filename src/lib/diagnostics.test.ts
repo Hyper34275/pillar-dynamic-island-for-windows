@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { APP_VERSION } from "./appInfo";
 import { buildDiagnosticsText, formatOs, notificationCodeOf, notificationWordsOf, outlookModeOf, outlookRunningOf } from "./diagnostics";
 import type { SystemInfo } from "./ipc";
 import { WAITING_SNAPSHOT, type CalendarSnapshot } from "./calendar/types";
@@ -22,6 +23,7 @@ const CONNECTED: CalendarSnapshot = {
   lastSyncUnixMs: Date.UTC(2026, 9, 6, 9, 58, 0),
   cachedCount: 7,
   nextRetryUnixMs: null,
+  invites: [],
   events: [],
 };
 
@@ -80,7 +82,8 @@ describe("buildDiagnosticsText", () => {
   it("degrades to n/a instead of failing when data is unavailable", () => {
     const text = buildDiagnosticsText({ info: null, diagnostics: null, snapshot: WAITING_SNAPSHOT, notifications: null, generatedAt });
     expect(text.split("\r\n")[0]).toBe(
-      "CompanyIsland 1.0.0 / n/a / Computer: n/a / User: n/a / Outlook: Waiting for Outlook / Calendar: Waiting for Outlook / Cached events: 0 / Notifications: n/a"
+      // No system info: the page's own build version (package.json) stands in.
+      `CompanyIsland ${APP_VERSION} / n/a / Computer: n/a / User: n/a / Outlook: Waiting for Outlook / Calendar: Waiting for Outlook / Cached events: 0 / Notifications: n/a`
     );
     expect(text).toContain("Local IP: n/a");
     expect(text).toContain("OS: n/a");
@@ -109,6 +112,7 @@ describe("buildDiagnosticsText", () => {
           meetingUrl: null,
           busyStatus: "busy",
           responseStatus: "accepted",
+          color: null,
         },
       ],
     };

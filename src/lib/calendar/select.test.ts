@@ -19,6 +19,7 @@ function event(id: string, startMin: number, endMin: number, extra: Partial<Cale
     meetingUrl: null,
     busyStatus: "busy",
     responseStatus: "accepted",
+    color: null,
     ...extra,
   };
 }

@@ -9,6 +9,7 @@ const wire = (status: string, extra: Record<string, unknown> = {}) => ({
   lastSyncUnixMs: 1,
   cachedCount: 0,
   nextRetryUnixMs: null,
+  invites: [],
   events: [],
   ...extra,
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEvent, normalizeSnapshot } from "./normalize";
+import { normalizeEvent, normalizeInvite, normalizeSnapshot } from "./normalize";
 
 const good = {
   id: "abc123",
@@ -14,6 +14,7 @@ const good = {
   meetingUrl: null,
   busyStatus: "tentative",
   responseStatus: "accepted",
+  color: null,
 };
 
 describe("normalizeEvent", () => {
@@ -35,7 +36,15 @@ describe("normalizeEvent", () => {
       meetingUrl: null,
       busyStatus: "busy",
       responseStatus: "none",
+      color: null,
     });
+  });
+
+  it("keeps a #RRGGBB category color and drops anything else", () => {
+    expect(normalizeEvent({ ...good, color: "#3267B8" })?.color).toBe("#3267B8");
+    for (const color of ["red", "#fff", "#12345G", "url(x)", "#123456;background:red", 5]) {
+      expect(normalizeEvent({ ...good, color })?.color, String(color)).toBeNull();
+    }
   });
 
   it("treats blank location, organizer and url as absent and unknown enums as the safe default", () => {
@@ -84,6 +93,7 @@ describe("normalizeSnapshot", () => {
       lastSyncUnixMs: null,
       cachedCount: 0,
       nextRetryUnixMs: null,
+      invites: [],
       events: [],
     });
   });
@@ -100,10 +110,45 @@ describe("normalizeSnapshot", () => {
       lastSyncUnixMs: null,
       cachedCount: 0,
       nextRetryUnixMs: null,
+      invites: [],
     });
   });
 
   it("treats a non-array events field as empty", () => {
     expect(normalizeSnapshot({ status: "connected", events: "many" })?.events).toEqual([]);
+  });
+});
+
+describe("normalizeInvite", () => {
+  const invite = {
+    id: "inv1",
+    subject: "Design review",
+    organizer: "Dana",
+    startUtc: "2026-10-07T09:00:00Z",
+    endUtc: "2026-10-07T10:00:00Z",
+    location: "Room 2",
+    receivedUtc: "2026-10-06T18:30:00Z",
+  };
+
+  it("keeps a complete invite as it is", () => {
+    expect(normalizeInvite(invite)).toEqual(invite);
+  });
+
+  it("needs an id and a receive time", () => {
+    for (const raw of [null, [], { ...invite, id: "" }, { ...invite, receivedUtc: "soon" }, { ...invite, receivedUtc: undefined }]) {
+      expect(normalizeInvite(raw)).toBeNull();
+    }
+  });
+
+  it("drops only the meeting time when it is missing or backwards", () => {
+    expect(normalizeInvite({ ...invite, startUtc: null })).toMatchObject({ startUtc: null, endUtc: null, subject: "Design review" });
+    expect(normalizeInvite({ ...invite, startUtc: invite.endUtc, endUtc: invite.startUtc })).toMatchObject({ startUtc: null, endUtc: null });
+  });
+
+  it("is read from the snapshot, broken entries dropped, at most ten", () => {
+    const many = Array.from({ length: 14 }, (_, i) => ({ ...invite, id: `inv${i}` }));
+    const snapshot = normalizeSnapshot({ status: "connected", invites: [null, { id: "x" }, ...many] });
+    expect(snapshot?.invites.map((i) => i.id)).toEqual(many.slice(0, 10).map((i) => i.id));
+    expect(normalizeSnapshot({ status: "connected", invites: "lots" })?.invites).toEqual([]);
   });
 });

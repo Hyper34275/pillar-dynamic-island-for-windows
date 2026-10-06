@@ -25,6 +25,18 @@ export type CalendarEventDto = {
   meetingUrl: string | null;
   busyStatus: CalendarBusyStatus;
   responseStatus: CalendarResponseStatus;
+  color: string | null; // "#RRGGBB" of the event's first colored Outlook category
+};
+
+/** An unread Outlook meeting request in the Inbox. In memory only, like events. */
+export type MeetingInviteDto = {
+  id: string; // sha256(EntryID) truncated to 16 hex
+  subject: string;
+  organizer: string | null;
+  startUtc: string | null; // the requested meeting, when Outlook could tell
+  endUtc: string | null;
+  location: string | null;
+  receivedUtc: string;
 };
 
 export type CalendarSnapshot = {
@@ -34,6 +46,7 @@ export type CalendarSnapshot = {
   cachedCount: number;
   nextRetryUnixMs: number | null;
   events: CalendarEventDto[]; // sorted by start asc, now..+48h, max 50
+  invites: MeetingInviteDto[]; // newest first, max 10
 };
 
 export const WAITING_SNAPSHOT: CalendarSnapshot = {
@@ -43,4 +56,5 @@ export const WAITING_SNAPSHOT: CalendarSnapshot = {
   cachedCount: 0,
   nextRetryUnixMs: null,
   events: [],
+  invites: [],
 };

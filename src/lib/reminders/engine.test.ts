@@ -24,6 +24,7 @@ function event(id: string, startMin: number, durationMin = 30, extra: Partial<Ca
     meetingUrl: null,
     busyStatus: "busy",
     responseStatus: "accepted",
+    color: null,
     ...extra,
   };
 }
@@ -115,6 +116,7 @@ describe("ReminderEngine", () => {
         startUtc: iso(T0 + 60 * MIN),
         endUtc: iso(T0 + 105 * MIN),
         location: "Room 1",
+        meetingUrl: null,
         minutesRemaining: 30,
         reminderType: { kind: "beforeStart", minutes: 30 },
       },

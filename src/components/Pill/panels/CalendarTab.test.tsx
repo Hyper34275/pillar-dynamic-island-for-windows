@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CalendarView } from "./CalendarTab";
+import { CalendarView, DEFAULT_EVENT_COLOR } from "./CalendarTab";
 import { WAITING_SNAPSHOT, type CalendarEventDto, type CalendarSnapshot } from "../../../lib/calendar/types";
 
 const NOW = Date.UTC(2026, 9, 6, 10, 0, 0);
@@ -20,6 +20,7 @@ function event(id: string, startMin: number, endMin: number, extra: Partial<Cale
     meetingUrl: null,
     busyStatus: "busy",
     responseStatus: "accepted",
+    color: null,
     ...extra,
   };
 }
@@ -30,6 +31,7 @@ const connected = (events: CalendarEventDto[]): CalendarSnapshot => ({
   lastSyncUnixMs: NOW,
   cachedCount: events.length,
   nextRetryUnixMs: null,
+  invites: [],
   events,
 });
 
@@ -61,22 +63,35 @@ describe("CalendarView", () => {
     expect(render(connected([event("all-day", -60, 600, { allDay: true })]))).toContain("No upcoming meetings");
   });
 
-  it("renders the next meeting card with its time and location, then up to two more rows", () => {
-    const html = render(
-      connected([
-        event("one", 25, 55, { location: "Room 12" }),
-        event("two", 90, 120),
-        event("three", 150, 180),
-        event("four", 200, 230),
-      ])
-    );
+  it("renders the next meeting card with its time and location, then every later meeting (the panel scrolls)", () => {
+    const later = Array.from({ length: 12 }, (_, i) => event(`later${i}`, 90 + i * 60, 120 + i * 60));
+    const html = render(connected([event("one", 25, 55, { location: "Room 12" }), ...later]));
     expect(html).toContain("Next meeting");
     expect(html).toContain("Meeting one");
     expect(html).toContain("Room 12");
     expect(html).toMatch(/in 25 min/);
-    expect(html).toContain("Meeting two");
-    expect(html).toContain("Meeting three");
-    expect(html).not.toContain("Meeting four");
+    for (const e of later) expect(html).toContain(e.subject);
+  });
+
+  it("puts the countdown on the caption row and the time range on the subject's row", () => {
+    const html = render(connected([event("one", 25, 55, { subject: "שלום" })]));
+    const card = html.slice(html.indexOf('aria-label="Next meeting"'));
+    const rows = card.split('<div class="flex items-baseline justify-between gap-3">').slice(1);
+    expect(rows[0]).toContain("Next meeting");
+    expect(rows[0]).toContain("in 25 min");
+    expect(rows[1]).toMatch(/\d{1,2}:\d{2} – \d{1,2}:\d{2}/);
+    expect(rows[1]).toContain("שלום");
+  });
+
+  it("colors each meeting with its Outlook category, or the default calendar color", () => {
+    const html = render(connected([event("one", 25, 55, { color: "#A34E78" }), event("two", 90, 120)]));
+    expect(html).toContain("background:#A34E78");
+    expect(html).toContain(`background:${DEFAULT_EVENT_COLOR}`);
+  });
+
+  it("says when a running meeting ends instead of when it starts", () => {
+    const html = render(connected([event("now", -10, 20)]));
+    expect(html).toContain("Ends in 20 min");
   });
 
   it("labels a meeting that already started 'Now' instead of a countdown", () => {

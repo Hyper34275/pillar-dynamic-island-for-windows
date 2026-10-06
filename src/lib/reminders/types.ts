@@ -18,6 +18,8 @@ export interface ReminderAlert {
   startUtc: string;
   endUtc: string;
   location: string | null;
+  /** The join link, when the meeting has one (a Join button on the alert). */
+  meetingUrl?: string | null;
   /** Whole minutes left when the alert fires; a late alert reports what is actually left. */
   minutesRemaining: number;
   reminderType: ReminderType;
