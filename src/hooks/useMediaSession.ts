@@ -173,6 +173,10 @@ export function useMediaSession(
 
   // Media controls
   const playPause = useCallback(async () => {
+    // Optimistic flip so the button answers the click immediately instead of
+    // after the backend round-trip + next poll (which invited a second click
+    // that toggled playback right back). The refetch below reconciles it.
+    setMedia((prev) => (prev ? { ...prev, isPlaying: !prev.isPlaying } : prev));
     try {
       const caps = await platformApi.getCapabilities();
       if (!caps.mediaControls) return;

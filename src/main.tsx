@@ -5,6 +5,7 @@ import App from "./App";
 import "./index.css";
 import { CrashBoundary } from "./components/CrashBoundary";
 import { useCrashRecovery } from "./hooks/useCrashRecovery";
+import { dlog, installDebugLogging } from "./lib/debugLog";
 
 function AppWithRecovery() {
   const { reportCrash } = useCrashRecovery({
@@ -40,18 +41,30 @@ function AppWithRecovery() {
 
   return (
     <CrashBoundary
-      onError={(error, errorInfo) =>
+      onError={(error, errorInfo) => {
+        dlog(
+          "error",
+          "react",
+          `render crash: ${error.name}: ${error.message}\n${error.stack ?? ""}\ncomponentStack:${errorInfo.componentStack ?? " (none)"}`
+        );
         reportCrash(error, {
           severity: "critical",
           component: "ReactTree",
           action: errorInfo.componentStack ? "render_with_stack" : "render",
-        })
-      }
+        });
+      }}
     >
       <App />
     </CrashBoundary>
   );
 }
+
+installDebugLogging();
+dlog(
+  "info",
+  "app",
+  `app boot — ua="${navigator.userAgent}" dpr=${window.devicePixelRatio} win=${window.innerWidth}x${window.innerHeight}`
+);
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>

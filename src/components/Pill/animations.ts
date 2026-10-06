@@ -44,6 +44,14 @@ export const springConfig = {
     mass: 1.2,
   },
 
+  // Island spring - the Dynamic Island morph: fast, with a small, confident overshoot
+  island: {
+    type: "spring" as const,
+    stiffness: 420,
+    damping: 32,
+    mass: 0.95,
+  },
+
   // Bouncy spring - playful overshoot
   bouncy: {
     type: "spring" as const,
@@ -206,7 +214,7 @@ export const pillDimensions = {
     borderRadius: 4,
   },
   idle: {
-    width: 120,
+    width: 118,
     height: 36,
     borderRadius: 18,
   },
@@ -229,7 +237,7 @@ export const pillDimensions = {
     borderRadius: 18,
   },
   hover: {
-    width: 160,
+    width: 146,
     height: 40,
     borderRadius: 20,
   },
@@ -252,9 +260,9 @@ export const pillDimensions = {
     borderRadius: 20,
   },
   expanded: {
-    width: 380,
-    height: 340,
-    borderRadius: 28,
+    width: 404,
+    height: 368,
+    borderRadius: 42,
   },
 } as const;
 
@@ -321,36 +329,59 @@ export const bootAnimationDuration = {
 // Use this in one place so hover/expanded/unhover logic stays simple and animations stay smooth.
 export type PillVisualState = "idle" | "hover" | "expanded";
 
+export interface IdleSlotOptions {
+  hasMedia?: boolean;
+  hasBattery?: boolean;
+  hasNotifications?: boolean;
+  hasTimer?: boolean;
+}
+
+// Compact-island geometry. Slots hug the clock so the pill only grows by what it
+// actually shows — the same numbers drive the pill width AND the slot widths, so
+// content can never be clipped by a stale hard-coded width.
+const IDLE_PADDING_X = 14;
+const IDLE_CENTER_WIDTH = 50; // "23:59" at 15px semibold
+const IDLE_TIMER_EXTRA = 26; // timer glyph beside the countdown
+const SLOT_GAP = 8;
+const ART_WIDTH = 22;
+const WAVE_WIDTH = 18;
+const BATTERY_WIDTH = 24;
+const BATTERY_PERCENT_WIDTH = 30; // "100%" revealed on hover
+const NOTIFICATION_WIDTH = 30; // avatar + room for the count bubble's overhang
+
+export function getIdleSlotWidths(options: IdleSlotOptions, isHover: boolean): { left: number; right: number } {
+  const left = options.hasMedia ? ART_WIDTH + SLOT_GAP : 0;
+  const rightItems: number[] = [];
+  if (options.hasMedia) rightItems.push(WAVE_WIDTH);
+  if (options.hasBattery) rightItems.push(BATTERY_WIDTH + (isHover ? BATTERY_PERCENT_WIDTH : 0));
+  if (options.hasNotifications) rightItems.push(NOTIFICATION_WIDTH);
+  const right = rightItems.length
+    ? SLOT_GAP + rightItems.reduce((sum, w) => sum + w, 0) + (rightItems.length - 1) * 6
+    : 0;
+  return { left, right };
+}
+
 export function getPillTargetStyle(
   state: PillVisualState,
-  options: {
-    hasMedia?: boolean;
-    hasBattery?: boolean;
-    hasNotifications?: boolean;
-  } = {}
+  options: IdleSlotOptions = {}
 ): { width: number; height: number; borderRadius: number; blur: number; shadow: number } {
   if (state === "expanded") {
     const d = pillDimensions.expanded;
-    return { ...d, blur: 20, shadow: 0.35 };
+    return { ...d, blur: 20, shadow: 0.55 };
   }
 
   const isHover = state === "hover";
   const base = isHover ? pillDimensions.hover : pillDimensions.idle;
-
-  // Compute extra width needed for each active indicator
-  let extraWidth = 0;
-  if (options.hasMedia) extraWidth += 32;
-  if (options.hasBattery) extraWidth += isHover ? 40 : 28;
-  if (options.hasNotifications) extraWidth += isHover ? 40 : 50;
-  // When both battery and notifications share the right slot, reduce for shared gap space
-  if (options.hasBattery && options.hasNotifications && !isHover) extraWidth -= 2;
+  const { left, right } = getIdleSlotWidths(options, isHover);
+  const content =
+    IDLE_PADDING_X * 2 + IDLE_CENTER_WIDTH + (options.hasTimer ? IDLE_TIMER_EXTRA : 0) + left + right + (isHover ? 16 : 0);
 
   return {
-    width: base.width + extraWidth,
+    width: Math.max(base.width, content),
     height: base.height,
     borderRadius: base.borderRadius,
     blur: isHover ? 14 : 10,
-    shadow: isHover ? 0.25 : 0.2,
+    shadow: isHover ? 0.35 : 0.25,
   };
 }
 

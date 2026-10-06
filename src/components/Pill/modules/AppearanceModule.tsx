@@ -1,16 +1,16 @@
 import { motion } from "motion/react";
-import { useState } from "react";
 import type { AppearanceSettings, PillMode } from "../../../hooks/useAppearance";
 import { ACCENT_PRESETS } from "../../../hooks/useAppearance";
-import { microInteractions } from "../animations";
+import { FillSlider, Group, PillButton, SectionLabel, Segmented, Switch } from "../ui/primitives";
+import { CheckIcon, ChevronLeftIcon, EyeIcon } from "../ui/icons";
 
 const SPEED_PRESETS = [
-  { label: "0.5x", value: 0.5 },
-  { label: "0.75x", value: 0.75 },
-  { label: "1x", value: 1.0 },
-  { label: "1.5x", value: 1.5 },
-  { label: "2x", value: 2.0 },
-];
+  { id: "0.5", label: "0.5×" },
+  { id: "0.75", label: "0.75×" },
+  { id: "1", label: "1×" },
+  { id: "1.5", label: "1.5×" },
+  { id: "2", label: "2×" },
+] as const;
 
 interface AppearanceModuleProps {
   settings: AppearanceSettings;
@@ -22,142 +22,91 @@ interface AppearanceModuleProps {
   onBack: () => void;
 }
 
-export function AppearanceModule({ settings, animationSpeed = 1.0, onAnimationSpeedChange, onUpdate, onSave, onReset, onBack }: AppearanceModuleProps) {
-  const [hoveredMode, setHoveredMode] = useState<PillMode | null>(null);
-
+function ModePreview({ mode, selected, accent, onSelect }: { mode: PillMode; selected: boolean; accent: string; onSelect: () => void }) {
   return (
-    <div className="flex flex-col gap-2.5 h-full">
+    <motion.button
+      type="button"
+      className={`flex-1 flex flex-col items-center gap-2 pt-2 pb-2 rounded-[16px] transition-colors ${
+        selected ? "bg-white/[0.12]" : "bg-white/[0.05] hover:bg-white/[0.08]"
+      }`}
+      style={{ boxShadow: selected ? `inset 0 0 0 1.5px ${accent}` : undefined }}
+      onClick={onSelect}
+      aria-label={`Switch pill style to ${mode}`}
+      aria-pressed={selected}
+      whileTap={{ scale: 0.96 }}
+    >
+      {/* Mini screen */}
+      <div className="relative w-[96px] h-[40px] rounded-[8px] bg-gradient-to-b from-white/[0.14] to-white/[0.04] overflow-hidden">
+        <motion.div
+          className="absolute left-1/2 -translate-x-1/2 bg-black flex items-center justify-between px-1.5"
+          style={{
+            top: mode === "notch" ? 0 : 5,
+            borderRadius: mode === "notch" ? "0 0 8px 8px" : 8,
+          }}
+          animate={{ width: selected ? 48 : 40, height: mode === "notch" ? 13 : 12 }}
+          transition={{ type: "spring", stiffness: 420, damping: 26 }}
+        >
+          <span className="w-[5px] h-[5px] rounded-full" style={{ background: accent }} />
+          <span className="w-[10px] h-[3px] rounded-full bg-white/50" />
+        </motion.div>
+      </div>
+      <span className={`text-[11.5px] font-semibold ${selected ? "text-white" : "text-white/50"}`}>
+        {mode === "island" ? "Island" : "Notch"}
+      </span>
+    </motion.button>
+  );
+}
+
+export function AppearanceModule({ settings, animationSpeed = 1.0, onAnimationSpeedChange, onUpdate, onSave, onReset, onBack }: AppearanceModuleProps) {
+  return (
+    <div className="flex flex-col gap-3 pb-1">
       {/* Header */}
-      <div className="flex items-center gap-2">
-        <motion.button
-          className="w-6 h-6 rounded-md bg-white/10 flex items-center justify-center text-white/70 hover:text-white hover:bg-white/15 transition-colors"
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center">
+        <button
+          type="button"
+          className="justify-self-start flex items-center gap-0.5 h-7 pl-1 pr-2.5 rounded-full text-[12.5px] font-semibold hover:bg-white/[0.08] transition-colors"
+          style={{ color: "var(--pillar-accent)" }}
           onClick={onBack}
-          {...microInteractions.button}
           aria-label="Back to settings"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
-          </svg>
-        </motion.button>
-        <span className="text-white/90 text-[13px] font-medium">Appearance</span>
+          <ChevronLeftIcon size={15} strokeWidth={2.6} />
+          Controls
+        </button>
+        <span className="text-white text-[13px] font-semibold">Appearance</span>
+        <span />
       </div>
 
-      {/* Mode selector */}
-      <div className="flex flex-col gap-1">
-        <span className="text-white/50 text-[10px] uppercase tracking-wider font-medium">Style</span>
-        <div className="flex gap-2">
-          {(["island", "notch"] as const).map((m) => {
-            const isSelected = settings.mode === m;
-            const isHovered = hoveredMode === m;
-
-            return (
-              <motion.button
-                key={m}
-                className={`flex-1 flex flex-col items-center gap-1 py-1.5 px-1 rounded-lg transition-colors ${
-                  isSelected
-                    ? "bg-white/[0.12] ring-1 ring-white/20"
-                    : "bg-white/5 hover:bg-white/[0.08]"
-                }`}
-                onMouseEnter={() => setHoveredMode(m)}
-                onMouseLeave={() => setHoveredMode(null)}
-                onClick={() => onUpdate({ mode: m })}
-                aria-label={`Switch pill style to ${m}`}
-                whileTap={{ scale: 0.97 }}
-              >
-                <div
-                  className="relative w-full flex justify-center"
-                  style={{ height: 22, alignItems: m === "notch" ? "flex-start" : "center", display: "flex" }}
-                >
-                  {m === "notch" && (
-                    <div className="absolute top-0 left-3 right-3 h-px bg-white/10" />
-                  )}
-                  <motion.div
-                    style={{
-                      position: "absolute",
-                      top: m === "notch" ? 0 : "50%",
-                      translateY: m === "island" ? "-50%" : 0,
-                      background: "linear-gradient(135deg, rgba(20, 20, 22, 0.95), rgba(30, 30, 35, 0.9))",
-                      border: "1px solid rgba(255, 255, 255, 0.1)",
-                    }}
-                    animate={{
-                      width: isHovered ? 56 : 44,
-                      height: isHovered ? 14 : 11,
-                      borderRadius: m === "island"
-                        ? isHovered ? "7px" : "6px"
-                        : isHovered ? "0 0 7px 7px" : "0 0 6px 6px",
-                    }}
-                    transition={{ type: "spring", stiffness: 400, damping: 25 }}
-                  />
-                </div>
-                <span className={`text-[10px] font-medium ${isSelected ? "text-white" : "text-white/50"}`}>
-                  {m === "island" ? "Island" : "Notch"}
-                </span>
-              </motion.button>
-            );
-          })}
-        </div>
+      <div className="flex gap-2">
+        {(["island", "notch"] as const).map((m) => (
+          <ModePreview key={m} mode={m} selected={settings.mode === m} accent={settings.accentColor} onSelect={() => onUpdate({ mode: m })} />
+        ))}
       </div>
 
-      {/* Transparency slider */}
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between">
-          <span className="text-white/50 text-[10px] uppercase tracking-wider font-medium">Transparency</span>
-          <span className="text-white/50 text-[10px] tabular-nums">{settings.opacity}%</span>
-        </div>
-        <div className="relative">
-          <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-            <motion.div
-              className="h-full bg-white/40 rounded-full"
-              style={{ width: `${settings.opacity}%` }}
-              animate={{ width: `${settings.opacity}%` }}
-              transition={{ duration: 0.05 }}
-            />
-          </div>
-          <input
-            type="range"
-            min="30"
-            max="100"
-            value={settings.opacity}
-            onChange={(e) => onUpdate({ opacity: parseInt(e.target.value, 10) })}
-            className="absolute inset-0 w-full opacity-0 cursor-pointer"
-            aria-label="Pill transparency"
-            aria-valuemin={30}
-            aria-valuemax={100}
-            aria-valuenow={settings.opacity}
-          />
-        </div>
-      </div>
-
-      {/* Accent color */}
-      <div className="flex flex-col gap-1.5">
-        <span className="text-white/50 text-[10px] uppercase tracking-wider font-medium">Accent Color</span>
-        <div className="flex gap-2 flex-wrap">
+      <div>
+        <SectionLabel>Accent</SectionLabel>
+        <div className="flex items-center justify-between px-1">
           {ACCENT_PRESETS.map((preset) => {
             const isActive = settings.accentColor === preset.value;
             return (
               <motion.button
                 key={preset.value}
-                className="relative w-6 h-6 rounded-full"
+                type="button"
+                className="relative w-[30px] h-[30px] rounded-full flex items-center justify-center"
                 style={{
                   background: preset.value,
-                  boxShadow: isActive
-                    ? `0 0 0 2px rgba(0,0,0,0.5), 0 0 0 3.5px rgba(255,255,255,0.4)`
-                    : "0 0 0 1px rgba(255,255,255,0.1)",
+                  boxShadow: isActive ? `0 0 0 2.5px #000, 0 0 0 4.5px ${preset.value}` : "inset 0 0 0 1px rgba(255,255,255,0.12)",
                 }}
                 onClick={() => onUpdate({ accentColor: preset.value })}
-                whileHover={{ scale: 1.15 }}
-                whileTap={{ scale: 0.9 }}
+                whileHover={{ scale: 1.1 }}
+                whileTap={{ scale: 0.88 }}
                 aria-label={`${preset.name} accent color`}
+                aria-pressed={isActive}
                 title={preset.name}
               >
                 {isActive && (
-                  <svg
-                    width="10" height="10" viewBox="0 0 24 24"
-                    fill={preset.value === "#FFFFFF" ? "#000" : "#fff"}
-                    className="absolute inset-0 m-auto"
-                  >
-                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" />
-                  </svg>
+                  <span style={{ color: preset.value === "#FFFFFF" ? "#000" : "#fff" }}>
+                    <CheckIcon size={13} strokeWidth={3} />
+                  </span>
                 )}
               </motion.button>
             );
@@ -165,74 +114,64 @@ export function AppearanceModule({ settings, animationSpeed = 1.0, onAnimationSp
         </div>
       </div>
 
-      {/* Animation Speed */}
+      <div>
+        <SectionLabel>Opacity</SectionLabel>
+        <FillSlider
+          percent={((settings.opacity - 30) / 70) * 100}
+          icon={<EyeIcon size={16} />}
+          label="Island opacity"
+          valueText={`${settings.opacity}%`}
+          height={40}
+        >
+          <input
+            type="range"
+            min="30"
+            max="100"
+            value={settings.opacity}
+            onChange={(e) => onUpdate({ opacity: parseInt(e.target.value, 10) })}
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+            aria-label="Pill transparency"
+            aria-valuemin={30}
+            aria-valuemax={100}
+            aria-valuenow={settings.opacity}
+          />
+        </FillSlider>
+      </div>
+
       {onAnimationSpeedChange && (
-        <div className="flex flex-col gap-1">
-          <span className="text-white/50 text-[10px] uppercase tracking-wider font-medium">Animation Speed</span>
-          <div className="flex gap-1">
-            {SPEED_PRESETS.map((preset) => (
-              <motion.button
-                key={preset.value}
-                className={`flex-1 py-1 rounded-md text-[10px] font-medium transition-colors ${
-                  animationSpeed === preset.value
-                    ? "bg-white/15 text-white"
-                    : "bg-white/5 text-white/40 hover:bg-white/10 hover:text-white/60"
-                }`}
-                onClick={() => onAnimationSpeedChange(preset.value)}
-                aria-label={`Set animation speed to ${preset.label}`}
-                whileTap={{ scale: 0.95 }}
-              >
-                {preset.label}
-              </motion.button>
-            ))}
-          </div>
+        <div>
+          <SectionLabel>Animation speed</SectionLabel>
+          <Segmented
+            options={SPEED_PRESETS.map((p) => ({ id: p.id, label: p.label, ariaLabel: `Set animation speed to ${p.label}` }))}
+            value={String(animationSpeed) as (typeof SPEED_PRESETS)[number]["id"]}
+            onChange={(id) => onAnimationSpeedChange(parseFloat(id))}
+            size="md"
+            className="w-full"
+          />
         </div>
       )}
 
-      {/* Album Art Accent Toggle */}
-      <div className="flex items-center justify-between">
-        <div className="flex flex-col">
-          <span className="text-white/50 text-[10px] uppercase tracking-wider font-medium">Album Art Accent</span>
-          <span className="text-white/30 text-[9px]">Use album colors as accent</span>
-        </div>
-        <motion.button
-          className={`w-8 h-4 rounded-full relative transition-colors ${
-            settings.useAlbumAccent ? "bg-white/30" : "bg-white/10"
-          }`}
-          onClick={() => onUpdate({ useAlbumAccent: !settings.useAlbumAccent })}
-          aria-label={settings.useAlbumAccent ? "Disable album art accent" : "Enable album art accent"}
-          aria-pressed={settings.useAlbumAccent}
-          whileTap={{ scale: 0.95 }}
-        >
-          <motion.div
-            className="w-3 h-3 rounded-full bg-white absolute top-0.5"
-            animate={{ left: settings.useAlbumAccent ? 17 : 2 }}
-            transition={{ type: "spring", stiffness: 500, damping: 30 }}
+      <Group>
+        <div className="flex items-center gap-2.5 px-3 h-[48px]">
+          <span className="flex flex-col min-w-0 flex-1">
+            <span className="text-white text-[12.5px] font-medium leading-tight">Match album art</span>
+            <span className="text-white/40 text-[10.5px] leading-tight">Tint the island with the cover's colors</span>
+          </span>
+          <Switch
+            checked={settings.useAlbumAccent}
+            onChange={() => onUpdate({ useAlbumAccent: !settings.useAlbumAccent })}
+            label={settings.useAlbumAccent ? "Disable album art accent" : "Enable album art accent"}
           />
-        </motion.button>
-      </div>
+        </div>
+      </Group>
 
-      {/* Spacer */}
-      <div className="flex-1" />
-
-      {/* Action buttons */}
-      <div className="flex gap-2 pt-1.5 border-t border-white/5">
-        <motion.button
-          className="flex-1 py-1.5 rounded-md bg-white/5 text-white/50 text-[11px] font-medium hover:bg-white/10 hover:text-white/70 transition-colors"
-          onClick={onReset}
-          aria-label="Reset appearance settings to default"
-          {...microInteractions.button}
-        >
-          Reset to Default
-        </motion.button>
-        <motion.button
-          className="flex-1 py-1.5 rounded-md bg-white/15 text-white/90 text-[11px] font-medium hover:bg-white/20 transition-colors"
-          onClick={onSave}
-          aria-label="Save appearance settings"
-          {...microInteractions.button}
-        >
+      <div className="flex gap-2 pt-0.5">
+        <PillButton className="flex-1 h-9 text-[12.5px]" onClick={onReset} ariaLabel="Reset appearance settings to default">
+          Reset
+        </PillButton>
+        <PillButton variant="filled" className="flex-1 h-9 text-[12.5px]" onClick={onSave} ariaLabel="Save appearance settings">
           Save
-        </motion.button>
+        </PillButton>
       </div>
     </div>
   );

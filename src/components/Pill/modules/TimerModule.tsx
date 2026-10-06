@@ -1,163 +1,172 @@
 import { motion } from "motion/react";
-import type { TimerState } from "../../../hooks/useTimer";
-import type { TimerStats } from "../../../hooks/useTimer";
-import type { TimerCategory } from "../../../hooks/useTimer";
+import type { TimerState, TimerStats, TimerCategory } from "../../../hooks/useTimer";
 import type { TimerPreset } from "../../../types/pill";
-import { microInteractions } from "../animations";
+import { Segmented, PillButton, SYSTEM_COLORS } from "../ui/primitives";
+import { BellIcon, PauseIcon, PlayIcon, XIcon } from "../ui/icons";
 
-// =============================================================================
-// Timer Progress Ring (for idle/hover pill)
-// =============================================================================
+// iOS timer orange — the color the island uses for every timer surface.
+export const TIMER_TINT = SYSTEM_COLORS.orange;
 
-interface TimerProgressRingProps {
-  progress: number; // 0-1
-  size?: number;
-  strokeWidth?: number;
-  isAlert?: boolean;
-}
+const spring = { type: "spring" as const, stiffness: 420, damping: 32 };
 
-export function TimerProgressRing({ 
-  progress, 
-  size = 36, 
-  strokeWidth = 2,
-  isAlert = false,
-}: TimerProgressRingProps) {
-  const radius = (size - strokeWidth) / 2;
-  const circumference = radius * 2 * Math.PI;
-  const strokeDashoffset = circumference * (1 - progress);
-
-  return (
-    <svg
-      width={size}
-      height={size}
-      className="absolute -inset-0.5 pointer-events-none"
-      style={{ transform: "rotate(-90deg)" }}
-    >
-      {/* Background track */}
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke="rgba(255, 255, 255, 0.1)"
-        strokeWidth={strokeWidth}
-      />
-      {/* Progress arc */}
-      <motion.circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke={isAlert ? "#ef4444" : "#22c55e"}
-        strokeWidth={strokeWidth}
-        strokeLinecap="round"
-        strokeDasharray={circumference}
-        initial={{ strokeDashoffset: circumference }}
-        animate={{ 
-          strokeDashoffset,
-          stroke: isAlert ? "#ef4444" : "#22c55e",
-        }}
-        transition={{ duration: 0.3 }}
-        style={{
-          filter: isAlert ? "drop-shadow(0 0 4px rgba(239, 68, 68, 0.5))" : undefined,
-        }}
-      />
-    </svg>
-  );
+function formatFocus(totalSeconds: number): string {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
 // =============================================================================
-// Timer Compact View (for idle/hover state)
+// Timer Alert (complete)
 // =============================================================================
 
-interface TimerCompactProps {
-  timer: TimerState;
-  formatTime: (seconds: number) => string;
-  progress: number;
-}
-
-export function TimerCompact({ timer, formatTime, progress }: TimerCompactProps) {
-  if (!timer.isActive && !timer.isComplete) return null;
-
-  return (
-    <div className="relative flex items-center gap-2">
-      <TimerProgressRing 
-        progress={progress} 
-        size={40} 
-        strokeWidth={2}
-        isAlert={timer.isComplete}
-      />
-      <span 
-        className="text-[13px] font-medium tabular-nums"
-        style={{ 
-          color: timer.isComplete ? "#ef4444" : "#ffffff",
-          textShadow: timer.isComplete ? "0 0 8px rgba(239, 68, 68, 0.5)" : undefined,
-        }}
-      >
-        {timer.isComplete ? "Done!" : formatTime(timer.remainingSeconds)}
-      </span>
-    </div>
-  );
-}
-
-// =============================================================================
-// Timer Alert View (when timer completes - high priority)
-// =============================================================================
-
-interface TimerAlertProps {
-  label: string;
-  onDismiss: () => void;
-}
-
-export function TimerAlert({ label, onDismiss }: TimerAlertProps) {
+function TimerAlert({ label, onDismiss }: { label: string; onDismiss: () => void }) {
   return (
     <motion.div
-      className="flex flex-col items-center justify-center gap-1.5 py-1"
-      initial={{ opacity: 0, scale: 0.9 }}
+      className="flex flex-col items-center justify-center gap-1 h-full py-2"
+      initial={{ opacity: 0, scale: 0.94 }}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.9 }}
+      transition={spring}
     >
-      {/* Pulsing ring */}
-      <motion.div
-        className="w-10 h-10 rounded-full border-2 border-red-500 flex items-center justify-center"
-        animate={{
-          boxShadow: [
-            "0 0 0 0 rgba(239, 68, 68, 0.4)",
-            "0 0 0 6px rgba(239, 68, 68, 0)",
-          ],
-        }}
-        transition={{
-          duration: 1.5,
-          repeat: Infinity,
-          ease: "easeOut",
-        }}
-      >
-        <span className="text-base">⏰</span>
-      </motion.div>
-      
-      <span className="text-white font-semibold text-[13px]">{label}</span>
-      <span className="text-white/90 text-[12px]">Time's up!</span>
-      
-      <motion.button
-        className="mt-1 px-3 py-1.5 rounded-lg bg-red-500/20 text-red-400 text-[12px] font-medium"
-        aria-label="Dismiss timer alert"
-        {...microInteractions.button}
-        onClick={onDismiss}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onDismiss();
-          }
-        }}
-      >
+      <div className="relative w-[84px] h-[84px] flex items-center justify-center mb-2">
+        <motion.span
+          className="absolute inset-0 rounded-full"
+          style={{ background: TIMER_TINT }}
+          animate={{ scale: [1, 1.35], opacity: [0.35, 0] }}
+          transition={{ duration: 1.6, repeat: Infinity, ease: "easeOut" }}
+        />
+        <span
+          className="relative w-[84px] h-[84px] rounded-full flex items-center justify-center"
+          style={{ background: `color-mix(in srgb, ${TIMER_TINT} 22%, black)`, color: TIMER_TINT }}
+        >
+          <motion.span
+            animate={{ rotate: [0, -14, 12, -8, 6, 0] }}
+            transition={{ duration: 0.9, repeat: Infinity, repeatDelay: 0.8 }}
+          >
+            <BellIcon size={34} strokeWidth={2.2} />
+          </motion.span>
+        </span>
+      </div>
+      <span className="text-white text-[17px] font-semibold" dir="auto">{label}</span>
+      <span className="text-white/50 text-[13px] mb-3">Time's up</span>
+      <PillButton variant="filled" tint={TIMER_TINT} className="h-9 px-6 text-[13px]" onClick={onDismiss} ariaLabel="Dismiss timer alert">
         Dismiss
-      </motion.button>
+      </PillButton>
     </motion.div>
   );
 }
 
 // =============================================================================
-// Timer Expanded View (full controls)
+// Running timer
+// =============================================================================
+
+function TimerRunning({
+  timer,
+  progress,
+  formatTime,
+  onPause,
+  onResume,
+  onStop,
+}: {
+  timer: TimerState;
+  progress: number;
+  formatTime: (s: number) => string;
+  onPause: () => void;
+  onResume: () => void;
+  onStop: () => void;
+}) {
+  const size = 148;
+  const stroke = 7;
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  // useTimer's progress is the REMAINING fraction (1 → 0), so the ring depletes.
+  const remaining = Math.max(0, Math.min(1, progress));
+  const tint = timer.isPaused ? "rgba(255,255,255,0.45)" : TIMER_TINT;
+
+  return (
+    <div className="flex items-center justify-between h-full px-3 gap-4">
+      <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+        <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }} aria-hidden="true">
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.1)" strokeWidth={stroke} />
+          <motion.circle
+            cx={size / 2}
+            cy={size / 2}
+            r={r}
+            fill="none"
+            stroke={tint}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circ}
+            animate={{ strokeDashoffset: circ * (1 - remaining), stroke: tint }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span
+            className="text-white text-[32px] font-semibold tabular-nums leading-none tracking-tight"
+            style={{ fontVariantNumeric: "tabular-nums" }}
+          >
+            {formatTime(timer.remainingSeconds)}
+          </span>
+          <span className="text-[12px] mt-1.5 font-medium truncate max-w-[110px]" style={{ color: timer.isPaused ? "rgba(255,255,255,0.45)" : TIMER_TINT }} dir="auto">
+            {timer.isPaused ? "Paused" : timer.label}
+          </span>
+        </div>
+      </div>
+
+      <div className="flex flex-col items-center gap-3 flex-1" role="group" aria-label="Timer controls">
+        <div className="flex items-center gap-3">
+          <RoundButton label="Stop timer" onClick={onStop} bg="rgba(255,255,255,0.12)" fg="#fff">
+            <XIcon size={20} strokeWidth={2.6} />
+          </RoundButton>
+          {timer.isPaused ? (
+            <RoundButton label="Resume timer" onClick={onResume} bg={`color-mix(in srgb, ${SYSTEM_COLORS.green} 24%, black)`} fg={SYSTEM_COLORS.green}>
+              <PlayIcon size={22} />
+            </RoundButton>
+          ) : (
+            <RoundButton label="Pause timer" onClick={onPause} bg={`color-mix(in srgb, ${TIMER_TINT} 24%, black)`} fg={TIMER_TINT}>
+              <PauseIcon size={20} />
+            </RoundButton>
+          )}
+        </div>
+        <span className="text-white/40 text-[11px] font-medium tabular-nums">
+          {Math.round((1 - remaining) * 100)}% complete
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function RoundButton({
+  label,
+  onClick,
+  bg,
+  fg,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  bg: string;
+  fg: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <motion.button
+      type="button"
+      className="w-[58px] h-[58px] rounded-full flex items-center justify-center"
+      style={{ background: bg, color: fg }}
+      aria-label={label}
+      onClick={onClick}
+      whileHover={{ scale: 1.05 }}
+      whileTap={{ scale: 0.9 }}
+      transition={{ type: "spring", stiffness: 600, damping: 28 }}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
+// =============================================================================
+// Timer Expanded View
 // =============================================================================
 
 interface TimerExpandedProps {
@@ -191,169 +200,82 @@ export function TimerExpanded({
   onStop,
   onDismiss,
 }: TimerExpandedProps) {
-  // Timer is complete - show alert
   if (timer.isComplete) {
     return <TimerAlert label={timer.label} onDismiss={onDismiss} />;
   }
 
-  // Timer is running
   if (timer.isActive) {
-    const ringSize = 72;
-    const r = 32;
-    const circ = r * 2 * Math.PI;
     return (
-      <div className="flex flex-col items-center gap-2 py-1">
-        {/* Progress ring */}
-        <div className="relative w-[72px] h-[72px] flex items-center justify-center">
-          <svg
-            width={ringSize}
-            height={ringSize}
-            className="absolute inset-0"
-            style={{ transform: "rotate(-90deg)" }}
-          >
-            <circle
-              cx={ringSize / 2}
-              cy={ringSize / 2}
-              r={r}
-              fill="none"
-              stroke="rgba(255, 255, 255, 0.1)"
-              strokeWidth={3}
-            />
-            <motion.circle
-              cx={ringSize / 2}
-              cy={ringSize / 2}
-              r={r}
-              fill="none"
-              stroke={timer.isPaused ? "#f59e0b" : "#22c55e"}
-              strokeWidth={3}
-              strokeLinecap="round"
-              strokeDasharray={circ}
-              animate={{ strokeDashoffset: circ * (1 - progress) }}
-              transition={{ duration: 0.3 }}
-            />
-          </svg>
-          <div className="flex flex-col items-center">
-            <span className="text-lg font-bold text-white tabular-nums">
-              {formatTime(timer.remainingSeconds)}
-            </span>
-            <span className="text-[12px] text-white/85">{timer.label}</span>
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div className="flex gap-2" role="group" aria-label="Timer controls">
-          {timer.isPaused ? (
-            <motion.button
-              className="px-3 py-1.5 rounded-lg bg-green-500/20 text-green-400 text-[12px] font-medium"
-              aria-label="Resume timer"
-              {...microInteractions.button}
-              onClick={onResume}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onResume();
-                }
-              }}
-            >
-              Resume
-            </motion.button>
-          ) : (
-            <motion.button
-              className="px-3 py-1.5 rounded-pill-md bg-pill-warning-light text-pill-warning text-pill-base font-medium"
-              aria-label="Pause timer"
-              {...microInteractions.button}
-              onClick={onPause}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  onPause();
-                }
-              }}
-            >
-              Pause
-            </motion.button>
-          )}
-          <motion.button
-            className="px-3 py-1.5 rounded-pill-md bg-pill-muted-lightest text-pill-muted text-pill-base font-medium"
-            aria-label="Stop timer"
-            whileHover={{ scale: 1.05 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={onStop}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onStop();
-              }
-            }}
-          >
-            Stop
-          </motion.button>
-        </div>
-      </div>
+      <TimerRunning
+        timer={timer}
+        progress={progress}
+        formatTime={formatTime}
+        onPause={onPause}
+        onResume={onResume}
+        onStop={onStop}
+      />
     );
   }
 
-  // No timer - show presets
+
   return (
-    <div className="flex flex-col gap-2 py-1">
-      {categories.length > 0 && onSelectCategory && (
-        <div className="flex flex-wrap gap-1 justify-center" role="group" aria-label="Timer categories">
-          {categories.map((category) => (
-            <button
-              key={category.id}
-              type="button"
-              className={`px-2 py-0.5 rounded text-[10px] transition-colors ${
-                selectedCategory === category.id
-                  ? "bg-white/20 text-white"
-                  : "bg-white/8 text-white/70 hover:text-white hover:bg-white/12"
-              }`}
-              aria-label={`Select ${category.label} category`}
-              aria-pressed={selectedCategory === category.id}
-              onClick={() => onSelectCategory(category.id)}
-            >
-              {category.label}
-            </button>
-          ))}
-        </div>
+    <div className="flex flex-col gap-3 h-full">
+      {categories.length > 0 && onSelectCategory && selectedCategory && (
+        <Segmented
+          options={categories.map((c) => ({ id: c.id, label: c.label, ariaLabel: `Select ${c.label} category` }))}
+          value={selectedCategory}
+          onChange={onSelectCategory}
+          className="w-full"
+          ariaLabel="Timer categories"
+        />
       )}
-      <span className="text-white/90 text-[12px] text-center uppercase tracking-wider">
-        Start Timer
-      </span>
-      <div className="flex flex-wrap gap-1.5 justify-center" role="group" aria-label="Timer presets">
-        {presets.map(preset => (
+
+      <div className="grid grid-cols-3 gap-2" role="group" aria-label="Timer presets">
+        {presets.map((preset, i) => (
           <motion.button
             key={preset.id}
-            className="px-3 py-1.5 rounded-pill-md bg-pill-muted-lightest text-pill-muted text-pill-base font-medium"
+            type="button"
+            className="group relative flex flex-col items-start justify-between rounded-[20px] bg-white/[0.07] hover:bg-white/[0.11] transition-colors px-3 pt-2.5 pb-2.5 h-[104px] text-left overflow-hidden"
             aria-label={`Start ${preset.label} timer for ${preset.workMinutes} minutes`}
-            {...microInteractions.button}
             onClick={() => onStart(preset)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                onStart(preset);
-              }
-            }}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ ...spring, delay: i * 0.04 }}
+            whileTap={{ scale: 0.95 }}
           >
-            {preset.label}
-            <span className="ml-0.5 text-white/75" aria-hidden="true">{preset.workMinutes}m</span>
+            <span
+              className="w-7 h-7 rounded-full flex items-center justify-center transition-transform group-hover:scale-110"
+              style={{ background: `color-mix(in srgb, ${TIMER_TINT} 22%, black)`, color: TIMER_TINT }}
+              aria-hidden="true"
+            >
+              <PlayIcon size={12} />
+            </span>
+            <span className="flex flex-col">
+              <span className="text-white leading-none">
+                <span className="text-[28px] font-semibold tabular-nums tracking-tight">{preset.workMinutes}</span>
+                <span className="text-[12px] font-semibold text-white/45 ml-0.5">min</span>
+              </span>
+              <span className="text-white/55 text-[11px] font-medium mt-1 truncate max-w-full">{preset.label}</span>
+            </span>
           </motion.button>
         ))}
       </div>
+
       {stats && (
-        <div className="mt-1 text-center">
-          <p className="text-[11px] text-white/70">
-            Completed: <span className="text-white/90">{stats.sessionsCompleted}</span> sessions
-          </p>
-          <p className="text-[10px] text-white/55">
-            Focus time: {Math.floor(stats.totalFocusSeconds / 3600)}h {Math.floor((stats.totalFocusSeconds % 3600) / 60)}m
-          </p>
-          {selectedCategory && stats.byCategory[selectedCategory] && (
-            <p className="text-[10px] text-white/55">
-              Category: {stats.byCategory[selectedCategory].sessions} sessions, {Math.floor(stats.byCategory[selectedCategory].focusSeconds / 60)}m
-            </p>
-          )}
+        <div className="grid grid-cols-2 gap-2 mt-auto">
+          <Stat label="Sessions" value={String(stats.sessionsCompleted)} />
+          <Stat label="Focus time" value={formatFocus(stats.totalFocusSeconds)} />
         </div>
       )}
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[16px] bg-white/[0.05] px-3 py-2 flex items-baseline justify-between">
+      <span className="text-white/45 text-[11px] font-medium">{label}</span>
+      <span className="text-white text-[15px] font-semibold tabular-nums">{value}</span>
     </div>
   );
 }

@@ -177,13 +177,13 @@ export function TimerMiniProgress({ progress, width, height }: TimerMiniProgress
         height={rectHeight}
         rx={rx}
         fill="none"
-        stroke="#22c55e"
+        stroke="#FF9F0A"
         strokeWidth={strokeWidth}
         strokeLinecap="round"
         strokeDasharray={perimeter}
         strokeDashoffset={dashOffset}
         style={{
-          filter: "drop-shadow(0 0 2px rgba(34, 197, 94, 0.3))",
+          filter: "drop-shadow(0 0 3px rgba(255, 159, 10, 0.45))",
         }}
       />
     </motion.svg>

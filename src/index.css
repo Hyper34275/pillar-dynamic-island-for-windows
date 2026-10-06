@@ -3,17 +3,20 @@
 @tailwind utilities;
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv11";
+  letter-spacing: -0.005em;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --pillar-surface-primary: rgba(20, 20, 22, 0.94);
-  --pillar-surface-secondary: rgba(30, 30, 35, 0.9);
+  --pillar-surface-primary: rgba(0, 0, 0, 0.96);
+  --pillar-surface-secondary: rgba(0, 0, 0, 0.96);
   --pillar-border: rgba(255, 255, 255, 0.12);
   --pillar-text: #ffffff;
   --pillar-text-muted: rgba(255, 255, 255, 0.65);
   --pillar-accent: #eb0028;
+  --pillar-accent-contrast: #ffffff;
   --pillar-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
 }
 
@@ -110,8 +113,28 @@ body {
 
 /* Focus visible for keyboard navigation */
 *:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline: 2px solid rgba(255, 255, 255, 0.7);
   outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Text inputs on the island: no native chrome */
+input, textarea {
+  font: inherit;
+  color: inherit;
+}
+input::placeholder, textarea::placeholder {
+  color: rgba(255, 255, 255, 0.32);
+}
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.5;
+}
+
+/* Fade the bottom edge of scrolling panels so content dissolves into the island */
+.island-scroll {
+  mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
 }
 
 /* Skip to main content link for keyboard users */
@@ -146,4 +169,10 @@ body {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Safety net: a collapsed island must never let a leftover expanded layer eat clicks. */
+[data-expanded="false"] > .island-expanded {
+  pointer-events: none !important;
+  visibility: hidden !important;
 }

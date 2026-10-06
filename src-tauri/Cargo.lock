@@ -2603,9 +2603,11 @@ dependencies = [
 
 [[package]]
 name = "pillar"
-version = "0.1.4"
+version = "0.2.2"
 dependencies = [
+ "base64 0.22.1",
  "brightness",
+ "chrono",
  "once_cell",
  "reqwest",
  "serde",

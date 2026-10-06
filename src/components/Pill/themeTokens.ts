@@ -23,13 +23,14 @@ export function createPillThemeTokens(appearance: AppearanceSettings): PillTheme
   const opacity = appearance.opacity / 100;
   const accent = appearance.accentColor;
   return {
-    surfacePrimary: `rgba(20, 20, 22, ${opacity})`,
-    surfaceSecondary: `rgba(30, 30, 35, ${Math.min(1, opacity * 0.95)})`,
-    borderColor: "rgba(255,255,255,0.12)",
+    // Dynamic Island is pure black: depth comes from content, not from tinted glass.
+    surfacePrimary: `rgba(0, 0, 0, ${opacity})`,
+    surfaceSecondary: `rgba(0, 0, 0, ${opacity})`,
+    borderColor: "rgba(255,255,255,0.07)",
     textPrimary: "#ffffff",
     textMuted: "rgba(255,255,255,0.65)",
     accent,
     accentSoft: `color-mix(in srgb, ${accent} 25%, transparent)`,
-    shadow: "0 4px 24px rgba(0, 0, 0, 0.25)",
+    shadow: "0 10px 40px rgba(0, 0, 0, 0.45)",
   };
 }

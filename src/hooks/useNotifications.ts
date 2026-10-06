@@ -55,6 +55,7 @@ export function useNotifications(pollInterval = FALLBACK_POLL_MS): UseNotificati
   const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isPendingRef = useRef(false);
   const lastSeenIdRef = useRef<number>(0);
+  const hasFetchedOnceRef = useRef(false);
   const latestTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const phaseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const newNotificationTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -172,8 +173,12 @@ export function useNotifications(pollInterval = FALLBACK_POLL_MS): UseNotificati
         // Check for new notifications
         if (mapped.length > 0) {
           const newest = mapped[0];
-          if (newest.id !== lastSeenIdRef.current) {
+          // The first fetch only establishes a baseline: notifications that were
+          // already in Action Center at launch shouldn't pop a "new" toast.
+          if (hasFetchedOnceRef.current && newest.id !== lastSeenIdRef.current) {
             triggerNotificationAnimation(newest);
+          } else if (!hasFetchedOnceRef.current) {
+            setNotificationPhase("showing");
           }
           lastSeenIdRef.current = newest.id;
         }
@@ -183,6 +188,7 @@ export function useNotifications(pollInterval = FALLBACK_POLL_MS): UseNotificati
           setNotificationPhase("idle");
         }
 
+        hasFetchedOnceRef.current = true;
         setNotifications(mapped);
         upsertHistory(mapped);
       }

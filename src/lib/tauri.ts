@@ -1,4 +1,5 @@
 import { createLogger } from "./logger";
+import { dlog } from "./debugLog";
 
 type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -75,19 +76,41 @@ export async function tauriInvoke<T>(
   if (!invoke) return null;
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_INVOKE_TIMEOUT_MS;
+  const shouldTrace = !UNTRACED_COMMANDS.has(cmd);
+  const startedAt = performance.now();
 
   try {
-    if (timeoutMs <= 0) {
-      return await invoke<T>(cmd, args);
+    const result =
+      timeoutMs <= 0
+        ? await invoke<T>(cmd, args)
+        : await withTimeout(invoke<T>(cmd, args), timeoutMs, cmd);
+    if (shouldTrace) {
+      const elapsed = Math.round(performance.now() - startedAt);
+      if (elapsed > SLOW_INVOKE_MS) dlog("warn", "tauri", `invoke ${cmd} took ${elapsed}ms`);
     }
-    return await withTimeout(invoke<T>(cmd, args), timeoutMs, cmd);
+    return result;
   } catch (error) {
+    if (shouldTrace) {
+      const elapsed = Math.round(performance.now() - startedAt);
+      const reason =
+        error instanceof TauriTimeoutError
+          ? `timed out after ${timeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      dlog(options.silent ? "warn" : "error", "tauri", `invoke ${cmd} failed after ${elapsed}ms: ${reason}`);
+    }
     if (!options.silent) {
       log.error(`invoke failed: ${cmd}`, error);
     }
     throw error;
   }
 }
+
+/** Invokes slower than this are written to the debug log. */
+const SLOW_INVOKE_MS = 400;
+/** Logging commands themselves — tracing them would be noise (or recursion). */
+const UNTRACED_COMMANDS = new Set(["write_logs", "log_frontend_error"]);
 
 function withTimeout<T>(promise: Promise<T>, ms: number, cmd: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {

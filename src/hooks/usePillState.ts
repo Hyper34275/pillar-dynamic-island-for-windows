@@ -9,6 +9,7 @@ import type {
   NotificationState,
 } from "../types/pill";
 import { createContentState } from "../types/pill";
+import { dlog } from "../lib/debugLog";
 
 // =============================================================================
 // Timing Constants
@@ -16,6 +17,11 @@ import { createContentState } from "../types/pill";
 
 const HOVER_DELAY_MS = 100;
 const EXIT_DELAY_MS = 120;
+// Short grace before an expanded island closes on pointer leave. Leave is now
+// reported by the backend's global cursor tracking (with pointer capture, so a
+// slider drag slipping off the edge isn't a leave) — the old 1.8s made it feel
+// like leaving wasn't detected at all.
+const EXPANDED_EXIT_DELAY_MS = 400;
 const NOTIFICATION_DURATION_MS = 5000;
 
 // =============================================================================
@@ -33,16 +39,19 @@ interface UsePillStateReturn {
   isIdle: boolean;
   isHovering: boolean;
   isExpanded: boolean;
-  handleMouseEnter: () => void;
-  handleMouseLeave: () => void;
-  handleClick: () => void;
-  handleClickOutside: () => void;
+  /** Cursor entered the island (native tracking or DOM fallback). */
+  pointerEnter: () => void;
+  /** Cursor left the island (native tracking or DOM fallback). */
+  pointerLeave: () => void;
   /**
-   * Force the pill into expanded state regardless of current interaction state
-   * (except during boot). Used by tray menu items, global shortcuts, and
-   * workflow events — callers there don't go through hover/click chain.
+   * Expand from idle/hover (ignored during boot). `source` is logged — click,
+   * keyboard, tray, shortcut, workflow… If the pointer isn't over the island at
+   * that moment, no leave timer runs: it stays open until an outside press,
+   * Escape, the toggle, or the pointer enters and then leaves.
    */
-  expand: () => void;
+  expand: (source: string) => void;
+  /** Close to idle and cancel pending hover/leave timers. `reason` is logged. */
+  collapse: (reason: string) => void;
   completeBootAnimation: () => void;
   
   // New content state API
@@ -66,6 +75,8 @@ export function usePillState(): UsePillStateReturn {
   const exitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const interactionStateRef = useRef<InteractionState>(interactionState);
   interactionStateRef.current = interactionState;
+  // Whether the cursor is over the island right now (tracked even during boot).
+  const pointerInsideRef = useRef(false);
   // Auto-dismiss timers for notification content states; cleaned up on unmount
   // so they don't fire setState after the component is gone.
   const notificationTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
@@ -174,10 +185,18 @@ export function usePillState(): UsePillStateReturn {
   }, [contentStates]);
 
   // ==========================================================================
-  // Interaction State Management (legacy behavior)
+  // Interaction State Management
   // ==========================================================================
+  // boot → idle (completeBootAnimation)
+  // idle → hover:      pointerEnter, after HOVER_DELAY_MS
+  // hover → idle:      pointerLeave, after EXIT_DELAY_MS
+  // idle/hover → expanded: expand(source)
+  // expanded → idle:   collapse(reason) — directly, or pointerLeave after
+  //                    EXPANDED_EXIT_DELAY_MS (cancelled by re-entering)
+  // Timer callbacks re-check the live state via the ref, so a stale timer can
+  // never move the pill somewhere it shouldn't be.
 
-  const clearAllTimeouts = useCallback(() => {
+  const clearInteractionTimers = useCallback(() => {
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
@@ -186,86 +205,105 @@ export function usePillState(): UsePillStateReturn {
       clearTimeout(exitTimeoutRef.current);
       exitTimeoutRef.current = null;
     }
-    notificationTimeoutsRef.current.forEach((handle) => clearTimeout(handle));
-    notificationTimeoutsRef.current.clear();
   }, []);
 
   useEffect(() => {
-    return clearAllTimeouts;
-  }, [clearAllTimeouts]);
+    return () => {
+      clearInteractionTimers();
+      notificationTimeoutsRef.current.forEach((handle) => clearTimeout(handle));
+      notificationTimeoutsRef.current.clear();
+    };
+  }, [clearInteractionTimers]);
 
-  const completeBootAnimation = useCallback(() => {
-    setInteractionState("idle");
+  // Update the ref eagerly (not just on the next render) so back-to-back calls in
+  // the same tick — e.g. collapse() then a bubbling click's expand() — see it.
+  const transitionTo = useCallback((next: InteractionState) => {
+    interactionStateRef.current = next;
+    setInteractionState(next);
   }, []);
 
-  const handleMouseEnter = useCallback(() => {
-    const currentState = interactionStateRef.current;
-    if (currentState === "boot") return;
+  const completeBootAnimation = useCallback(() => {
+    transitionTo("idle");
+  }, [transitionTo]);
+
+  const collapse = useCallback((reason: string) => {
+    clearInteractionTimers();
+    const s = interactionStateRef.current;
+    if (s === "boot" || s === "idle") return; // idempotent: several close paths can race
+    dlog("info", "pill", `collapse: ${reason}`);
+    transitionTo("idle");
+  }, [clearInteractionTimers, transitionTo]);
+
+  const expand = useCallback((source: string) => {
+    const s = interactionStateRef.current;
+    // Skip while booting so we don't fight the boot animation.
+    if (s === "boot") {
+      dlog("debug", "pill", `expand ignored during boot: ${source}`);
+      return;
+    }
+    if (s === "expanded") return;
+    clearInteractionTimers();
+    dlog(
+      "info",
+      "pill",
+      `expand: ${source}${pointerInsideRef.current ? "" : " (pointer outside — stays open until outside press/escape/toggle)"}`
+    );
+    transitionTo("expanded");
+  }, [clearInteractionTimers, transitionTo]);
+
+  const pointerEnter = useCallback(() => {
+    pointerInsideRef.current = true;
+    const s = interactionStateRef.current;
+    if (s === "boot") return;
 
     if (exitTimeoutRef.current) {
       clearTimeout(exitTimeoutRef.current);
       exitTimeoutRef.current = null;
+      if (s === "expanded") dlog("debug", "pill", "pointer re-entered: expanded leave grace cancelled");
     }
-
-    if (currentState === "expanded") return;
+    if (s !== "idle") return;
 
     if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     hoverTimeoutRef.current = setTimeout(() => {
-      const s = interactionStateRef.current;
-      if (s === "idle") {
-        setInteractionState("hover");
+      hoverTimeoutRef.current = null;
+      if (interactionStateRef.current === "idle" && pointerInsideRef.current) {
+        transitionTo("hover");
       }
     }, HOVER_DELAY_MS);
-  }, []);
+  }, [transitionTo]);
 
-  const handleMouseLeave = useCallback(() => {
+  const pointerLeave = useCallback(() => {
+    const wasInside = pointerInsideRef.current;
+    pointerInsideRef.current = false;
     if (hoverTimeoutRef.current) {
       clearTimeout(hoverTimeoutRef.current);
       hoverTimeoutRef.current = null;
     }
 
-    const currentState = interactionStateRef.current;
-    
-    if (currentState === "hover" || currentState === "expanded") {
-      const delay = currentState === "expanded" ? EXIT_DELAY_MS * 3 : EXIT_DELAY_MS;
-      
+    const s = interactionStateRef.current;
+    if (s !== "hover" && s !== "expanded") return;
+    // A leave without a preceding enter (e.g. expanded from the tray while the
+    // cursor was elsewhere) must not start the close timer.
+    if (s === "expanded" && !wasInside) return;
+
+    if (exitTimeoutRef.current) clearTimeout(exitTimeoutRef.current);
+    if (s === "hover") {
       exitTimeoutRef.current = setTimeout(() => {
-        const s = interactionStateRef.current;
-        if (s === "hover" || s === "expanded") {
-          setInteractionState("idle");
+        exitTimeoutRef.current = null;
+        if (interactionStateRef.current === "hover" && !pointerInsideRef.current) {
+          transitionTo("idle");
         }
-      }, delay);
+      }, EXIT_DELAY_MS);
+      return;
     }
-  }, []);
 
-  const handleClick = useCallback(() => {
-    if (interactionStateRef.current === "hover") {
-      setInteractionState("expanded");
-    }
-  }, []);
-
-  const expand = useCallback(() => {
-    // Programmatic expansion (tray, shortcuts, workflow). Skip while booting
-    // so we don't fight the boot animation.
-    if (interactionStateRef.current === "boot") return;
-    if (interactionStateRef.current === "expanded") return;
-    // Cancel any pending hover/exit transitions so we land cleanly in expanded.
-    if (hoverTimeoutRef.current) {
-      clearTimeout(hoverTimeoutRef.current);
-      hoverTimeoutRef.current = null;
-    }
-    if (exitTimeoutRef.current) {
-      clearTimeout(exitTimeoutRef.current);
+    exitTimeoutRef.current = setTimeout(() => {
       exitTimeoutRef.current = null;
-    }
-    setInteractionState("expanded");
-  }, []);
-
-  const handleClickOutside = useCallback(() => {
-    if (interactionStateRef.current === "expanded") {
-      setInteractionState("idle");
-    }
-  }, []);
+      if (interactionStateRef.current === "expanded" && !pointerInsideRef.current) {
+        collapse(`pointer left island (${EXPANDED_EXIT_DELAY_MS}ms grace)`);
+      }
+    }, EXPANDED_EXIT_DELAY_MS);
+  }, [collapse, transitionTo]);
 
   // ==========================================================================
   // Derived Interaction State
@@ -280,11 +318,10 @@ export function usePillState(): UsePillStateReturn {
 
   return {
     ...derivedInteractionState,
-    handleMouseEnter,
-    handleMouseLeave,
-    handleClick,
-    handleClickOutside,
+    pointerEnter,
+    pointerLeave,
     expand,
+    collapse,
     completeBootAnimation,
     
     // Content state API

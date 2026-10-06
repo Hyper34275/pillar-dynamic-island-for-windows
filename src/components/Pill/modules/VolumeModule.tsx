@@ -9,9 +9,29 @@ import { ACCENT_PRESETS } from "../../../hooks/useAppearance";
 import type { LayoutSettingsData } from "../../../hooks/useSettings";
 import { PerAppMixer } from "./PerAppMixer";
 import { AppearanceModule } from "./AppearanceModule";
-import { microInteractions, PILL_DURATION_FAST, PILL_DURATION_MEDIUM } from "../animations";
 import { fireAndForget } from "../../../lib/fireAndForget";
+import { tauriInvoke } from "../../../lib/tauri";
 import { useThrottledCommit } from "../../../hooks/useThrottledCommit";
+import { FillSlider, Group, IconBadge, SectionLabel, Switch, SYSTEM_COLORS } from "../ui/primitives";
+import {
+  ArchiveIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+  HeadphonesIcon,
+  PaletteIcon,
+  PowerIcon,
+  SpeakerIcon,
+  SunIcon,
+  SlidersIcon,
+} from "../ui/icons";
+
+const RANGE_INPUT_CLASS = "absolute inset-0 w-full h-full opacity-0 cursor-pointer";
+
+function speakerLevel(level: number, muted: boolean): 0 | 1 | 2 | -1 {
+  if (muted || level === 0) return -1;
+  return level < 50 ? 1 : 2;
+}
 
 // =============================================================================
 // Volume Slider
@@ -21,9 +41,11 @@ interface VolumeSliderProps {
   volume: VolumeInfo;
   onVolumeChange: (level: number) => void;
   onMuteToggle: () => void;
+  /** "tile" = Control Center fill slider, "thin" = Music-app style hairline slider */
+  variant?: "tile" | "thin";
 }
 
-export function VolumeSlider({ volume, onVolumeChange, onMuteToggle }: VolumeSliderProps) {
+export function VolumeSlider({ volume, onVolumeChange, variant = "tile" }: VolumeSliderProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [localLevel, setLocalLevel] = useState(volume.level);
   // Pointer-state ref mirrors isDragging so event handlers (which React
@@ -79,69 +101,51 @@ export function VolumeSlider({ volume, onVolumeChange, onMuteToggle }: VolumeSli
 
   const displayLevel = isDragging ? localLevel : volume.level;
 
-  return (
-    <div className="flex items-center gap-2 w-full">
-      {/* Mute button */}
-      <motion.button
-        className="w-7 h-7 rounded-md bg-white/10 flex items-center justify-center text-white flex-shrink-0"
-        aria-label={volume.isMuted || displayLevel === 0 ? "Unmute volume" : "Mute volume"}
-        {...microInteractions.button}
-        onClick={onMuteToggle}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onMuteToggle();
-          }
-        }}
-      >
-        {volume.isMuted || displayLevel === 0 ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16.5 12A4.5 4.5 0 0 0 14 8.11V2l-5 5H4v6h5l5 5v-6.11A4.5 4.5 0 0 0 16.5 12zM19 12l1.41-1.41-2.12-2.12L19 7.06l1.41 1.41L21.83 7.05l1.41 1.41L21.83 9.88l1.41 1.41-1.41 1.41-1.41-1.41-1.41 1.41z"/>
-          </svg>
-        ) : displayLevel < 50 ? (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M5 9v6h4l5 5V4L9 9H5zm11.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
-          </svg>
-        ) : (
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-          </svg>
-        )}
-      </motion.button>
+  const input = (
+    <input
+      type="range"
+      min="0"
+      max="100"
+      value={displayLevel}
+      onChange={handleChange}
+      onMouseDown={handleMouseDown}
+      onMouseUp={endDrag}
+      onTouchEnd={endDrag}
+      onBlur={endDrag}
+      aria-label="Volume level"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={displayLevel}
+      className={RANGE_INPUT_CLASS}
+    />
+  );
 
-      {/* Slider */}
-      <div className="flex-1 relative">
-        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-          <motion.div
-            className="h-full bg-white/60 rounded-full"
-            style={{ width: `${displayLevel}%` }}
-            animate={{ width: `${displayLevel}%` }}
-            transition={{ duration: isDragging ? 0 : 0.1 }}
-          />
+  if (variant === "thin") {
+    const pct = volume.isMuted ? 0 : displayLevel;
+    return (
+      <div className="group flex items-center gap-2.5 w-full text-white/45">
+        <SpeakerIcon size={13} level={speakerLevel(pct, volume.isMuted) === -1 ? -1 : 0} />
+        <div className="relative flex-1 h-5 flex items-center">
+          <div className="w-full h-[5px] group-hover:h-[8px] transition-[height] duration-150 rounded-full bg-white/[0.18] overflow-hidden">
+            <div className="h-full rounded-full bg-white/75 group-hover:bg-white transition-colors" style={{ width: `${pct}%` }} />
+          </div>
+          {input}
         </div>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          value={displayLevel}
-          onChange={handleChange}
-          onMouseDown={handleMouseDown}
-          onMouseUp={endDrag}
-          onTouchEnd={endDrag}
-          onBlur={endDrag}
-          aria-label="Volume level"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={displayLevel}
-          className="absolute inset-0 w-full opacity-0 cursor-pointer"
-        />
+        <SpeakerIcon size={13} level={2} />
       </div>
+    );
+  }
 
-      {/* Level display */}
-      <span className="text-white/90 text-[12px] w-7 text-right tabular-nums flex-shrink-0">
-        {displayLevel}%
-      </span>
-    </div>
+  return (
+    <FillSlider
+      percent={volume.isMuted ? 0 : displayLevel}
+      icon={null}
+      label="Volume"
+      valueText={volume.isMuted ? "Muted" : `${displayLevel}%`}
+      height={44}
+    >
+      {input}
+    </FillSlider>
   );
 }
 
@@ -187,258 +191,152 @@ export function BrightnessSlider({ brightness, onBrightnessChange }: BrightnessS
     setIsDragging(true);
   }, []);
 
-  // Update local level when brightness prop changes (from polling)
   const displayLevel = isDragging ? localLevel : brightness.level;
 
-  // Brightness icon based on level
-  const getBrightnessIcon = () => {
-    if (displayLevel < 33) {
-      // Low brightness - smaller sun
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <circle cx="12" cy="12" r="4" />
-        </svg>
-      );
-    } else if (displayLevel < 66) {
-      // Medium brightness
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <circle cx="12" cy="12" r="4" />
-          <path d="M12 2v2m0 16v2m10-10h-2M4 12H2m15.07-5.07l-1.41 1.41M8.34 15.66l-1.41 1.41m0-11.14l1.41 1.41m7.32 7.32l1.41 1.41" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
-        </svg>
-      );
-    } else {
-      // High brightness - full sun
-      return (
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-          <circle cx="12" cy="12" r="5" />
-          <path d="M12 1v3m0 16v3m11-11h-3M4 12H1m18.07-7.07l-2.12 2.12M8.05 15.95l-2.12 2.12m0-12.02l2.12 2.12m7.9 7.9l2.12 2.12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none"/>
-        </svg>
-      );
-    }
-  };
-
   return (
-    <div className="flex items-center gap-2 w-full">
-      {/* Brightness icon */}
-      <div className="w-7 h-7 rounded-md bg-white/10 flex items-center justify-center text-amber-400/80 flex-shrink-0">
-        {getBrightnessIcon()}
-      </div>
-
-      {/* Slider */}
-      <div className="flex-1 relative">
-        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden pointer-events-none">
-          <motion.div
-            className="h-full bg-amber-400/60 rounded-full pointer-events-none"
-            style={{ width: `${displayLevel}%` }}
-            animate={{ width: `${displayLevel}%` }}
-            transition={{ duration: isDragging ? 0 : 0.1 }}
-          />
-        </div>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          step="1"
-          value={displayLevel}
-          onChange={handleChange}
-          onInput={handleChange}
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={() => {
-            if (isDragging) {
-              handleMouseUp();
-            }
-          }}
-          onTouchStart={handleMouseDown}
-          onTouchEnd={handleMouseUp}
-          aria-label="Brightness level"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={displayLevel}
-          aria-disabled={!brightness.isSupported}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-          style={{ 
-            WebkitAppearance: 'none', 
-            appearance: 'none',
-            background: 'transparent',
-            pointerEvents: 'auto',
-            cursor: brightness.isSupported ? 'pointer' : 'not-allowed',
-          }}
-        />
-      </div>
-
-      {/* Level display */}
-      <span className="text-white/90 text-[12px] w-7 text-right tabular-nums flex-shrink-0">
-        {displayLevel}%
-      </span>
-    </div>
-  );
-}
-
-// =============================================================================
-// Toggle Switch Component
-// =============================================================================
-
-interface ToggleSwitchProps {
-  enabled: boolean;
-  onToggle: () => void;
-  label: string;
-  description?: string;
-}
-
-function ToggleSwitch({ enabled, onToggle, label, description }: ToggleSwitchProps) {
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <div className="flex flex-col min-w-0">
-        <span className="text-white/90 text-[12px]">{label}</span>
-        {description && (
-          <span className="text-white/65 text-[11px]">{description}</span>
-        )}
-      </div>
-      <motion.button
-        className={`w-9 h-4 rounded-full p-0.5 transition-colors flex-shrink-0 ${
-          enabled ? "bg-green-500/60" : "bg-white/10"
-        }`}
-        aria-label={`${label}: ${enabled ? "enabled" : "disabled"}`}
-        aria-pressed={enabled}
-        onClick={onToggle}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            onToggle();
+    <FillSlider
+      percent={displayLevel}
+      icon={<SunIcon size={17} />}
+      label="Display"
+      valueText={brightness.isSupported ? `${displayLevel}%` : "Not supported"}
+      disabled={!brightness.isSupported}
+      height={44}
+    >
+      <input
+        type="range"
+        min="0"
+        max="100"
+        step="1"
+        value={displayLevel}
+        onChange={handleChange}
+        onInput={handleChange}
+        onMouseDown={handleMouseDown}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => {
+          if (isDragging) {
+            handleMouseUp();
           }
         }}
-        {...microInteractions.button}
-      >
-        <motion.div
-          className="w-3 h-3 rounded-full bg-white shadow-sm"
-          animate={{ x: enabled ? 20 : 0 }}
-          transition={{ type: "spring", stiffness: 500, damping: 30 }}
-        />
-      </motion.button>
-    </div>
+        onTouchStart={handleMouseDown}
+        onTouchEnd={handleMouseUp}
+        aria-label="Brightness level"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={displayLevel}
+        aria-disabled={!brightness.isSupported}
+        className={RANGE_INPUT_CLASS}
+        style={{ cursor: brightness.isSupported ? "pointer" : "not-allowed" }}
+      />
+    </FillSlider>
   );
 }
 
 // =============================================================================
-// Audio Device Selector
+// Square control tile (mute / mixer)
 // =============================================================================
 
-interface DeviceSelectorProps {
-  devices: AudioDevice[];
-  currentDevice: AudioDevice | null;
+function Tile({
+  label,
+  active,
+  activeColor = "#fff",
+  onClick,
+  children,
+  expanded,
+}: {
+  label: string;
+  active?: boolean;
+  activeColor?: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  expanded?: boolean;
+}) {
+  return (
+    <motion.button
+      type="button"
+      className="relative w-[44px] h-[44px] rounded-[14px] flex items-center justify-center flex-shrink-0 transition-colors"
+      style={{
+        background: active ? activeColor : "rgba(255,255,255,0.09)",
+        color: active ? (activeColor === "#fff" ? "#000" : "#fff") : "rgba(255,255,255,0.85)",
+      }}
+      aria-label={label}
+      aria-pressed={expanded === undefined ? active : undefined}
+      aria-expanded={expanded}
+      onClick={onClick}
+      whileTap={{ scale: 0.9 }}
+      transition={{ type: "spring", stiffness: 600, damping: 30 }}
+    >
+      {children}
+    </motion.button>
+  );
 }
 
-function DeviceSelector({ devices, currentDevice }: DeviceSelectorProps) {
-  const [isOpen, setIsOpen] = useState(false);
+// =============================================================================
+// Output device row
+// =============================================================================
 
-  // Get device icon based on name
-  const getDeviceIcon = (name: string) => {
-    const lowerName = name.toLowerCase();
-    if (lowerName.includes("headphone") || lowerName.includes("earphone")) {
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 1a9 9 0 0 0-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2a7 7 0 0 1 14 0v2h-4v8h3c1.66 0 3-1.34 3-3v-7a9 9 0 0 0-9-9z"/>
-        </svg>
-      );
-    } else if (lowerName.includes("speaker")) {
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
-        </svg>
-      );
-    } else {
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 7.97v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
-        </svg>
-      );
-    }
-  };
-
-  if (devices.length <= 1) {
-    // Single device - just show it without dropdown
-    return (
-      <div className="flex items-center gap-1.5 px-1.5 py-1 bg-white/5 rounded-md">
-        <span className="text-white/80 flex-shrink-0">
-          {getDeviceIcon(currentDevice?.name || "")}
-        </span>
-        <span className="text-white/90 text-[12px] truncate flex-1 min-w-0">
-          {currentDevice?.name || "No audio device"}
-        </span>
-      </div>
-    );
+function deviceIcon(name: string) {
+  const lower = name.toLowerCase();
+  if (lower.includes("headphone") || lower.includes("earphone") || lower.includes("headset") || lower.includes("airpods") || lower.includes("buds")) {
+    return <HeadphonesIcon size={14} />;
   }
+  return <SpeakerIcon size={14} level={2} />;
+}
+
+function DeviceSelector({ devices, currentDevice }: { devices: AudioDevice[]; currentDevice: AudioDevice | null }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const canOpen = devices.length > 1;
 
   return (
-    <div className="relative">
-      {/* Current device button */}
-      <motion.button
-        className="w-full flex items-center gap-1.5 px-1.5 py-1 bg-white/5 rounded-md hover:bg-white/10 transition-colors"
-        onClick={() => setIsOpen(!isOpen)}
-        aria-label={isOpen ? "Collapse output devices list" : "Expand output devices list"}
-        aria-expanded={isOpen}
-        whileTap={{ scale: 0.98 }}
+    <div>
+      <button
+        type="button"
+        className={`w-full flex items-center gap-2.5 px-3 h-[46px] text-left ${canOpen ? "hover:bg-white/[0.04]" : "cursor-default"} transition-colors`}
+        onClick={() => canOpen && setIsOpen(!isOpen)}
+        aria-label={canOpen ? (isOpen ? "Collapse output devices list" : "Expand output devices list") : "Audio output device"}
+        aria-expanded={canOpen ? isOpen : undefined}
       >
-        <span className="text-white/80">
-          {getDeviceIcon(currentDevice?.name || "")}
+        <IconBadge color={SYSTEM_COLORS.blue}>{deviceIcon(currentDevice?.name || "")}</IconBadge>
+        <span className="flex flex-col min-w-0 flex-1">
+          <span className="text-white/45 text-[10.5px] font-semibold leading-tight">Output</span>
+          <span className="text-white text-[12.5px] font-medium truncate leading-tight" title={currentDevice?.name || undefined}>
+            {currentDevice?.name || "No audio device"}
+          </span>
         </span>
-        <span 
-          className="text-white/90 text-[12px] truncate flex-1 text-left min-w-0"
-          title={currentDevice?.name || undefined}
-        >
-          {currentDevice?.name || "Select device"}
-        </span>
-        <motion.svg 
-          width="12" 
-          height="12" 
-          viewBox="0 0 24 24" 
-          fill="currentColor"
-          className="text-white/70"
-          animate={{ rotate: isOpen ? 180 : 0 }}
-        >
-          <path d="M7 10l5 5 5-5z"/>
-        </motion.svg>
-      </motion.button>
-
-      {/* Dropdown */}
-      <AnimatePresence>
+        {canOpen && (
+          <motion.span className="text-white/35 flex" animate={{ rotate: isOpen ? 180 : 0 }}>
+            <ChevronDownIcon size={14} strokeWidth={2.4} />
+          </motion.span>
+        )}
+      </button>
+      <AnimatePresence initial={false}>
         {isOpen && (
           <motion.div
-            className="absolute top-full left-0 right-0 mt-0.5 bg-black/80 backdrop-blur-xl rounded-md border border-white/10 overflow-hidden z-10"
-            initial={{ opacity: 0, y: -5 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -5 }}
-            transition={{ duration: PILL_DURATION_FAST }}
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ type: "spring", stiffness: 420, damping: 36 }}
+            className="overflow-hidden"
           >
-            {devices.map((device) => (
-              <button
-                key={device.id}
-                className={`w-full flex items-center gap-1.5 px-1.5 py-1 hover:bg-white/10 transition-colors ${
-                  device.isDefault ? "bg-white/5" : ""
-                }`}
-                onClick={() => setIsOpen(false)}
-                aria-label={`${device.name}${device.isDefault ? " currently default output" : ""}`}
-              >
-                <span className={`flex-shrink-0 ${device.isDefault ? "text-green-400" : "text-white/70"}`}>
-                  {getDeviceIcon(device.name)}
-                </span>
-                <span 
-                  className={`text-[12px] truncate flex-1 text-left min-w-0 ${
-                    device.isDefault ? "text-white" : "text-white/85"
-                  }`}
-                  title={device.name}
+            <div className="pb-1.5">
+              {devices.map((device) => (
+                <button
+                  key={device.id}
+                  type="button"
+                  className="w-full flex items-center gap-2.5 pl-[50px] pr-3 h-8 hover:bg-white/[0.05] transition-colors"
+                  onClick={() => setIsOpen(false)}
+                  aria-label={`${device.name}${device.isDefault ? " currently default output" : ""}`}
                 >
-                  {device.name}
-                </span>
-                {device.isDefault && (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className="text-green-400/70">
-                    <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/>
-                  </svg>
-                )}
-              </button>
-            ))}
+                  <span className={`text-[12px] truncate flex-1 text-left ${device.isDefault ? "text-white" : "text-white/60"}`} title={device.name}>
+                    {device.name}
+                  </span>
+                  {device.isDefault && (
+                    <span style={{ color: SYSTEM_COLORS.blue }}>
+                      <CheckIcon size={13} strokeWidth={2.8} />
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -484,6 +382,46 @@ interface QuickSettingsProps {
   onLayoutChange?: (patch: Partial<LayoutSettingsData>) => void;
   appearance: AppearanceControls;
   motionSettings?: MotionSettings;
+  /** Rendered above the controls (system monitor tiles). */
+  header?: React.ReactNode;
+}
+
+const TAB_LABELS: Record<keyof LayoutSettingsData["visible_tabs"], string> = {
+  timer: "Timer",
+  media: "Media",
+  notifications: "Notifications",
+  settings: "Controls",
+  productivity: "Focus",
+  prism: "Prism",
+};
+
+const INDICATOR_LABELS: Record<keyof LayoutSettingsData["idle_indicators"], string> = {
+  media: "Now playing",
+  battery: "Battery",
+  notifications: "Notifications",
+};
+
+function Chip({ on, label, onClick, ariaLabel }: { on: boolean; label: string; onClick: () => void; ariaLabel: string }) {
+  return (
+    <motion.button
+      type="button"
+      className={`flex items-center gap-1 h-7 px-2.5 rounded-full text-[11.5px] font-semibold transition-colors ${
+        on ? "bg-white/[0.14] text-white" : "text-white/40 hover:text-white/70 hover:bg-white/[0.05]"
+      }`}
+      style={on ? undefined : { boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.1)" }}
+      aria-label={ariaLabel}
+      aria-pressed={on}
+      onClick={onClick}
+      whileTap={{ scale: 0.92 }}
+    >
+      {on && (
+        <span style={{ color: "var(--pillar-accent)" }}>
+          <CheckIcon size={11} strokeWidth={3} />
+        </span>
+      )}
+      {label}
+    </motion.button>
+  );
 }
 
 export function QuickSettings({
@@ -503,9 +441,25 @@ export function QuickSettings({
   onLayoutChange,
   appearance,
   motionSettings,
+  header,
 }: QuickSettingsProps) {
   const [showMixer, setShowMixer] = useState(false);
   const [view, setView] = useState<"main" | "appearance">("main");
+
+  // The settings panel scrolls; switching sub-views should start at the top
+  // (Appearance used to open scrolled down with its Back button out of view).
+  useEffect(() => {
+    document.getElementById("panel-settings")?.scrollTo({ top: 0 });
+  }, [view]);
+  const [logDir, setLogDir] = useState<string | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    tauriInvoke<string>("get_log_dir", undefined, { silent: true })
+      .then((dir) => { if (mounted && dir) setLogDir(dir); })
+      .catch(() => { /* backend unavailable — keep the generic subtitle */ });
+    return () => { mounted = false; };
+  }, []);
 
   // Discard draft on unmount (tab switch, pill collapse)
   useEffect(() => {
@@ -514,7 +468,6 @@ export function QuickSettings({
     };
   }, [appearance.discard]);
 
-  // Appearance sub-view
   if (view === "appearance") {
     return (
       <AppearanceModule
@@ -529,191 +482,147 @@ export function QuickSettings({
     );
   }
 
-  const accentName = ACCENT_PRESETS.find(p => p.value === appearance.active.accentColor)?.name ?? "Custom";
+  const accentName = ACCENT_PRESETS.find((p) => p.value === appearance.active.accentColor)?.name ?? "Custom";
+  const muted = volume.isMuted;
 
   return (
-    <div className="flex flex-col gap-1.5 py-0">
-      {/* Appearance row */}
-      <motion.button
-        className="w-full flex items-center gap-2.5 px-2 py-2 bg-white/5 rounded-lg hover:bg-white/[0.08] transition-colors"
-        onClick={() => { appearance.startEditing(); setView("appearance"); }}
-        aria-label="Open appearance settings"
-        whileTap={{ scale: 0.98 }}
-      >
-        <div
-          className="w-4 h-4 rounded-full flex-shrink-0"
-          style={{ background: appearance.active.accentColor, opacity: 0.8 }}
-        />
-        <div className="flex flex-col items-start flex-1 min-w-0">
-          <span className="text-white/90 text-[12px] font-medium leading-tight">Appearance</span>
-          <span className="text-white/35 text-[10px] leading-tight">
-            {appearance.active.mode === "island" ? "Island" : "Notch"} · {accentName} · {appearance.active.opacity}%
-          </span>
+    <div className="flex flex-col gap-2.5 pb-1">
+      {header}
+
+      {/* Sound */}
+      <div className="flex items-center gap-2">
+        <Tile label={muted ? "Unmute volume" : "Mute volume"} active={muted} activeColor={SYSTEM_COLORS.red} onClick={onMuteToggle}>
+          <SpeakerIcon size={18} level={muted || volume.level === 0 ? -1 : 2} />
+        </Tile>
+        <div className="flex-1 min-w-0">
+          <VolumeSlider volume={volume} onVolumeChange={onVolumeChange} onMuteToggle={onMuteToggle} />
         </div>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" className="text-white/25 flex-shrink-0">
-          <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z" />
-        </svg>
-      </motion.button>
-
-      {/* Audio output device */}
-      <div className="flex flex-col gap-1">
-        <span className="text-white/90 text-[12px]">Output</span>
-        <DeviceSelector 
-          devices={audioDevices}
-          currentDevice={defaultAudioDevice}
-        />
-      </div>
-
-      {/* Volume control (top) */}
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between">
-          <span className="text-white/90 text-[12px]">Volume</span>
-          <motion.button
-            className={`text-[11px] px-1 py-0.5 rounded ${
-              showMixer ? "bg-white/15 text-white/90" : "text-white/75 hover:text-white"
-            }`}
-            onClick={() => setShowMixer(!showMixer)}
-            aria-label={showMixer ? "Hide per-app mixer" : "Show per-app mixer"}
-            aria-expanded={showMixer}
-            whileTap={{ scale: 0.95 }}
-          >
-            Mixer {audioSessions.length > 0 && `(${audioSessions.length})`}
-          </motion.button>
-        </div>
-        <VolumeSlider
-          volume={volume}
-          onVolumeChange={onVolumeChange}
-          onMuteToggle={onMuteToggle}
-        />
-      </div>
-
-      {/* Brightness control (bottom) */}
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center justify-between">
-          <span className="text-white/90 text-[12px]">Brightness</span>
-          {!brightness.isSupported && (
-            <span className="text-white/65 text-[11px]">DDC/CI N/A</span>
+        <Tile
+          label={showMixer ? "Hide per-app mixer" : "Show per-app mixer"}
+          active={showMixer}
+          expanded={showMixer}
+          onClick={() => setShowMixer(!showMixer)}
+        >
+          <SlidersIcon size={17} />
+          {audioSessions.length > 0 && !showMixer && (
+            <span className="absolute top-1 right-1 min-w-[14px] h-[14px] px-0.5 rounded-full bg-white/20 text-[9px] font-bold text-white flex items-center justify-center">
+              {audioSessions.length}
+            </span>
           )}
-        </div>
-        <BrightnessSlider
-          brightness={brightness}
-          onBrightnessChange={onBrightnessChange}
-        />
+        </Tile>
       </div>
 
-      {/* Per-app mixer (collapsible) */}
-      <AnimatePresence>
+      <AnimatePresence initial={false}>
         {showMixer && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: PILL_DURATION_MEDIUM }}
+            transition={{ type: "spring", stiffness: 420, damping: 38 }}
             className="overflow-hidden"
           >
-            <div className="bg-white/5 rounded-lg p-1.5 mt-0.5">
-              <span className="text-white/85 text-[11px] uppercase tracking-wider mb-0.5 block">
-                App Volumes
-              </span>
-              <PerAppMixer
-                sessions={audioSessions}
-                onVolumeChange={onSessionVolumeChange}
-                onMuteToggle={onSessionMuteToggle}
-              />
+            <div className="rounded-[16px] bg-white/[0.06] p-2">
+              <PerAppMixer sessions={audioSessions} onVolumeChange={onSessionVolumeChange} onMuteToggle={onSessionMuteToggle} />
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Divider */}
-      <div className="h-px bg-white/5 my-0.5" />
+      <BrightnessSlider brightness={brightness} onBrightnessChange={onBrightnessChange} />
+
+      <Group>
+        <DeviceSelector devices={audioDevices} currentDevice={defaultAudioDevice} />
+        <button
+          type="button"
+          className="w-full flex items-center gap-2.5 px-3 h-[46px] hover:bg-white/[0.04] transition-colors text-left"
+          onClick={() => { appearance.startEditing(); setView("appearance"); }}
+          aria-label="Open appearance settings"
+        >
+          <IconBadge color={SYSTEM_COLORS.purple}><PaletteIcon size={14} /></IconBadge>
+          <span className="flex flex-col min-w-0 flex-1">
+            <span className="text-white text-[12.5px] font-medium leading-tight">Appearance</span>
+            <span className="text-white/40 text-[10.5px] leading-tight">
+              {appearance.active.mode === "island" ? "Island" : "Notch"} · {accentName} · {appearance.active.opacity}%
+            </span>
+          </span>
+          <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: appearance.active.accentColor }} />
+          <span className="text-white/30"><ChevronRightIcon size={14} strokeWidth={2.4} /></span>
+        </button>
+        <div className="flex items-center gap-2.5 px-3 h-[46px]">
+          <IconBadge color={SYSTEM_COLORS.green}><PowerIcon size={14} /></IconBadge>
+          <span className="flex flex-col min-w-0 flex-1">
+            <span className="text-white text-[12.5px] font-medium leading-tight">Start with Windows</span>
+            <span className="text-white/40 text-[10.5px] leading-tight">Launch PILLAR when you log in</span>
+          </span>
+          <Switch checked={autoStartEnabled} onChange={onAutoStartToggle} label="Start with Windows" />
+        </div>
+        <button
+          type="button"
+          className="w-full flex items-center gap-2.5 px-3 h-[46px] hover:bg-white/[0.04] transition-colors text-left"
+          onClick={() => fireAndForget(tauriInvoke("open_log_dir"), "open log dir")}
+          aria-label="Open debug logs folder"
+          title={logDir ?? undefined}
+        >
+          <IconBadge color={SYSTEM_COLORS.indigo}><ArchiveIcon size={14} /></IconBadge>
+          <span className="flex flex-col min-w-0 flex-1">
+            <span className="text-white text-[12.5px] font-medium leading-tight">Debug logs</span>
+            <span className="text-white/40 text-[10.5px] leading-tight truncate">
+              {logDir ?? "Open the log folder"}
+            </span>
+          </span>
+          <span className="text-white/30"><ChevronRightIcon size={14} strokeWidth={2.4} /></span>
+        </button>
+      </Group>
 
       {layoutSettings && onLayoutChange && (
-        <div className="flex flex-col gap-1 rounded-lg bg-white/5 p-2">
-          <span className="text-white/85 text-[11px] uppercase tracking-wider">Layout</span>
-          <div className="grid grid-cols-2 gap-1">
-            {(["timer", "media", "notifications", "settings", "prism", "productivity"] as const).map((tabId) => (
+        <div>
+          <SectionLabel
+            trailing={
               <button
-                key={tabId}
                 type="button"
-                className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
-                  layoutSettings.visible_tabs[tabId]
-                    ? "bg-white/20 text-white"
-                    : "bg-white/8 text-white/60 hover:text-white hover:bg-white/12"
-                }`}
-                aria-label={`${layoutSettings.visible_tabs[tabId] ? "Hide" : "Show"} ${tabId} tab`}
-                aria-pressed={layoutSettings.visible_tabs[tabId]}
+                className="text-[11px] font-semibold text-white/40 hover:text-white transition-colors"
                 onClick={() =>
                   onLayoutChange({
-                    visible_tabs: {
-                      ...layoutSettings.visible_tabs,
-                      [tabId]: !layoutSettings.visible_tabs[tabId],
-                    },
+                    visible_tabs: { timer: true, media: true, notifications: true, settings: true, prism: true, productivity: true },
+                    idle_indicators: { media: true, battery: true, notifications: true },
                   })
                 }
               >
-                {tabId}
+                Reset
               </button>
-            ))}
-          </div>
-          <div className="grid grid-cols-3 gap-1 mt-1">
-            {(["media", "battery", "notifications"] as const).map((indicatorKey) => (
-              <button
-                key={indicatorKey}
-                type="button"
-                className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
-                  layoutSettings.idle_indicators[indicatorKey]
-                    ? "bg-white/15 text-white"
-                    : "bg-white/8 text-white/60 hover:text-white hover:bg-white/12"
-                }`}
-                aria-label={`${layoutSettings.idle_indicators[indicatorKey] ? "Hide" : "Show"} ${indicatorKey} idle indicator`}
-                aria-pressed={layoutSettings.idle_indicators[indicatorKey]}
-                onClick={() =>
-                  onLayoutChange({
-                    idle_indicators: {
-                      ...layoutSettings.idle_indicators,
-                      [indicatorKey]: !layoutSettings.idle_indicators[indicatorKey],
-                    },
-                  })
-                }
-              >
-                {indicatorKey}
-              </button>
-            ))}
-          </div>
-          <button
-            type="button"
-            className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/75 hover:text-white hover:bg-white/15"
-            onClick={() =>
-              onLayoutChange({
-                visible_tabs: {
-                  timer: true,
-                  media: true,
-                  notifications: true,
-                  settings: true,
-                  prism: true,
-                  productivity: true,
-                },
-                idle_indicators: {
-                  media: true,
-                  battery: true,
-                  notifications: true,
-                },
-              })
             }
           >
-            Reset layout
-          </button>
+            Tabs
+          </SectionLabel>
+          <div className="flex flex-wrap gap-1.5 mb-3">
+            {(Object.keys(TAB_LABELS) as Array<keyof typeof TAB_LABELS>).map((tabId) => (
+              <Chip
+                key={tabId}
+                on={layoutSettings.visible_tabs[tabId]}
+                label={TAB_LABELS[tabId]}
+                ariaLabel={`${layoutSettings.visible_tabs[tabId] ? "Hide" : "Show"} ${tabId} tab`}
+                onClick={() =>
+                  onLayoutChange({ visible_tabs: { ...layoutSettings.visible_tabs, [tabId]: !layoutSettings.visible_tabs[tabId] } })
+                }
+              />
+            ))}
+          </div>
+          <SectionLabel>Island shows</SectionLabel>
+          <div className="flex flex-wrap gap-1.5">
+            {(Object.keys(INDICATOR_LABELS) as Array<keyof typeof INDICATOR_LABELS>).map((key) => (
+              <Chip
+                key={key}
+                on={layoutSettings.idle_indicators[key]}
+                label={INDICATOR_LABELS[key]}
+                ariaLabel={`${layoutSettings.idle_indicators[key] ? "Hide" : "Show"} ${key} idle indicator`}
+                onClick={() =>
+                  onLayoutChange({ idle_indicators: { ...layoutSettings.idle_indicators, [key]: !layoutSettings.idle_indicators[key] } })
+                }
+              />
+            ))}
+          </div>
         </div>
       )}
-
-      {/* Auto-start toggle */}
-      <ToggleSwitch
-        enabled={autoStartEnabled}
-        onToggle={onAutoStartToggle}
-        label="Start with Windows"
-        description="Launch PILLAR when you log in"
-      />
     </div>
   );
 }

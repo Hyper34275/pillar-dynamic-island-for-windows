@@ -1,17 +1,10 @@
 import { useSystemStats } from "../../../hooks/useSystemStats";
-import { hexToRgba } from "../../../hooks/useAppearance";
+import { SYSTEM_COLORS } from "../ui/primitives";
+import { CpuIcon, MemoryIcon } from "../ui/icons";
 
 interface SystemMonitorProps {
   /** Poll only while true (e.g. the Settings tab is open). */
   enabled: boolean;
-  accentColor: string;
-}
-
-interface StatBarProps {
-  label: string;
-  /** 0..100 */
-  percent: number;
-  valueText: string;
   accentColor: string;
 }
 
@@ -20,36 +13,50 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
 }
 
-function StatBar({ label, percent, valueText, accentColor }: StatBarProps) {
+function StatTile({
+  label,
+  icon,
+  percent,
+  detail,
+  tint,
+  ready,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  percent: number;
+  detail?: string;
+  tint: string;
+  ready: boolean;
+}) {
   const pct = clampPercent(percent);
-  // Shift toward red as load climbs so a glance reads "busy" without needing color
-  // literacy — paired with the always-present numeric value for non-color users.
-  const hot = pct >= 85;
-  const fill = hot ? "#ef4444" : accentColor;
+  // Shift toward red as load climbs so a glance reads "busy" — paired with the
+  // always-present numeric value for non-color users.
+  const color = pct >= 85 ? SYSTEM_COLORS.red : pct >= 65 ? SYSTEM_COLORS.orange : tint;
 
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center justify-between text-[10px]">
-        <span className="text-white/70">{label}</span>
-        <span className="text-white/90 tabular-nums" style={{ fontVariantNumeric: "tabular-nums" }}>
-          {valueText}
+    <div className="rounded-[16px] bg-white/[0.07] px-3 pt-2.5 pb-3 flex flex-col gap-2 min-w-0">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-1.5 text-white/50 text-[11px] font-semibold">
+          <span style={{ color }}>{icon}</span>
+          {label}
         </span>
+        {detail && <span className="text-white/35 text-[10px] tabular-nums truncate ml-1">{detail}</span>}
       </div>
+      <span className="text-white text-[22px] font-semibold leading-none tabular-nums tracking-tight" style={{ fontVariantNumeric: "tabular-nums" }}>
+        {ready ? Math.round(pct) : "—"}
+        <span className="text-[13px] text-white/40 ml-0.5">%</span>
+      </span>
       <div
-        className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden"
+        className="h-[5px] w-full rounded-full bg-white/[0.1] overflow-hidden"
         role="progressbar"
         aria-label={`${label} usage`}
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={Math.round(pct)}
-        aria-valuetext={valueText}
       >
         <div
-          className="h-full rounded-full transition-[width] duration-500 ease-out"
-          style={{
-            width: `${pct}%`,
-            background: `linear-gradient(90deg, ${hexToRgba(fill, 0.65)}, ${fill})`,
-          }}
+          className="h-full rounded-full transition-[width,background-color] duration-700 ease-out"
+          style={{ width: `${pct}%`, background: color }}
         />
       </div>
     </div>
@@ -58,36 +65,26 @@ function StatBar({ label, percent, valueText, accentColor }: StatBarProps) {
 
 export function SystemMonitor({ enabled, accentColor }: SystemMonitorProps) {
   const { stats } = useSystemStats(enabled);
-
-  const cpu = stats ? stats.cpuPercent : 0;
-  const memPct = stats ? stats.memPercent : 0;
-  const memText = stats
-    ? `${(stats.memUsedMb / 1024).toFixed(1)} / ${(stats.memTotalMb / 1024).toFixed(1)} GB`
-    : "—";
+  // A white accent reads as "empty" on the bars; fall back to system green.
+  const tint = accentColor.toLowerCase() === "#ffffff" ? SYSTEM_COLORS.green : accentColor;
 
   return (
-    <section
-      className="rounded-pill-md bg-white/5 border border-white/10 p-3 mb-2"
-      aria-label="System monitor"
-    >
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-white/80 text-[11px] uppercase tracking-wider">System</span>
-        {!stats && <span className="text-white/40 text-[10px]">reading…</span>}
-      </div>
-      <div className="flex flex-col gap-2.5">
-        <StatBar
-          label="CPU"
-          percent={cpu}
-          valueText={stats ? `${Math.round(cpu)}%` : "—"}
-          accentColor={accentColor}
-        />
-        <StatBar
-          label="Memory"
-          percent={memPct}
-          valueText={stats ? `${Math.round(memPct)}% · ${memText}` : "—"}
-          accentColor={accentColor}
-        />
-      </div>
+    <section className="grid grid-cols-2 gap-2" aria-label="System monitor">
+      <StatTile
+        label="CPU"
+        icon={<CpuIcon size={12} strokeWidth={2.4} />}
+        percent={stats?.cpuPercent ?? 0}
+        tint={tint}
+        ready={!!stats}
+      />
+      <StatTile
+        label="Memory"
+        icon={<MemoryIcon size={12} strokeWidth={2.4} />}
+        percent={stats?.memPercent ?? 0}
+        detail={stats ? `${(stats.memUsedMb / 1024).toFixed(1)}/${(stats.memTotalMb / 1024).toFixed(0)} GB` : undefined}
+        tint={tint}
+        ready={!!stats}
+      />
     </section>
   );
 }

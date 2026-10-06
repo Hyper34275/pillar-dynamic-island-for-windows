@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { motion } from "motion/react";
 import { Pill } from "./components/Pill/Pill";
 import { isTauriAvailable, tauriInvoke } from "./lib/tauri";
+import { dlog } from "./lib/debugLog";
 
 function App() {
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -48,8 +49,18 @@ function App() {
       try {
         const fullscreen = await tauriInvoke<boolean>("is_foreground_fullscreen");
         if (isMounted && fullscreen !== null && fullscreen !== lastFullscreenState.current) {
+          dlog(
+            "info",
+            "app",
+            fullscreen
+              ? "fullscreen app detected — pill moved off-screen (y=-280), not clickable until it exits"
+              : "fullscreen app exited — pill restored on-screen"
+          );
           lastFullscreenState.current = fullscreen;
           setIsFullscreen(fullscreen);
+          // While the pill is slid off-screen its (transparent) window would still
+          // swallow clicks meant for the app underneath — let them pass through.
+          tauriInvoke("set_click_through", { ignore: fullscreen }).catch(() => {});
         }
       } catch (error) {
         if (isMounted) {

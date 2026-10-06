@@ -1,6 +1,6 @@
 [package]
 name = "pillar"
-version = "0.1.4"
+version = "0.2.2"
 description = "Dynamic Island-style system overlay for Windows"
 authors = ["you"]
 edition = "2021"
@@ -17,9 +17,11 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 once_cell = "1.20"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# System monitor (CPU / RAM) — cross-platform
+# System monitor (CPU / RAM) â€” cross-platform
 sysinfo = "0.33"
 
 # Windows-only deps (Android builds must not pull these)
@@ -53,6 +55,9 @@ features = [
   "Win32_System_Power",
   # Foreground app context for Prism (window title + exe name; no screenshots)
   "Win32_System_Threading",
+  # Global pointer monitor (WH_MOUSE_LL hook: GetModuleHandleW, GetAsyncKeyState)
+  "Win32_System_LibraryLoader",
+  "Win32_UI_Input_KeyboardAndMouse",
   # Async support
   "Foundation",
   "Foundation_Collections",

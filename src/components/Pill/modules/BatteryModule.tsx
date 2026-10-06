@@ -14,10 +14,10 @@ interface BatteryIndicatorProps {
 }
 
 function getBatteryColor(battery: BatteryInfo, isLow: boolean, isCritical: boolean): string {
-  if (battery.isCharging) return "#22c55e"; // green
-  if (isCritical) return "#ef4444";          // red
-  if (isLow) return "#f59e0b";               // amber
-  return "#ffffff99";                         // white/60
+  if (battery.isCharging) return "#30D158"; // iOS green
+  if (isCritical) return "#FF453A";          // iOS red
+  if (isLow) return "#FFD60A";               // iOS yellow
+  return "rgba(255,255,255,0.85)";
 }
 
 function BatteryIcon({ battery, isLow, isCritical }: Omit<BatteryIndicatorProps, "showPercent">) {
