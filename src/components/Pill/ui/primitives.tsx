@@ -261,13 +261,10 @@ export function EmptyState({
   tint?: string;
   children?: ReactNode;
 }) {
+  // No entrance animation of its own: it appears with its tab panel, whose fade is part of the
+  // island's single transition. A second, independent fade here would lag behind it.
   return (
-    <motion.div
-      className="flex flex-col items-center justify-center text-center py-6 gap-1"
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: "spring", stiffness: 400, damping: 32 }}
-    >
+    <div className="flex flex-col items-center justify-center text-center py-6 gap-1">
       <div
         className="w-12 h-12 rounded-full flex items-center justify-center text-white/80 mb-1.5"
         style={{ background: tint }}
@@ -284,7 +281,7 @@ export function EmptyState({
         </span>
       )}
       {children}
-    </motion.div>
+    </div>
   );
 }
 

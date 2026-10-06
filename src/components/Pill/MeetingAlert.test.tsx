@@ -22,7 +22,7 @@ function alertOf(extra: Partial<ReminderAlert> = {}): ReminderAlert {
   };
 }
 
-const render = (alert: ReminderAlert) => renderToStaticMarkup(<MeetingAlert alert={alert} reducedMotion={false} />);
+const render = (alert: ReminderAlert) => renderToStaticMarkup(<MeetingAlert alert={alert} />);
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -79,7 +79,7 @@ describe("MeetingAlert", () => {
     vi.stubGlobal("navigator", { language: "he-IL" });
     const [{ renderToStaticMarkup: renderHe }, { MeetingAlert: AlertHe }] = await Promise.all([import("react-dom/server"), import("./MeetingAlert")]);
     const html = (minutesRemaining: number) =>
-      renderHe(<AlertHe alert={alertOf({ minutesRemaining, subject: "ישיבת צוות" })} reducedMotion={false} />);
+      renderHe(<AlertHe alert={alertOf({ minutesRemaining, subject: "ישיבת צוות" })} />);
     expect(html(30)).toContain("פגישה בעוד 30 דקות");
     expect(html(2)).toContain("פגישה בעוד שתי דקות");
     expect(html(1)).toContain("פגישה בעוד דקה");
