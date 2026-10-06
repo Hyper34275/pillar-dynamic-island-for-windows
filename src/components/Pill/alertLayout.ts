@@ -16,6 +16,18 @@ export function alertSubjectLines(subject: string): 1 | 2 {
   return width > available ? 2 : 1;
 }
 
+/** Snoozing for 5 minutes only makes sense while more than that is left before the start. */
+export const SNOOZE_MINUTES = 5;
+
+export function canSnooze(alert: ReminderAlert): boolean {
+  return alert.minutesRemaining > SNOOZE_MINUTES;
+}
+
+/** The alert gets a row of buttons when there is something to press: join and/or snooze. */
+export function alertHasActions(alert: ReminderAlert): boolean {
+  return !!alert.meetingUrl || canSnooze(alert);
+}
+
 export function alertIslandSize(alert: ReminderAlert): IslandSize {
-  return meetingAlertSize(alertSubjectLines(alert.subject), !!alert.location);
+  return meetingAlertSize(alertSubjectLines(alert.subject), !!alert.location, alertHasActions(alert));
 }

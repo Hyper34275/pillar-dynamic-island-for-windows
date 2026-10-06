@@ -1,10 +1,11 @@
-import { motion } from "motion/react";
 import { formatTime } from "../../lib/dateFormat";
 import { t } from "../../lib/i18n";
 import type { ReminderAlert } from "../../lib/reminders/types";
-import { pillDimensions } from "./animations";
-import { ALERT_SUBJECT_FONT_SIZE } from "./alertLayout";
+import { layerFade, pillDimensions } from "./animations";
+import { ALERT_SUBJECT_FONT_SIZE, alertHasActions, alertIslandSize, canSnooze } from "./alertLayout";
+import { IslandLayer } from "./IslandLayer";
 import { SYSTEM_COLORS } from "./ui/primitives";
+import { JoinButton } from "./ui/meetingActions";
 
 const a = pillDimensions.alert;
 
@@ -27,8 +28,11 @@ export function meetingAlertAnnouncement(alert: ReminderAlert): string {
 }
 
 interface MeetingAlertProps {
+  /** The user joined the meeting from the alert (it can go away). */
+  onJoin?: () => void;
+  /** "Remind me in 5 min": the alert goes away and comes back then. */
+  onSnooze?: () => void;
   alert: ReminderAlert;
-  reducedMotion: boolean;
 }
 
 // Physically left-to-right like the rest of the island; each text picks its own glyph direction
@@ -38,19 +42,18 @@ const TEXT_BASE = { textAlign: "left", unicodeBidi: "plaintext" } as const;
 /**
  * Content of the island while a meeting reminder shows. It only fills the island: the island
  * itself (and the native window) grow around it, sized by meetingAlertSize. It never takes
- * pointer events or focus, so it cannot get in the way of what the user is doing; the
+ * pointer events or focus (only its Join / snooze buttons do), so it cannot get in the way; the
  * announcement for assistive tech is made by the shell's live region.
  */
-export function MeetingAlert({ alert, reducedMotion }: MeetingAlertProps) {
+export function MeetingAlert({ alert, onJoin, onSnooze }: MeetingAlertProps) {
   return (
-    <motion.div
+    <IslandLayer
+      name="meetingAlert"
+      fade={layerFade.temporary}
+      size={alertIslandSize(alert)}
       dir="ltr"
-      className="absolute inset-0 flex flex-col justify-center select-none pointer-events-none"
+      className="flex flex-col justify-center select-none pointer-events-none"
       style={{ paddingInline: a.paddingX, paddingBlock: a.paddingY, gap: a.gap, color: "#f5f5f7" }}
-      initial={{ opacity: 0, y: reducedMotion ? 0 : -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, transition: { duration: 0.08 } }}
-      transition={{ duration: reducedMotion ? 0.05 : 0.22, delay: reducedMotion ? 0 : 0.08, ease: [0.2, 0.8, 0.2, 1] }}
     >
       <span
         dir="auto"
@@ -82,6 +85,24 @@ export function MeetingAlert({ alert, reducedMotion }: MeetingAlertProps) {
           {alert.location}
         </span>
       )}
-    </motion.div>
+      {alertHasActions(alert) && (
+        <div className="flex items-center gap-2 pointer-events-auto" style={{ height: pillDimensions.alertActions.height, marginTop: pillDimensions.alertActions.gap - a.gap }}>
+          {alert.meetingUrl && <JoinButton url={alert.meetingUrl} subject={meetingAlertSubject(alert)} height={28} onJoined={onJoin} />}
+          {canSnooze(alert) && (
+            <button
+              type="button"
+              className="inline-flex items-center h-[28px] rounded-full px-3 text-[12.5px] font-semibold text-white/80 bg-white/[0.1] hover:bg-white/[0.16] flex-shrink-0"
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSnooze?.();
+              }}
+            >
+              <span dir="auto">{t("reminder.snooze")}</span>
+            </button>
+          )}
+        </div>
+      )}
+    </IslandLayer>
   );
 }

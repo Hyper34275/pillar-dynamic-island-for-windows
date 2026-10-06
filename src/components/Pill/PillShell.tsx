@@ -2,19 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion, useSpring } from "motion/react";
 import { usePillState } from "../../hooks/usePillState";
 import { useSettings } from "../../hooks/useSettings";
-import { useToday } from "../../hooks/useClock";
+import { useMinute, useToday } from "../../hooks/useClock";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useIslandEvents } from "../../hooks/useIslandEvents";
 import { useIslandState } from "../../hooks/useIslandState";
-import { useCalendarService } from "../../hooks/useCalendar";
+import { useCalendarEvents, useCalendarService } from "../../hooks/useCalendar";
 import { useReminders } from "../../hooks/useReminders";
+import { useMeetingSilence } from "../../hooks/useMeetingSilence";
+import { meetingStatus } from "../../lib/calendar/meetingStatus";
+import { silence, useSilenceUntil } from "../../lib/island/silence";
 import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenReader";
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
 import { fullDate } from "../../lib/dateFormat";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
-import { bootAnimationDuration, compactSize, expandedSize, notificationSize, pillDimensions, springConfig, type IslandSize } from "./animations";
+import { bootAnimationDuration, expandedSize, notificationSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
+import { TransitionContext, useDrivenTransition } from "./drivenTransition";
 import type { ReminderStore } from "../../lib/reminders/types";
 import { alertIslandSize } from "./alertLayout";
 import { CompactIsland } from "./CompactIsland";
@@ -22,8 +26,9 @@ import { ContextMenu } from "./ContextMenu";
 import { ExpandedIsland } from "./ExpandedIsland";
 import { MeetingAlert, meetingAlertAnnouncement, meetingAlertLabel, meetingAlertSubject } from "./MeetingAlert";
 import { NotificationToast } from "./NotificationToast";
+import { RingerPill, ringerLabel } from "./RingerPill";
 import { TABS, type TabId } from "./tabs";
-import { useCompactLabels } from "./useCompactLayout";
+import { useCompactContent, useCompactLabels } from "./useCompactLayout";
 import { usePillGeometry } from "./usePillGeometry";
 
 // Constant on purpose: an animated shadow would repaint every frame of every morph. Inset,
@@ -37,7 +42,7 @@ interface PillShellProps {
 
 export function PillShell({ reminderStore }: PillShellProps = {}) {
   const reducedMotion = useReducedMotion() ?? false;
-  const { settings } = useSettings();
+  const { settings, loaded: settingsLoaded } = useSettings();
   const today = useToday();
   const labels = useCompactLabels(today);
   const calendar = useCalendarService();
@@ -57,12 +62,24 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const activeTab = state.tab;
 
   const notifications = useNotifications(settings.notificationsEnabled, islandState.showNotification);
-  useReminders(islandState.showAlert, reminderStore);
+  const { snooze } = useReminders(islandState.showAlert, reminderStore);
+  useMeetingSilence(settingsLoaded ? settings.meetingSilencePrompt : null, islandState.showRinger);
 
-  const { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed } = usePillState({
+  // The collapsed island: the date, or a meeting about to start / in progress, plus the unseen count.
+  const events = useCalendarEvents();
+  const minute = useMinute().getTime();
+  const status = useMemo(() => meetingStatus(events, minute), [events, minute]);
+  const silenceUntil = useSilenceUntil();
+  const compact = useCompactContent(
+    labels,
+    status,
+    settings.notificationsEnabled ? notifications.unseen : 0,
+    silenceUntil !== null && silenceUntil > minute
+  );
+
+  const { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed, foregroundChanged } = usePillState({
     expanded: state.expanded,
-    pinned: state.pinned,
-    temporary: view.kind === "meetingAlert" || view.kind === "notification",
+    temporary: view.kind === "meetingAlert" || view.kind === "notification" || view.kind === "ringer",
     expand: islandState.expand,
     pin: islandState.pin,
     collapse: islandState.collapse,
@@ -74,6 +91,9 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // ---------------------------------------------------------------------------
   // Geometry: the island's own size (animated by springs) and the native window,
   // which is exactly the island's target size (sent through the ordered resize queue).
+  // The island's size also drives every island transition: each layer of content fades by
+  // how far the size has travelled (drivenTransition.ts), so content never shows before the
+  // island has room for it, and never vanishes while the island is still large.
   // ---------------------------------------------------------------------------
   const target = useMemo<IslandSize>(() => {
     switch (view.kind) {
@@ -81,49 +101,64 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         return expandedSize();
       case "meetingAlert":
         return alertIslandSize(view.alert);
+      case "ringer":
+        return ringerSize();
       case "notification":
-        return notificationSize(view.notification.body !== "");
+        return notificationSize(view.notification.body !== "", !!view.notification.invite);
       case "idle":
-        return compactSize(labels.contentWidth);
+        return compact.size;
     }
-  }, [view, labels.contentWidth]);
+  }, [view, compact.size]);
 
-  const width = useSpring(pillDimensions.boot.width, reducedMotion ? springConfig.instant : springConfig.island);
-  const height = useSpring(pillDimensions.boot.height, reducedMotion ? springConfig.instant : springConfig.island);
-  const radius = useSpring(pillDimensions.boot.radius, reducedMotion ? springConfig.instant : springConfig.island);
+  const width = useSpring(pillDimensions.boot.width, springConfig.island);
+  const height = useSpring(pillDimensions.boot.height, springConfig.island);
+  const radius = useSpring(pillDimensions.boot.radius, springConfig.island);
 
   const { invalidate: invalidateGeometry } = usePillGeometry(target, { width, height });
 
-  // Boot: dot → morph into the compact pill → interactive.
+  // Boot: dot → morph into the compact pill → interactive. The dot is a state of its own (with
+  // no content); from the morph on, the island follows the view like any other transition.
+  const isDot = isBooting && bootPhase === "dot";
   useEffect(() => {
     if (!isBooting) return;
-    const compact = compactSize(labels.contentWidth);
-    const morph = () => {
-      setBootPhase("morph");
-      width.set(compact.width);
-      height.set(compact.height);
-      radius.set(compact.radius);
-    };
     if (reducedMotion) {
-      morph();
+      setBootPhase("morph");
       completeBootAnimation();
       return;
     }
-    const morphTimer = setTimeout(morph, bootAnimationDuration.dotAppear);
+    const morphTimer = setTimeout(() => setBootPhase("morph"), bootAnimationDuration.dotAppear);
     const doneTimer = setTimeout(completeBootAnimation, bootAnimationDuration.dotAppear + bootAnimationDuration.morphToPill);
     return () => {
       clearTimeout(morphTimer);
       clearTimeout(doneTimer);
     };
-  }, [isBooting, reducedMotion, labels.contentWidth, width, height, radius, completeBootAnimation]);
+  }, [isBooting, reducedMotion, completeBootAnimation]);
 
-  // Follow the target size once booted (expand, alert, toast, collapse, new date text).
+  // What the island shows (also the AnimatePresence key of that layer) and the size it morphs to.
+  const shownKey = isDot
+    ? "boot"
+    : view.kind === "meetingAlert"
+      ? `alert-${view.alert.key}`
+      : view.kind === "ringer"
+        ? `ringer-${view.ringer.key}`
+        : view.kind === "notification"
+        ? `notification-${view.notification.id}`
+        : view.kind === "userExpanded"
+          ? "expanded"
+          : "compact";
+  const shownSize: IslandSize = isDot ? pillDimensions.boot : target;
+
+  // Follow the shown size (boot, expand, alert, toast, collapse, new date text). The springs
+  // continue from their current value and velocity, so a reversed or interrupted morph never
+  // restarts. Reduced motion keeps this (see REDUCED_MOTION in animations.ts).
   useEffect(() => {
-    if (isBooting) return;
-    width.set(target.width);
-    height.set(target.height);
-    radius.set(target.radius);
-  }, [isBooting, target.width, target.height, target.radius, width, height, radius]);
+    width.set(shownSize.width);
+    height.set(shownSize.height);
+    radius.set(shownSize.radius);
+  }, [shownSize.width, shownSize.height, shownSize.radius, width, height, radius]);
+
+  const islandDrivers = useMemo(() => [width, height], [width, height]);
+  const islandTransition = useDrivenTransition(islandDrivers, [shownSize.width, shownSize.height], shownKey);
 
   useEffect(() => {
     dlog("info", "pill", `view -> ${view.kind}${isBooting ? " (booting)" : ""}`);
@@ -138,6 +173,12 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     if (shownAlert) announce(meetingAlertAnnouncement(shownAlert));
   }, [shownAlert, announce]);
 
+  // The ring / silent pill says what it switched to.
+  const shownRinger = view.kind === "ringer" ? view.ringer : null;
+  useEffect(() => {
+    if (shownRinger) announce(ringerLabel(shownRinger));
+  }, [shownRinger, announce]);
+
   // Opening the calendar side of things is when stale data is most visible: ask for a sync.
   useEffect(() => {
     if (isExpanded) void calendar.refresh();
@@ -147,12 +188,6 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // Tabs
   // ---------------------------------------------------------------------------
   const activeTabIndex = TABS.findIndex((tab) => tab.id === activeTab);
-  // Computed only when the tab actually changes, so unrelated re-renders during the
-  // transition can't flip the slide direction.
-  const tabDirRef = useRef<{ index: number; dir: 1 | -1 }>({ index: activeTabIndex, dir: 1 });
-  if (tabDirRef.current.index !== activeTabIndex) {
-    tabDirRef.current = { index: activeTabIndex, dir: activeTabIndex > tabDirRef.current.index ? 1 : -1 };
-  }
 
   const goToTab = useCallback(
     (direction: -1 | 1) => {
@@ -187,21 +222,27 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // Closing and toggling. Whatever closes the island while the pointer is on it must also stop
   // that same pointer from expanding it again (hover intent) until it has left.
   // ---------------------------------------------------------------------------
-  const closeAll = useCallback(() => {
-    holdCollapsed();
-    if (view.kind === "meetingAlert") islandState.dismissAlert();
-    else if (view.kind === "notification") islandState.dismissNotification();
-    else islandState.collapse();
-  }, [holdCollapsed, view.kind, islandState]);
+  const closeAll = useCallback(
+    (reason: string) => {
+      dlog("info", "pill", `collapse: ${reason}`);
+      holdCollapsed();
+      if (view.kind === "meetingAlert") islandState.dismissAlert();
+      else if (view.kind === "ringer") islandState.dismissRinger();
+      else if (view.kind === "notification") islandState.dismissNotification();
+      else islandState.collapse();
+    },
+    [holdCollapsed, view.kind, islandState]
+  );
 
   const toggleIsland = useCallback(
     (tab?: TabId) => {
       if (view.kind === "userExpanded") {
         if (tab && tab !== activeTab) islandState.expand(tab);
-        else closeAll();
+        else closeAll("toggle");
         return;
       }
       if (view.kind === "meetingAlert") islandState.dismissAlert();
+      else if (view.kind === "ringer") islandState.dismissRinger();
       else if (view.kind === "notification") islandState.dismissNotification();
       islandState.pin(tab);
     },
@@ -212,6 +253,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     onToggle: toggleIsland,
     onFullscreenChanged: setFullscreen,
     onDisplayChanged: invalidateGeometry,
+    onForegroundChanged: foregroundChanged,
   });
 
   // ---------------------------------------------------------------------------
@@ -237,7 +279,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape" && view.kind !== "idle") {
-        closeAll();
+        closeAll("escape key");
         return;
       }
 
@@ -270,7 +312,23 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     ? t("island.expandedLabel", { app: APP_NAME })
     : view.kind === "meetingAlert"
       ? `${meetingAlertLabel(view.alert)}. ${meetingAlertSubject(view.alert)}`
-      : `${fullDate(today)}. ${t("island.open")}`;
+      : view.kind === "ringer"
+        ? `${ringerLabel(view.ringer)}. ${view.ringer.phase === "start" ? t("ringer.hint") : ""}`
+        : compact.statusText
+          ? `${compact.statusText}. ${t("island.open")}`
+          : `${fullDate(today)}. ${t("island.open")}`;
+
+  // A tap on the ring / silent pill switches it; silent holds notifications until the meeting ends.
+  const toggleRinger = (ringer: NonNullable<typeof shownRinger>) => {
+    if (ringer.phase === "end") {
+      islandState.dismissRinger();
+      return;
+    }
+    if (ringer.silent) silence.clear();
+    else silence.until(ringer.untilMs);
+    dlog("info", "pill", `ringer -> ${ringer.silent ? "ring" : "silent"}`);
+    islandState.toggleRinger();
+  };
 
   return (
     <>
@@ -291,21 +349,17 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
           borderRadius: radius,
           boxShadow: ISLAND_EDGE,
           overflow: "hidden",
-          background:
-            isBooting && bootPhase === "dot"
+          background: isDot
               ? "radial-gradient(circle, rgba(255,255,255,0.85) 0%, rgba(200,200,200,0.6) 100%)"
               : "#000",
         }}
-        initial={{ opacity: 0, scale: 0 }}
+        initial={reducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0 }}
         animate={{ opacity: 1, scale: 1 }}
-        transition={reducedMotion ? { duration: 0.1, ease: "easeOut" } : springConfig.entrance}
+        // The launch entrance of the dot, and the release of the press feedback: no bounce.
+        transition={reducedMotion ? { duration: 0.1, ease: "easeOut" } : springConfig.island}
         whileTap={view.kind === "idle" && !reducedMotion ? { scale: 0.97 } : undefined}
         onPointerEnter={pointerEnter}
         onPointerLeave={pointerLeave}
-        // A click anywhere inside an expanded island is the user engaging with it: keep it open.
-        onPointerDownCapture={() => {
-          if (isExpanded && !state.pinned) islandState.pin();
-        }}
         onPointerDown={gestureHandlers.onPointerDown}
         onPointerMove={gestureHandlers.onPointerMove}
         onPointerUp={gestureHandlers.onPointerUp}
@@ -317,7 +371,8 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         onClick={() => {
           if (isBooting) return;
           if (view.kind === "idle") islandState.pin();
-          else if (view.kind === "meetingAlert") closeAll();
+          else if (view.kind === "meetingAlert") closeAll("meeting alert clicked");
+          else if (view.kind === "ringer") toggleRinger(view.ringer);
         }}
         onKeyDown={(e) => {
           if (view.kind === "idle" && (e.key === "Enter" || e.key === " ")) {
@@ -326,32 +381,43 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
           }
         }}
       >
-        <AnimatePresence>
-          {!isBooting && view.kind === "idle" && (
-            <CompactIsland key="compact" labels={labels} unseen={settings.notificationsEnabled ? unseen : 0} reducedMotion={reducedMotion} />
-          )}
-          {view.kind === "meetingAlert" && <MeetingAlert key={`alert-${view.alert.key}`} alert={view.alert} reducedMotion={reducedMotion} />}
-          {view.kind === "notification" && (
-            <NotificationToast
-              key={`notification-${view.notification.id}`}
-              notification={view.notification}
-              reducedMotion={reducedMotion}
-              onDismiss={islandState.dismissNotification}
-              onActivate={notifications.activate}
-            />
-          )}
-        </AnimatePresence>
-
-        {isExpanded && (
-          <ExpandedIsland
-            activeTab={activeTab}
-            direction={tabDirRef.current.dir}
-            reducedMotion={reducedMotion}
-            notificationStatus={notifications.status}
-            onRequestNotificationAccess={notifications.requestAccess}
-            onSelectTab={islandState.expand}
-          />
-        )}
+        {/* One layer per kind of content. A replaced layer stays mounted (fading with the morph,
+            unclickable) until it is gone, so closing never empties the island before it shrinks. */}
+        <TransitionContext.Provider value={islandTransition}>
+          <AnimatePresence>
+            {shownKey === "compact" && <CompactIsland key="compact" content={compact} />}
+            {view.kind === "meetingAlert" && !isDot && (
+              <MeetingAlert
+                key={shownKey}
+                alert={view.alert}
+                onJoin={() => closeAll("joined from the alert")}
+                onSnooze={() => {
+                  snooze(view.alert);
+                  closeAll("alert snoozed");
+                }}
+              />
+            )}
+            {view.kind === "ringer" && !isDot && <RingerPill key={shownKey} ringer={view.ringer} />}
+            {view.kind === "notification" && !isDot && (
+              <NotificationToast
+                key={shownKey}
+                notification={view.notification}
+                onDismiss={islandState.dismissNotification}
+                onActivate={notifications.activate}
+              />
+            )}
+            {isExpanded && !isDot && (
+              <ExpandedIsland
+                key="expanded"
+                activeTab={activeTab}
+                reducedMotion={reducedMotion}
+                notificationStatus={notifications.status}
+                onRequestNotificationAccess={notifications.requestAccess}
+                onSelectTab={islandState.expand}
+              />
+            )}
+          </AnimatePresence>
+        </TransitionContext.Provider>
 
         {contextMenu.isOpen && (
           <ContextMenu
@@ -359,7 +425,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
             y={contextMenu.y}
             onClose={closeContextMenu}
             items={[
-              { label: t("ctx.collapse"), run: closeAll },
+              { label: t("ctx.collapse"), run: () => closeAll("context menu") },
               { label: t("ctx.prevTab"), run: () => goToTab(-1) },
               { label: t("ctx.nextTab"), run: () => goToTab(1) },
             ]}
