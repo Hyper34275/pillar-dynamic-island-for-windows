@@ -65,11 +65,11 @@ export type MonitorInfo = {
   isPrimary: boolean;
 };
 
+/** Logical px; `radius` is the island's corner radius, used to clip the native window. */
 export type IslandGeometry = {
   width: number;
   height: number;
   radius?: number;
-  animate?: boolean;
 };
 
 /** A notification as delivered by the backend. Held in memory only, never persisted or logged. */
@@ -148,6 +148,15 @@ export function normalizeNotification(raw: unknown): IslandNotification | null {
   };
 }
 
+export function normalizeReminderState(raw: unknown): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!isRecord(raw)) return out;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === "number" && Number.isFinite(value)) out[key] = value;
+  }
+  return out;
+}
+
 const NOTIFICATION_STATUSES: readonly NotificationStatus[] = ["allowed", "denied", "unspecified", "unsupported", "policy", "error"];
 
 export function normalizeNotificationStatus(raw: unknown): NotificationStatus | null {
@@ -213,9 +222,20 @@ export const ipc = {
   activateNotification: (id: number) => callVoid("activate_notification", { id }),
   activateAppByAumid: (aumid: string) => callVoid("activate_app_by_aumid", { aumid }),
 
-  /** Arguments are passed flat: invoke("set_island_geometry", { width, height, radius?, animate? }). */
+  /** Arguments are passed flat: invoke("set_island_geometry", { width, height, radius }). */
   setIslandGeometry: (geometry: IslandGeometry) => callVoid("set_island_geometry", { ...geometry }, { timeoutMs: 3000 }),
   setClickThrough: (ignore: boolean) => callVoid("set_click_through", { ignore }),
+
+  /** Raw snapshot: the calendar provider owns normalisation. */
+  calendarGetSnapshot: () => call<unknown>("calendar_get_snapshot"),
+  calendarRefresh: () => callVoid("calendar_refresh"),
+
+  /** key -> firedAtUnixMs. Null when the backend is unavailable. */
+  async reminderStateLoad(): Promise<Record<string, number> | null> {
+    const raw = await call<unknown>("reminder_state_load");
+    return raw === null ? null : normalizeReminderState(raw);
+  },
+  reminderStateSave: (map: Record<string, number>) => callVoid("reminder_state_save", { map }),
 
   async getMonitors(): Promise<MonitorInfo[] | null> {
     const raw = await call<unknown>("get_monitors");

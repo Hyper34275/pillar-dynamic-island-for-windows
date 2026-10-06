@@ -79,9 +79,37 @@ describe("CalendarView", () => {
     expect(html).not.toContain("Meeting four");
   });
 
-  it("marks a meeting that already started as in progress", () => {
+  it("labels a meeting that already started 'Now' instead of a countdown", () => {
     const html = render(connected([event("now", -10, 20)]));
-    expect(html).toContain("In progress");
+    expect(html).toContain(">Now<");
+    expect(html).not.toMatch(/in d+ min/);
+  });
+
+  it("shows the connecting state", () => {
+    expect(render({ ...WAITING_SNAPSHOT, status: "connecting" })).toContain("Connecting to Outlook");
+  });
+
+  it("keeps all-day events in their own compact rows, never as the next meeting", () => {
+    const html = render(connected([event("holiday", -600, 600, { allDay: true, subject: "Public holiday" }), event("real", 25, 55)]));
+    expect(html).toContain("Public holiday");
+    expect(html).toContain("All day");
+    const hero = html.slice(html.indexOf('aria-label="Next meeting"'));
+    expect(hero).toContain("Meeting real");
+    expect(hero).not.toContain("Public holiday");
+  });
+
+  it("lists all-day events even when there is no timed meeting", () => {
+    const html = render(connected([event("holiday", -600, 600, { allDay: true, subject: "Public holiday" })]));
+    expect(html).toContain("Public holiday");
+    expect(html).toContain("No upcoming meetings");
+  });
+
+  it("does not show a declined all-day event", () => {
+    expect(render(connected([event("x", -600, 600, { allDay: true, responseStatus: "declined", subject: "Declined thing" })]))).not.toContain("Declined thing");
+  });
+
+  it("shows no organizer", () => {
+    expect(render(connected([event("a", 10, 40, { organizer: "Hidden Person" })]))).not.toContain("Hidden Person");
   });
 
   it("falls back to a placeholder for empty subjects", () => {
@@ -97,5 +125,23 @@ describe("CalendarView", () => {
 
   it("is physically left-to-right so RTL languages cannot flip the layout", () => {
     expect(render(connected([event("a", 10, 40)]))).toContain('dir="ltr"');
+  });
+});
+
+describe("CalendarView day labels", () => {
+  const localNow = new Date(2026, 9, 6, 10, 0).getTime();
+  const at = (day: number, hour: number) => new Date(2026, 9, 6 + day, hour, 0).toISOString();
+  const local = (id: string, startDay: number, startHour: number, extra: Partial<CalendarEventDto> = {}) =>
+    event(id, 0, 0, { startUtc: at(startDay, startHour), endUtc: at(startDay, startHour + 1), ...extra });
+  const renderLocal = (events: CalendarEventDto[]) => renderToStaticMarkup(<CalendarView snapshot={connected(events)} nowMs={localNow} />);
+
+  it("says nothing for today, 'Tomorrow' for the next day and the weekday after that", () => {
+    const today = renderLocal([local("t", 0, 14)]);
+    expect(today).not.toContain("Tomorrow");
+
+    const html = renderLocal([local("a", 1, 9), local("b", 1, 11), local("c", 2, 9)]);
+    expect(html).toContain("Tomorrow, ");
+    expect(html).toMatch(/>Tomorrow</);
+    expect(html).toContain(">Thursday<");
   });
 });

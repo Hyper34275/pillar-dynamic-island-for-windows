@@ -1,8 +1,8 @@
 import { useCalendar } from "../../../hooks/useCalendar";
 import { useMinute } from "../../../hooks/useClock";
-import { formatTime, relativeMinutes } from "../../../lib/dateFormat";
+import { dayLabel, formatTime, relativeMinutes } from "../../../lib/dateFormat";
 import { t, type MessageKey } from "../../../lib/i18n";
-import { selectUpcoming } from "../../../lib/calendar/select";
+import { selectAllDay, selectUpcoming } from "../../../lib/calendar/select";
 import type { CalendarEventDto, CalendarSnapshot, CalendarStatus } from "../../../lib/calendar/types";
 import { EmptyState, SYSTEM_COLORS } from "../ui/primitives";
 import { CalendarIcon } from "../ui/icons";
@@ -18,6 +18,7 @@ const STATUS_COPY: Record<Exclude<CalendarStatus, "connected">, { title: Message
 
 /** How many meetings the tab shows: the next one plus up to two after it. */
 const MAX_MEETINGS = 3;
+const MAX_ALL_DAY = 2;
 
 function timeRange(event: CalendarEventDto): string {
   return `${formatTime(new Date(event.startUtc))} – ${formatTime(new Date(event.endUtc))}`;
@@ -27,9 +28,14 @@ function subjectOf(event: CalendarEventDto): string {
   return event.subject.trim() || t("calendar.noSubject");
 }
 
+function withDay(event: CalendarEventDto, nowMs: number, text: string): string {
+  const day = dayLabel(new Date(event.startUtc), nowMs);
+  return day ? `${day}, ${text}` : text;
+}
+
 function NextMeetingCard({ event, nowMs }: { event: CalendarEventDto; nowMs: number }) {
   const startMs = Date.parse(event.startUtc);
-  const when = startMs <= nowMs ? t("calendar.inProgress") : relativeMinutes((startMs - nowMs) / 60_000);
+  const ongoing = startMs <= nowMs;
   return (
     <section dir="ltr" className="rounded-[22px] bg-white/[0.08] px-4 py-3.5 flex flex-col gap-1.5" aria-label={t("calendar.next")}>
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-white/45" dir="auto">
@@ -39,9 +45,9 @@ function NextMeetingCard({ event, nowMs }: { event: CalendarEventDto; nowMs: num
         {subjectOf(event)}
       </h3>
       <div className="flex items-baseline justify-between gap-3 text-[13px] tabular-nums">
-        <span className="text-white/75 whitespace-nowrap">{timeRange(event)}</span>
-        <span className="text-white/45 truncate" dir="auto">
-          {when}
+        <span className="text-white/75 truncate">{withDay(event, nowMs, timeRange(event))}</span>
+        <span className={`flex-shrink-0 ${ongoing ? "font-semibold text-white" : "text-white/45"}`} dir="auto">
+          {ongoing ? t("calendar.now") : relativeMinutes((startMs - nowMs) / 60_000)}
         </span>
       </div>
       {event.location && (
@@ -53,13 +59,32 @@ function NextMeetingCard({ event, nowMs }: { event: CalendarEventDto; nowMs: num
   );
 }
 
-function MeetingRow({ event }: { event: CalendarEventDto }) {
+function MeetingRow({ event, nowMs }: { event: CalendarEventDto; nowMs: number }) {
+  const day = dayLabel(new Date(event.startUtc), nowMs);
   return (
     <li dir="ltr" className="flex items-baseline gap-3 px-1">
       <span className="w-[64px] flex-shrink-0 text-[12.5px] font-medium tabular-nums text-white/55 whitespace-nowrap">
         {formatTime(new Date(event.startUtc))}
       </span>
       <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-white/85" dir="auto" style={{ unicodeBidi: "plaintext" }}>
+        {subjectOf(event)}
+      </span>
+      {day && (
+        <span className="flex-shrink-0 text-[11px] text-white/40" dir="auto">
+          {day}
+        </span>
+      )}
+    </li>
+  );
+}
+
+function AllDayRow({ event }: { event: CalendarEventDto }) {
+  return (
+    <li dir="ltr" className="flex items-baseline gap-3 px-1">
+      <span className="w-[64px] flex-shrink-0 text-[11px] font-semibold uppercase tracking-[0.06em] text-white/40 truncate" dir="auto">
+        {t("calendar.allDay")}
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[12.5px] text-white/70" dir="auto" style={{ unicodeBidi: "plaintext" }}>
         {subjectOf(event)}
       </span>
     </li>
@@ -86,21 +111,32 @@ interface CalendarViewProps {
 /** Pure rendering of a calendar snapshot — the tab wires it to live data. */
 export function CalendarView({ snapshot, nowMs }: CalendarViewProps) {
   const [next, ...later] = selectUpcoming(snapshot.events, nowMs, MAX_MEETINGS);
+  const allDay = selectAllDay(snapshot.events, nowMs, MAX_ALL_DAY);
   const degraded = snapshot.status !== "connected";
+  const allDayList = allDay.length > 0 && (
+    <ul className="flex flex-col gap-1.5" aria-label={t("calendar.allDay")}>
+      {allDay.map((event) => (
+        <AllDayRow key={event.id} event={event} />
+      ))}
+    </ul>
+  );
 
   if (!next) {
     const copy = degraded ? STATUS_COPY[snapshot.status as Exclude<CalendarStatus, "connected">] : null;
     return (
-      <div dir="ltr" className="flex-1 flex flex-col items-center justify-center">
-        <EmptyState
-          icon={<CalendarIcon size={22} />}
-          title={t(copy ? copy.title : "calendar.noEvents")}
-          subtitle={copy ? (copy.hint ? t(copy.hint) : undefined) : t("calendar.noEventsHint")}
-        >
-          {degraded && snapshot.errorCode && snapshot.status !== "waiting" && (
-            <span className="mt-1 text-[11px] tabular-nums text-white/35">{t("calendar.code", { code: snapshot.errorCode })}</span>
-          )}
-        </EmptyState>
+      <div dir="ltr" className="flex-1 flex flex-col gap-3">
+        {allDayList}
+        <div className="flex-1 flex flex-col items-center justify-center">
+          <EmptyState
+            icon={<CalendarIcon size={22} />}
+            title={t(copy ? copy.title : "calendar.noEvents")}
+            subtitle={copy ? (copy.hint ? t(copy.hint) : undefined) : t("calendar.noEventsHint")}
+          >
+            {degraded && snapshot.errorCode && snapshot.status !== "waiting" && (
+              <span className="mt-1 text-[11px] tabular-nums text-white/35">{t("calendar.code", { code: snapshot.errorCode })}</span>
+            )}
+          </EmptyState>
+        </div>
       </div>
     );
   }
@@ -108,11 +144,12 @@ export function CalendarView({ snapshot, nowMs }: CalendarViewProps) {
   return (
     <div dir="ltr" className="flex flex-col gap-3">
       {snapshot.status !== "connected" && <StatusLine status={snapshot.status} errorCode={snapshot.errorCode} />}
+      {allDayList}
       <NextMeetingCard event={next} nowMs={nowMs} />
       {later.length > 0 && (
         <ul className="flex flex-col gap-2" aria-label={t("calendar.later")}>
           {later.map((event) => (
-            <MeetingRow key={event.id} event={event} />
+            <MeetingRow key={event.id} event={event} nowMs={nowMs} />
           ))}
         </ul>
       )}

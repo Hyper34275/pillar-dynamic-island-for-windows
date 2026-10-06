@@ -20,11 +20,16 @@ export interface CompactLabels {
 const cache = new Map<string, CompactLabels>();
 let fontFamily: string | null = null;
 
-function resolveFont(): string {
+/** The island's UI font stack, for canvas text measurement. */
+export function uiFontFamily(): string {
   if (fontFamily === null) {
     fontFamily = typeof document === "undefined" ? "sans-serif" : getComputedStyle(document.documentElement).fontFamily || "sans-serif";
   }
-  return `${COMPACT_FONT_WEIGHT} ${COMPACT_FONT_SIZE}px ${fontFamily}`;
+  return fontFamily;
+}
+
+function resolveFont(): string {
+  return `${COMPACT_FONT_WEIGHT} ${COMPACT_FONT_SIZE}px ${uiFontFamily()}`;
 }
 
 /**

@@ -233,7 +233,7 @@ export function installDebugLogging(): void {
     document.addEventListener("click", onInput, true);
 
     // Event-loop lag monitor
-    const LAG_INTERVAL_MS = 500;
+    const LAG_INTERVAL_MS = 5000; // coarse on purpose: a sub-second timer would keep the idle island waking up
     const LAG_THRESHOLD_MS = 250;
     let last = performance.now();
     setInterval(() => {

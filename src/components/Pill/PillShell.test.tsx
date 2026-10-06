@@ -72,6 +72,37 @@ describe("PillShell", () => {
     expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain("Diagnostics");
   });
 
+  it("expands when the pointer rests on it and collapses shortly after the pointer leaves", async () => {
+    await mountBooted();
+    await act(async () => {
+      island().dispatchEvent(new Event("pointerover", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(130);
+    });
+    expect(island().getAttribute("data-view")).toBe("userExpanded");
+
+    await act(async () => {
+      island().dispatchEvent(new Event("pointerout", { bubbles: true }));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(520);
+    });
+    expect(island().getAttribute("data-view")).toBe("idle");
+  });
+
+  it("does not collapse on its own while pinned by a click and the pointer is still on it", async () => {
+    await mountBooted();
+    await act(async () => {
+      island().dispatchEvent(new Event("pointerover", { bubbles: true }));
+      island().click();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(island().getAttribute("data-view")).toBe("userExpanded");
+  });
+
   it("collapses on Escape", async () => {
     await mountBooted();
     await act(async () => {

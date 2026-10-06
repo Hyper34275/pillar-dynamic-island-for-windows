@@ -21,7 +21,6 @@ const en = {
   "island.unavailable": "Unavailable",
   "island.tryAgain": "Try again",
 
-  "ctx.expand": "Expand",
   "ctx.collapse": "Collapse",
   "ctx.prevTab": "Previous tab",
   "ctx.nextTab": "Next tab",
@@ -41,7 +40,8 @@ const en = {
   "calendar.unresponsiveHint": "Waiting for Outlook to become available again.",
   "calendar.failed": "Couldn't read the calendar",
   "calendar.failedHint": "Trying again automatically.",
-  "calendar.inProgress": "In progress",
+  "calendar.now": "Now",
+  "calendar.allDay": "All day",
   "calendar.noSubject": "(No subject)",
   "calendar.code": "Code {code}",
 
@@ -73,7 +73,7 @@ const en = {
   "about.outlookRunning": "Running",
   "about.outlookNotRunning": "Not running",
   "about.outlookMode": "Outlook mode",
-  "about.modeClassic": "Classic",
+  "about.modeClassic": "Classic Outlook",
   "about.modeNew": "New Outlook",
   "about.modeNone": "None",
   "about.calendar": "Calendar",
@@ -128,7 +128,6 @@ const he: Record<MessageKey, Message> = {
   "island.unavailable": "לא זמין",
   "island.tryAgain": "נסה שוב",
 
-  "ctx.expand": "הרחב",
   "ctx.collapse": "כווץ",
   "ctx.prevTab": "הכרטיסייה הקודמת",
   "ctx.nextTab": "הכרטיסייה הבאה",
@@ -148,7 +147,8 @@ const he: Record<MessageKey, Message> = {
   "calendar.unresponsiveHint": "ממתין ש-Outlook יהיה זמין שוב.",
   "calendar.failed": "לא ניתן לקרוא את היומן",
   "calendar.failedHint": "מנסה שוב אוטומטית.",
-  "calendar.inProgress": "מתקיימת עכשיו",
+  "calendar.now": "עכשיו",
+  "calendar.allDay": "כל היום",
   "calendar.noSubject": "(ללא נושא)",
   "calendar.code": "קוד {code}",
 
@@ -181,7 +181,7 @@ const he: Record<MessageKey, Message> = {
   "about.outlookRunning": "פועל",
   "about.outlookNotRunning": "לא פועל",
   "about.outlookMode": "מצב Outlook",
-  "about.modeClassic": "קלאסי",
+  "about.modeClassic": "Outlook קלאסי",
   "about.modeNew": "Outlook חדש",
   "about.modeNone": "אין",
   "about.calendar": "יומן",

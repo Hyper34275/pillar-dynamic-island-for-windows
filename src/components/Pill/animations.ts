@@ -36,26 +36,27 @@ export const pillDimensions = {
   boot: { width: 8, height: 8, radius: 4 },
   compact: {
     height: 34,
-    hoverHeight: 38,
     paddingX: 15,
     /** Minimum space between the date and the weekday. */
     gap: 14,
     minWidth: 112,
     maxWidth: 220,
-    hoverGrow: 12,
   },
   expanded: { width: 404, height: 420, radius: 40 },
-} as const;
-
-/** Window slack around the island, so edge antialiasing and the hover growth are never clipped. */
-export const windowMargin = {
-  collapsedX: 12,
-  collapsedY: 4,
-  expandedX: 16,
-  expandedY: 10,
-  /** Notification toast: gap + toast height + breathing room, and a width that contains the toast. */
-  toastY: 160,
-  toastWidth: 420,
+  /** Meeting alert: the label, the subject (1-2 lines), the time range and an optional location. */
+  alert: {
+    width: 380,
+    paddingX: 22,
+    paddingY: 16,
+    labelHeight: 14,
+    subjectLineHeight: 22,
+    detailHeight: 18,
+    /** Space between stacked rows. */
+    gap: 5,
+    maxRadius: 30,
+  },
+  /** Windows notification mirrored into the island. */
+  notification: { width: 372, heightWithBody: 88, height: 64, maxRadius: 30 },
 } as const;
 
 export interface IslandSize {
@@ -64,13 +65,25 @@ export interface IslandSize {
   radius: number;
 }
 
-export function compactSize(contentWidth: number, hover: boolean): IslandSize {
+export function compactSize(contentWidth: number): IslandSize {
   const c = pillDimensions.compact;
-  const base = Math.min(c.maxWidth, Math.max(c.minWidth, contentWidth + c.paddingX * 2));
-  const height = hover ? c.hoverHeight : c.height;
-  return { width: base + (hover ? c.hoverGrow : 0), height, radius: height / 2 };
+  return { width: Math.min(c.maxWidth, Math.max(c.minWidth, contentWidth + c.paddingX * 2)), height: c.height, radius: c.height / 2 };
 }
 
 export function expandedSize(): IslandSize {
   return { ...pillDimensions.expanded };
+}
+
+/** The meeting alert grows with its content: 1 or 2 subject lines, and a location row if there is one. */
+export function meetingAlertSize(subjectLines: 1 | 2, hasLocation: boolean): IslandSize {
+  const a = pillDimensions.alert;
+  const rows = 3 + (hasLocation ? 1 : 0); // label, subject, time (+ location)
+  const height = a.paddingY * 2 + a.labelHeight + a.subjectLineHeight * subjectLines + a.detailHeight * (rows - 2) + a.gap * (rows - 1);
+  return { width: a.width, height, radius: Math.min(a.maxRadius, height / 2) };
+}
+
+export function notificationSize(hasBody: boolean): IslandSize {
+  const n = pillDimensions.notification;
+  const height = hasBody ? n.heightWithBody : n.height;
+  return { width: n.width, height, radius: Math.min(n.maxRadius, height / 2) };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ipc, normalizeNotification, normalizeNotificationStatus, normalizeSettings, SETTINGS_DEFAULTS } from "./ipc";
+import { ipc, normalizeNotification, normalizeNotificationStatus, normalizeReminderState, normalizeSettings, SETTINGS_DEFAULTS } from "./ipc";
 
 describe("outside Tauri", () => {
   it("never throws and resolves to null / false", async () => {
@@ -13,6 +13,19 @@ describe("outside Tauri", () => {
     await expect(ipc.openLogDir()).resolves.toBe(false);
     await expect(ipc.setIslandGeometry({ width: 1, height: 1 })).resolves.toBe(false);
     await expect(ipc.setClickThrough(true)).resolves.toBe(false);
+    await expect(ipc.calendarGetSnapshot()).resolves.toBeNull();
+    await expect(ipc.calendarRefresh()).resolves.toBe(false);
+    await expect(ipc.reminderStateLoad()).resolves.toBeNull();
+    await expect(ipc.reminderStateSave({ a: 1 })).resolves.toBe(false);
+  });
+});
+
+describe("normalizeReminderState", () => {
+  it("keeps numeric entries and drops everything else", () => {
+    expect(normalizeReminderState({ a: 1, b: "2", c: null, d: Number.NaN, e: 0 })).toEqual({ a: 1, e: 0 });
+  });
+  it("returns an empty map for non-objects", () => {
+    for (const raw of [null, undefined, 4, "x", []]) expect(normalizeReminderState(raw)).toEqual({});
   });
 });
 

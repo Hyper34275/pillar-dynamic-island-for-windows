@@ -5,54 +5,42 @@ import { useSettings } from "../../hooks/useSettings";
 import { useToday } from "../../hooks/useClock";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useIslandEvents } from "../../hooks/useIslandEvents";
+import { useIslandState } from "../../hooks/useIslandState";
+import { useCalendarService } from "../../hooks/useCalendar";
+import { useReminders } from "../../hooks/useReminders";
 import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenReader";
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
-import { useNativePointer, type HitRect, type OutsidePress } from "../../hooks/useNativePointer";
 import { APP_NAME } from "../../lib/appInfo";
 import { fullDate } from "../../lib/dateFormat";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
-import { createFocusTrap } from "../../utils/focusTrap";
-import { bootAnimationDuration, compactSize, expandedSize, pillDimensions, springConfig, windowMargin } from "./animations";
+import { bootAnimationDuration, compactSize, expandedSize, notificationSize, pillDimensions, springConfig, type IslandSize } from "./animations";
+import type { ReminderStore } from "../../lib/reminders/types";
+import { alertIslandSize } from "./alertLayout";
 import { CompactIsland } from "./CompactIsland";
 import { ContextMenu } from "./ContextMenu";
 import { ExpandedIsland } from "./ExpandedIsland";
-import { NotificationToast, TOAST_GAP } from "./NotificationToast";
+import { MeetingAlert, meetingAlertAnnouncement, meetingAlertLabel, meetingAlertSubject } from "./MeetingAlert";
+import { NotificationToast } from "./NotificationToast";
 import { TABS, type TabId } from "./tabs";
 import { useCompactLabels } from "./useCompactLayout";
 import { usePillGeometry } from "./usePillGeometry";
 
-// Comfort margin around the island's hit region (CSS px).
-const HIT_PADDING = 4;
-// In the DOM fallback, a blur this soon after expanding is the expand itself
-// (tray menu closing, focus settling) — not the user clicking away.
-const BLUR_GRACE_MS = 300;
-
-// Constant on purpose: an animated shadow would repaint every frame of every morph.
-const ISLAND_SHADOW = "0 0 0 0.5px rgba(255,255,255,0.08), 0 6px 18px rgba(0,0,0,0.45)";
+// Constant on purpose: an animated shadow would repaint every frame of every morph. Inset,
+// because the native window is exactly the island and would clip anything outside it.
+const ISLAND_EDGE = "inset 0 0 0 0.5px rgba(255,255,255,0.1)";
 
 interface PillShellProps {
-  /** The island is slid off-screen (fullscreen app): clear the hit region. */
-  suspended?: boolean;
+  /** Where fired reminders are remembered; the per-user state file unless a test supplies one. */
+  reminderStore?: ReminderStore;
 }
 
-export function PillShell({ suspended = false }: PillShellProps) {
-  const {
-    isBooting,
-    isHovering,
-    isExpanded,
-    pointerEnter,
-    pointerLeave,
-    expand,
-    collapse,
-    completeBootAnimation,
-  } = usePillState();
-
+export function PillShell({ reminderStore }: PillShellProps = {}) {
   const reducedMotion = useReducedMotion() ?? false;
   const { settings } = useSettings();
   const today = useToday();
   const labels = useCompactLabels(today);
-  const notifications = useNotifications(settings.notificationsEnabled);
+  const calendar = useCalendarService();
   const { announce, politeAnnouncement, assertiveAnnouncement } = useScreenReader({
     defaultPriority: "polite",
     announcementDelay: 100,
@@ -60,43 +48,56 @@ export function PillShell({ suspended = false }: PillShellProps) {
     deduplicationWindow: 5000,
   });
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const expandedContentRef = useRef<HTMLDivElement>(null);
-  const [activeTab, setActiveTab] = useState<TabId>("datetime");
+  // A fullscreen app in front hides the native window (if the user wants that); alerts and
+  // toasts then wait instead of running out unseen.
+  const [fullscreen, setFullscreen] = useState(false);
+  const islandState = useIslandState({ suppressed: fullscreen && settings.hideInFullscreen });
+  const { state, view } = islandState;
+  const isExpanded = view.kind === "userExpanded";
+  const activeTab = state.tab;
+
+  const notifications = useNotifications(settings.notificationsEnabled, islandState.showNotification);
+  useReminders(islandState.showAlert, reminderStore);
+
+  const { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed } = usePillState({
+    expanded: state.expanded,
+    pinned: state.pinned,
+    temporary: view.kind === "meetingAlert" || view.kind === "notification",
+    expand: islandState.expand,
+    pin: islandState.pin,
+    collapse: islandState.collapse,
+    setHovering: islandState.setHovering,
+  });
+
   const [bootPhase, setBootPhase] = useState<"dot" | "morph">("dot");
 
   // ---------------------------------------------------------------------------
-  // Geometry: the island's own size (animated by springs) and the native window
-  // that must contain it (sent through the ordered resize queue).
+  // Geometry: the island's own size (animated by springs) and the native window,
+  // which is exactly the island's target size (sent through the ordered resize queue).
   // ---------------------------------------------------------------------------
-  const showToast = !isExpanded && notifications.toast !== null;
-  const island = isExpanded ? expandedSize() : compactSize(labels.contentWidth, isHovering);
-
-  const windowGeometry = useMemo(() => {
-    if (isExpanded) {
-      const e = pillDimensions.expanded;
-      return { width: e.width + windowMargin.expandedX, height: e.height + windowMargin.expandedY };
+  const target = useMemo<IslandSize>(() => {
+    switch (view.kind) {
+      case "userExpanded":
+        return expandedSize();
+      case "meetingAlert":
+        return alertIslandSize(view.alert);
+      case "notification":
+        return notificationSize(view.notification.body !== "");
+      case "idle":
+        return compactSize(labels.contentWidth);
     }
-    // Sized for the HOVER pill: a window the size of the idle pill would clip it and
-    // make hover flicker as the cursor "left" the window while still on the island.
-    const hover = compactSize(labels.contentWidth, true);
-    const width = hover.width + windowMargin.collapsedX;
-    const height = hover.height + windowMargin.collapsedY;
-    return showToast
-      ? { width: Math.max(width, windowMargin.toastWidth), height: height + windowMargin.toastY }
-      : { width, height };
-  }, [isExpanded, labels.contentWidth, showToast]);
+  }, [view, labels.contentWidth]);
 
   const width = useSpring(pillDimensions.boot.width, reducedMotion ? springConfig.instant : springConfig.island);
   const height = useSpring(pillDimensions.boot.height, reducedMotion ? springConfig.instant : springConfig.island);
   const radius = useSpring(pillDimensions.boot.radius, reducedMotion ? springConfig.instant : springConfig.island);
 
-  const { invalidate: invalidateGeometry } = usePillGeometry(windowGeometry, { width, height });
+  const { invalidate: invalidateGeometry } = usePillGeometry(target, { width, height });
 
   // Boot: dot → morph into the compact pill → interactive.
   useEffect(() => {
     if (!isBooting) return;
-    const compact = compactSize(labels.contentWidth, false);
+    const compact = compactSize(labels.contentWidth);
     const morph = () => {
       setBootPhase("morph");
       width.set(compact.width);
@@ -116,21 +117,31 @@ export function PillShell({ suspended = false }: PillShellProps) {
     };
   }, [isBooting, reducedMotion, labels.contentWidth, width, height, radius, completeBootAnimation]);
 
-  // Follow the target size once booted (hover, expand, collapse, new date text).
+  // Follow the target size once booted (expand, alert, toast, collapse, new date text).
   useEffect(() => {
     if (isBooting) return;
-    width.set(island.width);
-    height.set(island.height);
-    radius.set(island.radius);
-  }, [isBooting, island.width, island.height, island.radius, width, height, radius]);
+    width.set(target.width);
+    height.set(target.height);
+    radius.set(target.radius);
+  }, [isBooting, target.width, target.height, target.radius, width, height, radius]);
 
-  const visualState = isExpanded ? "expanded" : isHovering ? "hover" : "idle";
   useEffect(() => {
-    dlog("info", "pill", `visualState -> ${visualState}${isBooting ? " (booting)" : ""}`);
-  }, [visualState, isBooting]);
+    dlog("info", "pill", `view -> ${view.kind}${isBooting ? " (booting)" : ""}`);
+  }, [view.kind, isBooting]);
   useEffect(() => {
     dlog("info", "pill", `activeTab -> ${activeTab}`);
   }, [activeTab]);
+
+  // A meeting alert is announced once, politely, by the shell's live region.
+  const shownAlert = view.kind === "meetingAlert" ? view.alert : null;
+  useEffect(() => {
+    if (shownAlert) announce(meetingAlertAnnouncement(shownAlert));
+  }, [shownAlert, announce]);
+
+  // Opening the calendar side of things is when stale data is most visible: ask for a sync.
+  useEffect(() => {
+    if (isExpanded) void calendar.refresh();
+  }, [isExpanded, calendar]);
 
   // ---------------------------------------------------------------------------
   // Tabs
@@ -146,9 +157,9 @@ export function PillShell({ suspended = false }: PillShellProps) {
   const goToTab = useCallback(
     (direction: -1 | 1) => {
       const next = (activeTabIndex + direction + TABS.length) % TABS.length;
-      setActiveTab(TABS[next].id);
+      islandState.expand(TABS[next].id);
     },
-    [activeTabIndex]
+    [activeTabIndex, islandState]
   );
 
   const announcedTabRef = useRef(activeTabIndex);
@@ -173,24 +184,38 @@ export function PillShell({ suspended = false }: PillShellProps) {
   }, [unseen, announce]);
 
   // ---------------------------------------------------------------------------
-  // Backend events
+  // Closing and toggling. Whatever closes the island while the pointer is on it must also stop
+  // that same pointer from expanding it again (hover intent) until it has left.
   // ---------------------------------------------------------------------------
-  useIslandEvents({
-    onToggle: (tab) => {
-      if (!isExpanded) {
-        if (tab) setActiveTab(tab);
-        expand("island-toggle");
-      } else if (tab && tab !== activeTab) {
-        setActiveTab(tab);
-      } else {
-        collapse("island-toggle");
+  const closeAll = useCallback(() => {
+    holdCollapsed();
+    if (view.kind === "meetingAlert") islandState.dismissAlert();
+    else if (view.kind === "notification") islandState.dismissNotification();
+    else islandState.collapse();
+  }, [holdCollapsed, view.kind, islandState]);
+
+  const toggleIsland = useCallback(
+    (tab?: TabId) => {
+      if (view.kind === "userExpanded") {
+        if (tab && tab !== activeTab) islandState.expand(tab);
+        else closeAll();
+        return;
       }
+      if (view.kind === "meetingAlert") islandState.dismissAlert();
+      else if (view.kind === "notification") islandState.dismissNotification();
+      islandState.pin(tab);
     },
+    [view.kind, activeTab, islandState, closeAll]
+  );
+
+  useIslandEvents({
+    onToggle: toggleIsland,
+    onFullscreenChanged: setFullscreen,
     onDisplayChanged: invalidateGeometry,
   });
 
   // ---------------------------------------------------------------------------
-  // Gestures + context menu
+  // Gestures + context menu (the menu lives inside the island, so only the expanded one has room)
   // ---------------------------------------------------------------------------
   const { handlers: gestureHandlers, contextMenu, closeContextMenu } = useDesktopGestures({
     enabled: true,
@@ -202,160 +227,24 @@ export function PillShell({ suspended = false }: PillShellProps) {
       if (isExpanded) goToTab(-1);
     },
     onLongPress: () => {
-      if (!isExpanded) expand("long press");
+      if (view.kind === "idle") islandState.pin();
     },
   });
 
   // ---------------------------------------------------------------------------
-  // Pointer tracking: native (global cursor + outside presses) or DOM fallback.
-  // The window is small and transparent, so DOM enter/leave/click only see the cursor
-  // over OUR window; the backend tracks the global cursor against the hit region
-  // pushed here, and we fall back to DOM events + window blur when that's unavailable.
-  // ---------------------------------------------------------------------------
-  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
-  useEffect(() => {
-    const onResize = () =>
-      setViewport((prev) =>
-        prev.width === window.innerWidth && prev.height === window.innerHeight
-          ? prev
-          : { width: window.innerWidth, height: window.innerHeight }
-      );
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-
-  // Toast layout size (enter/exit transforms are ignored — approximate is fine).
-  const [toastSize, setToastSize] = useState<{ w: number; h: number } | null>(null);
-  const toastObserverRef = useRef<ResizeObserver | null>(null);
-  const toastWrapperRef = useCallback((el: HTMLDivElement | null) => {
-    toastObserverRef.current?.disconnect();
-    toastObserverRef.current = null;
-    if (!el) {
-      setToastSize(null);
-      return;
-    }
-    const measure = () => {
-      const rect = el.getBoundingClientRect();
-      const next = { w: Math.ceil(rect.width), h: Math.ceil(rect.height) };
-      setToastSize((prev) => (prev && prev.w === next.w && prev.h === next.h ? prev : next));
-    };
-    measure();
-    if (typeof ResizeObserver !== "undefined") {
-      const observer = new ResizeObserver(measure);
-      observer.observe(el);
-      toastObserverRef.current = observer;
-    }
-  }, []);
-
-  // Hit region from TARGET geometry, not the animated springs, so it reflects where the island is going.
-  const hitRects = useMemo<HitRect[]>(() => {
-    if (suspended) return [];
-    // The context menu overlay covers the whole window — clicks on it aren't "outside".
-    if (contextMenu.isOpen) return [{ x: 0, y: 0, w: viewport.width, h: viewport.height }];
-    // The island sits at the top-center of the viewport; pad the sides and bottom (top is the screen edge).
-    const rects: HitRect[] = [
-      {
-        x: (viewport.width - island.width) / 2 - HIT_PADDING,
-        y: 0,
-        w: island.width + HIT_PADDING * 2,
-        h: island.height + HIT_PADDING,
-      },
-    ];
-    if (showToast && toastSize) {
-      rects.push({
-        x: (viewport.width - toastSize.w) / 2 - HIT_PADDING,
-        y: island.height + TOAST_GAP - HIT_PADDING,
-        w: toastSize.w + HIT_PADDING * 2,
-        h: toastSize.h + HIT_PADDING * 2,
-      });
-    }
-    return rects;
-  }, [suspended, contextMenu.isOpen, viewport.width, viewport.height, island.width, island.height, showToast, toastSize]);
-
-  const handleNativePointerChange = useCallback(
-    (inside: boolean) => {
-      dlog("debug", "pointer", `native: pointer ${inside ? "entered" : "left"} island`);
-      if (inside) pointerEnter();
-      else pointerLeave();
-    },
-    [pointerEnter, pointerLeave]
-  );
-
-  const handleOutsidePress = useCallback(
-    (press: OutsidePress) => {
-      if (contextMenu.isOpen) closeContextMenu();
-      if (!isExpanded) return;
-      collapse(`outside press (${press.button} button at ${Math.round(press.x)},${Math.round(press.y)})`);
-    },
-    [contextMenu.isOpen, closeContextMenu, isExpanded, collapse]
-  );
-
-  const { nativeActive } = useNativePointer({
-    rects: hitRects,
-    viewportWidth: viewport.width,
-    armed: isExpanded && !suspended,
-    onPointerChange: handleNativePointerChange,
-    onOutsidePress: handleOutsidePress,
-  });
-
-  // DOM fallback: clicks on other apps are invisible to the page, so also close on window blur.
-  useEffect(() => {
-    if (nativeActive || !isExpanded) return;
-    const expandedAt = performance.now();
-    const onBlur = () => {
-      if (performance.now() - expandedAt < BLUR_GRACE_MS) {
-        dlog("debug", "pill", "window blur ignored: island just expanded");
-        return;
-      }
-      collapse("window lost focus (DOM fallback)");
-    };
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
-  }, [nativeActive, isExpanded, collapse]);
-
-  // Clicks inside OUR window's transparent margin. Kept alongside native presses:
-  // collapse() is idempotent if both fire.
-  useEffect(() => {
-    if (!isExpanded) return;
-    const handleGlobalClick = (e: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        collapse(`outside click at ${Math.round(e.clientX)},${Math.round(e.clientY)}`);
-      }
-    };
-    // Slight delay so the click that expanded the island doesn't immediately close it.
-    const timeoutId = setTimeout(() => document.addEventListener("click", handleGlobalClick), 100);
-    return () => {
-      clearTimeout(timeoutId);
-      document.removeEventListener("click", handleGlobalClick);
-    };
-  }, [isExpanded, collapse]);
-
-  // Focus trap while expanded.
-  useEffect(() => {
-    if (!isExpanded || !expandedContentRef.current) return;
-    return createFocusTrap({
-      container: expandedContentRef.current,
-      restoreFocus: containerRef.current,
-      initialFocus: true,
-    });
-  }, [isExpanded]);
-
-  // ---------------------------------------------------------------------------
-  // Keyboard
+  // Keyboard (only reaches the page if it ever has DOM focus: the window never takes it)
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isExpanded) {
-        collapse("escape key");
+      if (e.key === "Escape" && view.kind !== "idle") {
+        closeAll();
         return;
       }
 
-      // Ctrl+Shift+Space: toggle expand/collapse (expand works from idle or hover).
+      // Ctrl+Shift+Space: toggle expand/collapse.
       if (e.key === " " && e.ctrlKey && e.shiftKey) {
         e.preventDefault();
-        if (isExpanded) collapse("ctrl+shift+space shortcut");
-        else expand("ctrl+shift+space shortcut");
+        toggleIsland();
         return;
       }
 
@@ -367,7 +256,7 @@ export function PillShell({ suspended = false }: PillShellProps) {
         goToTab(e.key === "ArrowLeft" ? -1 : 1);
       } else if (e.key === "Home" || e.key === "End") {
         e.preventDefault();
-        setActiveTab(e.key === "Home" ? TABS[0].id : TABS[TABS.length - 1].id);
+        islandState.expand(e.key === "Home" ? TABS[0].id : TABS[TABS.length - 1].id);
       }
       // Tab / Shift+Tab is intentionally NOT handled: it must do normal DOM focus
       // traversal so keyboard users can reach the controls inside the active panel.
@@ -375,30 +264,33 @@ export function PillShell({ suspended = false }: PillShellProps) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isExpanded, collapse, expand, goToTab]);
+  }, [view.kind, isExpanded, closeAll, toggleIsland, goToTab, islandState]);
 
-  const ariaLabel = isExpanded ? t("island.expandedLabel", { app: APP_NAME }) : `${fullDate(today)}. ${t("island.open")}`;
+  const ariaLabel = isExpanded
+    ? t("island.expandedLabel", { app: APP_NAME })
+    : view.kind === "meetingAlert"
+      ? `${meetingAlertLabel(view.alert)}. ${meetingAlertSubject(view.alert)}`
+      : `${fullDate(today)}. ${t("island.open")}`;
 
   return (
     <>
-      {/* Live regions stay mounted whether collapsed or expanded. */}
+      {/* Live regions stay mounted whatever the island shows. */}
       <ScreenReaderLiveRegions polite={politeAnnouncement} assertive={assertiveAnnouncement} />
       <motion.div
-        ref={containerRef}
         dir="ltr"
         className="relative cursor-pointer"
         role={isExpanded ? "dialog" : "button"}
         aria-label={ariaLabel}
-        aria-modal={isExpanded ? "true" : undefined}
         aria-expanded={isExpanded ? "true" : "false"}
         tabIndex={isExpanded ? -1 : 0}
         data-expanded={isExpanded ? "true" : "false"}
+        data-view={view.kind}
         style={{
           width,
           height,
           borderRadius: radius,
-          boxShadow: ISLAND_SHADOW,
-          overflow: "visible",
+          boxShadow: ISLAND_EDGE,
+          overflow: "hidden",
           background:
             isBooting && bootPhase === "dot"
               ? "radial-gradient(circle, rgba(255,255,255,0.85) 0%, rgba(200,200,200,0.6) 100%)"
@@ -407,54 +299,57 @@ export function PillShell({ suspended = false }: PillShellProps) {
         initial={{ opacity: 0, scale: 0 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={reducedMotion ? { duration: 0.1, ease: "easeOut" } : springConfig.entrance}
-        whileTap={!isExpanded && !reducedMotion ? { scale: 0.97 } : undefined}
-        // DOM hover only when native tracking is unavailable — the backend's pill-pointer
-        // events are the single source of truth otherwise.
-        onMouseEnter={() => {
-          if (!nativeActive) pointerEnter();
-        }}
-        onMouseLeave={() => {
-          if (!nativeActive) pointerLeave();
+        whileTap={view.kind === "idle" && !reducedMotion ? { scale: 0.97 } : undefined}
+        onPointerEnter={pointerEnter}
+        onPointerLeave={pointerLeave}
+        // A click anywhere inside an expanded island is the user engaging with it: keep it open.
+        onPointerDownCapture={() => {
+          if (isExpanded && !state.pinned) islandState.pin();
         }}
         onPointerDown={gestureHandlers.onPointerDown}
         onPointerMove={gestureHandlers.onPointerMove}
         onPointerUp={gestureHandlers.onPointerUp}
-        onContextMenu={gestureHandlers.onContextMenu}
-        // Expands from idle too: hover is entered 100ms after the pointer arrives, so a
-        // quick click must not depend on it.
-        onClick={() => expand("click")}
+        onContextMenu={(e) => {
+          if (isExpanded) gestureHandlers.onContextMenu(e);
+          else e.preventDefault();
+        }}
+        // Expanded content stops its own clicks, so this only sees the collapsed island and alerts.
+        onClick={() => {
+          if (isBooting) return;
+          if (view.kind === "idle") islandState.pin();
+          else if (view.kind === "meetingAlert") closeAll();
+        }}
         onKeyDown={(e) => {
-          if (!isExpanded && (e.key === "Enter" || e.key === " ")) {
+          if (view.kind === "idle" && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
-            expand(`keyboard (${e.key === " " ? "space" : "enter"})`);
+            islandState.pin();
           }
         }}
       >
-        {settings.notificationsEnabled && (
-          <NotificationToast
-            notification={showToast ? notifications.toast : null}
-            reducedMotion={reducedMotion}
-            onDismiss={notifications.dismissToast}
-            onActivate={notifications.activate}
-            wrapperRef={toastWrapperRef}
-          />
-        )}
-
         <AnimatePresence>
-          {!isBooting && !isExpanded && (
+          {!isBooting && view.kind === "idle" && (
             <CompactIsland key="compact" labels={labels} unseen={settings.notificationsEnabled ? unseen : 0} reducedMotion={reducedMotion} />
+          )}
+          {view.kind === "meetingAlert" && <MeetingAlert key={`alert-${view.alert.key}`} alert={view.alert} reducedMotion={reducedMotion} />}
+          {view.kind === "notification" && (
+            <NotificationToast
+              key={`notification-${view.notification.id}`}
+              notification={view.notification}
+              reducedMotion={reducedMotion}
+              onDismiss={islandState.dismissNotification}
+              onActivate={notifications.activate}
+            />
           )}
         </AnimatePresence>
 
         {isExpanded && (
           <ExpandedIsland
-            containerRef={expandedContentRef}
             activeTab={activeTab}
             direction={tabDirRef.current.dir}
             reducedMotion={reducedMotion}
             notificationStatus={notifications.status}
             onRequestNotificationAccess={notifications.requestAccess}
-            onSelectTab={setActiveTab}
+            onSelectTab={islandState.expand}
           />
         )}
 
@@ -464,16 +359,9 @@ export function PillShell({ suspended = false }: PillShellProps) {
             y={contextMenu.y}
             onClose={closeContextMenu}
             items={[
-              {
-                label: isExpanded ? t("ctx.collapse") : t("ctx.expand"),
-                run: () => (isExpanded ? collapse("context menu") : expand("context menu")),
-              },
-              ...(isExpanded
-                ? [
-                    { label: t("ctx.prevTab"), run: () => goToTab(-1) },
-                    { label: t("ctx.nextTab"), run: () => goToTab(1) },
-                  ]
-                : []),
+              { label: t("ctx.collapse"), run: closeAll },
+              { label: t("ctx.prevTab"), run: () => goToTab(-1) },
+              { label: t("ctx.nextTab"), run: () => goToTab(1) },
             ]}
           />
         )}

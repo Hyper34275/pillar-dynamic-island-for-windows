@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  dayLabel,
   formatTime,
   fullDate,
   msUntilNextDay,
@@ -141,5 +142,25 @@ describe("minute and day helpers", () => {
 
   it("startOfDay is local midnight", () => {
     expect(startOfDay(new Date(2026, 9, 6, 17, 45).getTime())).toBe(new Date(2026, 9, 6).getTime());
+  });
+});
+
+describe("dayLabel", () => {
+  const now = TUESDAY.getTime();
+
+  it("is null for today and anything earlier", () => {
+    expect(dayLabel(new Date(2026, 9, 6, 23, 59), now, "en-GB")).toBeNull();
+    expect(dayLabel(new Date(2026, 9, 5, 22, 0), now, "en-GB")).toBeNull();
+  });
+
+  it("says tomorrow through Intl, then falls back to the weekday", () => {
+    expect(dayLabel(new Date(2026, 9, 7, 9, 0), now, "en-GB")).toBe("Tomorrow");
+    expect(dayLabel(new Date(2026, 9, 7, 9, 0), now, "he-IL")).toBe("מחר");
+    expect(dayLabel(new Date(2026, 9, 8, 9, 0), now, "en-GB")).toBe("Thursday");
+  });
+
+  it("counts calendar days, not 24-hour blocks, across a DST change", () => {
+    const beforeDst = new Date(2026, 9, 24, 22, 0).getTime(); // Europe and the US change within days of this
+    expect(dayLabel(new Date(2026, 9, 25, 7, 0), beforeDst, "en-GB")).toBe("Tomorrow");
   });
 });

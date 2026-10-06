@@ -141,3 +141,14 @@ export function msUntilNextDay(nowMs: number = Date.now()): number {
   const d = new Date(nowMs);
   return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() - nowMs;
 }
+
+/**
+ * Which day a time falls on, relative to `nowMs`: null for today (or earlier), "Tomorrow"
+ * (Intl.RelativeTimeFormat) for the next day, the weekday name beyond that.
+ */
+export function dayLabel(date: Date, nowMs: number, locale: string = getLocaleTag()): string | null {
+  const days = Math.round((startOfDay(date.getTime()) - startOfDay(nowMs)) / 86_400_000);
+  if (days <= 0) return null;
+  const text = days === 1 ? formatters(locale).relative.format(1, "day") : weekdayLong(date, locale);
+  return text.charAt(0).toLocaleUpperCase(locale) + text.slice(1);
+}

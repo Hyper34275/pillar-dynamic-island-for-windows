@@ -1,5 +1,4 @@
 import { motion } from "motion/react";
-import type { Ref } from "react";
 import { APP_NAME } from "../../lib/appInfo";
 import { t } from "../../lib/i18n";
 import type { NotificationStatus } from "../../lib/ipc";
@@ -12,7 +11,6 @@ import { TabDock } from "./TabDock";
 import { TABS, type TabId } from "./tabs";
 
 interface ExpandedIslandProps {
-  containerRef: Ref<HTMLDivElement>;
   activeTab: TabId;
   /** +1 when the last tab change moved right, -1 when left; panels slide the same way. */
   direction: 1 | -1;
@@ -34,7 +32,6 @@ function renderPanel(tab: TabId, props: Pick<ExpandedIslandProps, "notificationS
 }
 
 export function ExpandedIsland({
-  containerRef,
   activeTab,
   direction,
   reducedMotion,
@@ -50,7 +47,6 @@ export function ExpandedIsland({
     // No AnimatePresence on purpose: an exit animation that never settled once left this
     // layer mounted (invisible) over the collapsed pill and swallowed every click.
     <motion.div
-      ref={containerRef}
       dir="ltr"
       className="island-expanded absolute inset-0 flex flex-col pt-4 pb-2 px-4 cursor-default text-white"
       style={{ borderRadius: "inherit" }}

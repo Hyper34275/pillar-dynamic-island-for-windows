@@ -49,10 +49,10 @@ export function usePillGeometry(target: IslandGeometry, springs: Springs): { inv
     };
   }, [queue, springs.width, springs.height]);
 
-  const { width, height, radius, animate } = target;
+  const { width, height, radius } = target;
   useEffect(() => {
-    queue.request({ width, height, radius, animate });
-  }, [queue, width, height, radius, animate]);
+    queue.request({ width, height, radius });
+  }, [queue, width, height, radius]);
 
   const invalidate = useCallback(() => queue.invalidate(), [queue]);
   return { invalidate };

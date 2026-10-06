@@ -1,9 +1,16 @@
-import { WAITING_SNAPSHOT, type CalendarSnapshot } from "../lib/calendar/types";
+import { createContext, useContext, useSyncExternalStore } from "react";
+import { getCalendarService, type CalendarService } from "../lib/calendar/service";
+import type { CalendarSnapshot } from "../lib/calendar/types";
 
-/**
- * Calendar data for the UI. Placeholder until the Outlook provider lands: always the
- * 'waiting' snapshot, in exactly the shape of the real one (docs/ENTERPRISE_DESIGN.md §1).
- */
+/** Lets tests (and, later, previews) run the UI against a fake service. */
+export const CalendarServiceContext = createContext<CalendarService | null>(null);
+
+export function useCalendarService(): CalendarService {
+  return useContext(CalendarServiceContext) ?? getCalendarService();
+}
+
+/** Calendar data for the UI: the merged snapshot of every provider (docs/ENTERPRISE_DESIGN.md section 1). */
 export function useCalendar(): CalendarSnapshot {
-  return WAITING_SNAPSHOT;
+  const service = useCalendarService();
+  return useSyncExternalStore(service.subscribe, service.getSnapshot);
 }

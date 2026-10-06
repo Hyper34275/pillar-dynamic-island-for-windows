@@ -1,0 +1,76 @@
+// Tolerant normalisation of the backend's calendar payload: the UI never trusts the wire shape.
+
+import type { CalendarBusyStatus, CalendarEventDto, CalendarResponseStatus, CalendarSnapshot, CalendarStatus } from "./types";
+
+const STATUSES: readonly CalendarStatus[] = ["waiting", "connecting", "connected", "newOutlookOnly", "elevationMismatch", "unresponsive", "failed"];
+const BUSY: readonly CalendarBusyStatus[] = ["free", "tentative", "busy", "oof", "workingElsewhere"];
+const RESPONSE: readonly CalendarResponseStatus[] = ["none", "organized", "tentative", "accepted", "declined", "notResponded"];
+
+/** Reported when the backend sends a status this build does not know ("reading items failed"). */
+const UNKNOWN_STATUS_CODE = "OUTLOOK-108";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Null for anything that cannot be scheduled or displayed (no id, unparseable instants, end before start). */
+export function normalizeEvent(raw: unknown): CalendarEventDto | null {
+  if (!isRecord(raw)) return null;
+  const id = nonEmptyString(raw.id);
+  const startUtc = nonEmptyString(raw.startUtc);
+  const endUtc = nonEmptyString(raw.endUtc);
+  if (!id || !startUtc || !endUtc) return null;
+  const start = Date.parse(startUtc);
+  const end = Date.parse(endUtc);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
+  return {
+    id,
+    calendarId: nonEmptyString(raw.calendarId) ?? "default",
+    subject: typeof raw.subject === "string" ? raw.subject : "",
+    startUtc,
+    endUtc,
+    allDay: raw.allDay === true,
+    location: nonEmptyString(raw.location),
+    organizer: nonEmptyString(raw.organizer),
+    isRecurring: raw.isRecurring === true,
+    meetingUrl: nonEmptyString(raw.meetingUrl),
+    // Unknown availability counts as busy: better one extra reminder than a missed meeting.
+    busyStatus: oneOf(raw.busyStatus, BUSY, "busy"),
+    responseStatus: oneOf(raw.responseStatus, RESPONSE, "none"),
+  };
+}
+
+export function compareEvents(a: CalendarEventDto, b: CalendarEventDto): number {
+  return Date.parse(a.startUtc) - Date.parse(b.startUtc) || Date.parse(a.endUtc) - Date.parse(b.endUtc) || a.id.localeCompare(b.id);
+}
+
+/** Null when the payload is not an object at all (the caller keeps its previous snapshot). */
+export function normalizeSnapshot(raw: unknown): CalendarSnapshot | null {
+  if (!isRecord(raw)) return null;
+  const known = STATUSES.includes(raw.status as CalendarStatus);
+  const events = (Array.isArray(raw.events) ? raw.events : [])
+    .map(normalizeEvent)
+    .filter((event): event is CalendarEventDto => event !== null)
+    .sort(compareEvents);
+  const status = known ? (raw.status as CalendarStatus) : "failed";
+  return {
+    status,
+    errorCode: nonEmptyString(raw.errorCode) ?? (known ? null : UNKNOWN_STATUS_CODE),
+    lastSyncUnixMs: finiteNumber(raw.lastSyncUnixMs),
+    cachedCount: Math.max(0, Math.round(finiteNumber(raw.cachedCount) ?? events.length)),
+    nextRetryUnixMs: finiteNumber(raw.nextRetryUnixMs),
+    events,
+  };
+}
