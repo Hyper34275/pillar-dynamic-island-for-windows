@@ -1,12 +1,13 @@
-import { motion } from "motion/react";
 import type { IslandNotification } from "../../lib/ipc";
 import { t } from "../../lib/i18n";
-import { AppAvatar, cleanAppName } from "./ui/primitives";
+import { AppAvatar, cleanAppName, SYSTEM_COLORS } from "./ui/primitives";
 import { XIcon } from "./ui/icons";
+import { InviteActions, InviteAvatar } from "./ui/meetingActions";
+import { layerFade, notificationSize } from "./animations";
+import { IslandLayer } from "./IslandLayer";
 
 interface NotificationToastProps {
   notification: IslandNotification;
-  reducedMotion: boolean;
   onDismiss: () => void;
   onActivate: (notification: IslandNotification) => void;
 }
@@ -15,25 +16,28 @@ interface NotificationToastProps {
  * A mirrored Windows notification, shown inside the island (which grows to fit, see
  * notificationSize). Body click activates the source app; the X only dismisses. Do not add an
  * onClick (capture) on the wrapper: it would swallow the X button's stopPropagation and
- * activate the app on every dismiss.
+ * activate the app on every dismiss. A meeting invitation looks the same with a calendar tile and
+ * a row of answer buttons (accept / maybe / decline, sent through Outlook); its body click opens
+ * the Outlook calendar on the meeting's day.
  */
-export function NotificationToast({ notification, reducedMotion, onDismiss, onActivate }: NotificationToastProps) {
-  const appLabel = cleanAppName(notification.appName) || notification.appName;
+export function NotificationToast({ notification, onDismiss, onActivate }: NotificationToastProps) {
+  const isInvite = !!notification.invite;
+  const appLabel = isInvite ? t("invite.label") : cleanAppName(notification.appName) || notification.appName;
   const activate = () => {
     onActivate(notification);
     onDismiss();
   };
 
   return (
-    <motion.div
+    <IslandLayer
+      name="notification"
+      fade={layerFade.temporary}
+      size={notificationSize(notification.body !== "", isInvite)}
       dir="ltr"
-      className="absolute inset-0 flex items-center gap-3 pl-4 pr-3 cursor-pointer select-none text-white"
+      className="flex items-center gap-3 pl-4 pr-3 cursor-pointer select-none text-white"
       role="button"
       tabIndex={0}
-      initial={{ opacity: 0, y: reducedMotion ? 0 : -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, transition: { duration: 0.08 } }}
-      transition={{ duration: reducedMotion ? 0.05 : 0.22, delay: reducedMotion ? 0 : 0.08, ease: [0.2, 0.8, 0.2, 1] }}
+      title={isInvite ? t("invite.open") : undefined}
       onClick={(e) => {
         e.stopPropagation();
         activate();
@@ -50,11 +54,11 @@ export function NotificationToast({ notification, reducedMotion, onDismiss, onAc
         }
       }}
     >
-      <AppAvatar name={notification.appName} size={40} radius={12} />
+      {isInvite ? <InviteAvatar /> : <AppAvatar name={notification.appName} size={40} radius={12} />}
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <span className="text-white/45 text-[11px] font-semibold truncate" dir="auto">
+          <span className="text-[11px] font-semibold truncate" style={{ color: isInvite ? SYSTEM_COLORS.blue : "rgba(255,255,255,0.45)" }} dir="auto">
             {appLabel}
           </span>
           <span className="text-white/30 text-[11px] ml-auto flex-shrink-0">{t("notif.now")}</span>
@@ -66,6 +70,11 @@ export function NotificationToast({ notification, reducedMotion, onDismiss, onAc
           <p className="text-white/60 text-[12.5px] line-clamp-2 leading-snug" dir="auto">
             {notification.body}
           </p>
+        )}
+        {notification.invite && (
+          <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+            <InviteActions inviteId={notification.invite.id} height={26} />
+          </div>
         )}
       </div>
 
@@ -87,6 +96,6 @@ export function NotificationToast({ notification, reducedMotion, onDismiss, onAc
       >
         <XIcon size={13} strokeWidth={2.6} />
       </button>
-    </motion.div>
+    </IslandLayer>
   );
 }

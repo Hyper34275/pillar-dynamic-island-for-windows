@@ -49,6 +49,8 @@ describe("normalizeSettings", () => {
       meetingReminderEnabled: false,
       reminderMinutes: 15,
       notificationsEnabled: false,
+      meetingInvitesEnabled: true,
+      meetingSilencePrompt: true,
       monitorId: "2",
     });
   });

@@ -1,6 +1,6 @@
 // Island state manager: a pure reducer that decides what the island shows.
 //
-// Priority (docs/ENTERPRISE_DESIGN.md section 0):  meetingAlert (3) > notification (2) > userExpanded (1) > idle (0)
+// Priority (docs/ENTERPRISE_DESIGN.md section 0):  meetingAlert (3) > ringer (2.5) > notification (2) > userExpanded (1) > idle (0)
 //  - A higher state preempts a lower one; a lower one never interrupts a higher one.
 //  - What the user had open (expanded, which tab, pinned) lives in its own layer and is never
 //    touched by temporary states, so it is simply shown again when they end.
@@ -12,7 +12,7 @@ import type { TabId } from "../../components/Pill/tabs";
 import type { IslandNotification } from "../ipc";
 import type { ReminderAlert } from "../reminders/types";
 
-export const PRIORITY = { meetingAlert: 3, notification: 2, userExpanded: 1, idle: 0 } as const;
+export const PRIORITY = { meetingAlert: 3, ringer: 2.5, notification: 2, userExpanded: 1, idle: 0 } as const;
 
 /** A queued notification older than this is dropped instead of shown late. */
 export const NOTIFICATION_STALE_MS = 15_000;
@@ -20,6 +20,19 @@ export const NOTIFICATION_STALE_MS = 15_000;
 export const ALERT_STALE_AFTER_START_MS = 60_000;
 /** Meeting alerts waiting behind the current one. Far above anything real; bounds a runaway producer. */
 export const MAX_QUEUED_ALERTS = 8;
+
+/**
+ * The ring / silent pill a meeting's start (or end) brings up. A click toggles silent, which
+ * holds notifications until `untilMs` (the end of the meeting); "end" just says it rings again.
+ */
+export interface Ringer {
+  key: string;
+  phase: "start" | "end";
+  silent: boolean;
+  untilMs: number;
+  /** How often it was toggled: each toggle restarts (and shortens) its time on screen. */
+  toggles: number;
+}
 
 interface ReceivedNotification {
   notification: IslandNotification;
@@ -37,6 +50,7 @@ export interface IslandState {
   notification: ReceivedNotification | null;
   /** At most one: the latest notification that could not be shown yet. */
   waiting: ReceivedNotification | null;
+  ringer: Ringer | null;
 }
 
 export type IslandEvent =
@@ -47,27 +61,33 @@ export type IslandEvent =
   | { type: "USER_EXPAND"; tab?: TabId }
   | { type: "USER_COLLAPSE" }
   | { type: "PIN"; tab?: TabId }
+  | { type: "RINGER_SHOW"; ringer: Omit<Ringer, "toggles"> }
+  | { type: "RINGER_TOGGLE" }
+  | { type: "RINGER_DONE" }
   /** Time passed with nothing else happening (e.g. the island was hidden): refreshes or drops stale alerts and forgets a stale waiting notification. */
   | { type: "TICK"; at: number };
 
 export type IslandView =
   | { kind: "meetingAlert"; alert: ReminderAlert }
+  | { kind: "ringer"; ringer: Ringer }
   | { kind: "notification"; notification: IslandNotification }
   | { kind: "userExpanded"; tab: TabId; pinned: boolean }
   | { kind: "idle" };
 
 export const initialIslandState: IslandState = {
-  tab: "datetime",
+  tab: "calendar",
   expanded: false,
   pinned: false,
   alert: null,
   alertQueue: [],
   notification: null,
   waiting: null,
+  ringer: null,
 };
 
 export function selectView(state: IslandState): IslandView {
   if (state.alert) return { kind: "meetingAlert", alert: state.alert };
+  if (state.ringer) return { kind: "ringer", ringer: state.ringer };
   if (state.notification) return { kind: "notification", notification: state.notification.notification };
   if (state.expanded) return { kind: "userExpanded", tab: state.tab, pinned: state.pinned };
   return { kind: "idle" };
@@ -125,6 +145,15 @@ export function islandReducer(state: IslandState, event: IslandEvent): IslandSta
 
     case "NOTIFICATION_DONE":
       return state.notification ? { ...state, notification: null } : state;
+
+    case "RINGER_SHOW":
+      return { ...state, ringer: { ...event.ringer, toggles: 0 } };
+
+    case "RINGER_TOGGLE":
+      return state.ringer ? { ...state, ringer: { ...state.ringer, silent: !state.ringer.silent, toggles: state.ringer.toggles + 1 } } : state;
+
+    case "RINGER_DONE":
+      return state.ringer ? { ...state, ringer: null } : state;
 
     case "USER_EXPAND":
       return { ...state, expanded: true, tab: event.tab ?? state.tab };

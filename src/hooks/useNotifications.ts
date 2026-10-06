@@ -1,7 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, normalizeNotification, normalizeNotificationStatus, onEvent, type IslandNotification, type NotificationStatus } from "../lib/ipc";
+import { silence, type Silence } from "../lib/island/silence";
+import { notificationHistory, type NotificationHistory } from "../lib/notifications/history";
+import { useMeetingInvites } from "./useMeetingInvites";
+import { useSettings } from "./useSettings";
 
 const SEEN_IDS_MAX = 50;
+
+/**
+ * Where an arriving notification goes: always to the history; it pops up (`show`) unless the
+ * user silenced notifications for the meeting they are in. Returns whether it popped up.
+ */
+export function deliverNotification(
+  notification: IslandNotification,
+  now: number,
+  history: NotificationHistory,
+  silenceStore: Silence,
+  show: (notification: IslandNotification) => void
+): boolean {
+  const silenced = silenceStore.isSilent(now);
+  history.add(notification, now, silenced);
+  if (!silenced) show(notification);
+  return !silenced;
+}
+
+/** What a click on a notification (toast or Notifications tab) does: open its app, or, for an invitation, the Outlook calendar on its day. */
+export function activateNotification(notification: IslandNotification): void {
+  if (notification.invite) {
+    void ipc.outlookOpenCalendar(notification.invite.startUtc);
+    return;
+  }
+  void (notification.aumid ? ipc.activateAppByAumid(notification.aumid) : ipc.activateNotification(notification.id));
+}
 
 export interface UseNotificationsResult {
   status: NotificationStatus | null;
@@ -16,9 +46,16 @@ export interface UseNotificationsResult {
  * Windows toast mirroring. Event-driven only (no polling) and in-memory only: titles and
  * bodies are shown on screen but never persisted and never logged. What to do with a new
  * notification (show it, queue it behind a meeting alert) is the island state's business:
- * it is handed to `onReceived`.
+ * it is handed to `onReceived`. New Outlook meeting requests (useMeetingInvites, their own
+ * setting) arrive the same way and count as unseen too. Everything also goes to the in-memory
+ * history the Notifications tab shows; while a meeting is silenced nothing pops up.
  */
-export function useNotifications(enabled: boolean, onReceived: (notification: IslandNotification) => void): UseNotificationsResult {
+export function useNotifications(
+  enabled: boolean,
+  onReceived: (notification: IslandNotification) => void,
+  historyStore: NotificationHistory = notificationHistory,
+  silenceStore: Silence = silence
+): UseNotificationsResult {
   const [status, setStatus] = useState<NotificationStatus | null>(null);
   const [unseen, setUnseen] = useState(0);
   const seenIds = useRef<number[]>([]);
@@ -40,6 +77,16 @@ export function useNotifications(enabled: boolean, onReceived: (notification: Is
     };
   }, []);
 
+  // Every arrival goes to the Notifications tab and the unseen count; it only pops up in the
+  // island when the user has not silenced notifications for the meeting they are in.
+  const receive = useCallback(
+    (notification: IslandNotification) => {
+      setUnseen((n) => n + 1);
+      deliverNotification(notification, Date.now(), historyStore, silenceStore, (n) => onReceivedRef.current(n));
+    },
+    [historyStore, silenceStore]
+  );
+
   useEffect(() => {
     if (!enabled) {
       setUnseen(0);
@@ -49,17 +96,17 @@ export function useNotifications(enabled: boolean, onReceived: (notification: Is
       const notification = normalizeNotification(payload);
       if (!notification || seenIds.current.includes(notification.id)) return;
       seenIds.current = [...seenIds.current, notification.id].slice(-SEEN_IDS_MAX);
-      setUnseen((n) => n + 1);
-      onReceivedRef.current(notification);
+      receive(notification);
     });
     return off;
-  }, [enabled]);
+  }, [enabled, receive]);
+
+  const { settings, loaded } = useSettings();
+  useMeetingInvites(loaded ? settings.meetingInvitesEnabled : null, receive);
 
   const markSeen = useCallback(() => setUnseen(0), []);
 
-  const activate = useCallback((notification: IslandNotification) => {
-    void (notification.aumid ? ipc.activateAppByAumid(notification.aumid) : ipc.activateNotification(notification.id));
-  }, []);
+  const activate = useCallback(activateNotification, []);
 
   const requestAccess = useCallback(() => {
     void ipc.notificationsRequestAccess().then((next) => {

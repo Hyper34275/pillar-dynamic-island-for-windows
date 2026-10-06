@@ -48,6 +48,10 @@ export type Settings = {
   meetingReminderEnabled: boolean;
   reminderMinutes: number;
   notificationsEnabled: boolean;
+  /** New Outlook meeting requests pop up in the island (and the Inbox is read for them). */
+  meetingInvitesEnabled: boolean;
+  /** When a meeting starts the island offers to silence notifications until it ends. */
+  meetingSilencePrompt: boolean;
   /** Display the island lives on; null = primary. */
   monitorId: string | null;
 };
@@ -60,8 +64,13 @@ export const SETTINGS_DEFAULTS: Settings = {
   meetingReminderEnabled: true,
   reminderMinutes: 30,
   notificationsEnabled: true,
+  meetingInvitesEnabled: true,
+  meetingSilencePrompt: true,
   monitorId: null,
 };
+
+/** How the user answers a meeting invitation from the island. */
+export type InviteResponse = "accept" | "tentative" | "decline";
 
 export type MonitorInfo = {
   id: string;
@@ -84,6 +93,12 @@ export type IslandNotification = {
   body: string;
   timestamp: number;
   aumid: string | null;
+  /**
+   * Set when this is an Outlook meeting request rather than a mirrored Windows toast
+   * (see useMeetingInvites). Activating it opens the Outlook calendar on the meeting's day;
+   * `id` answers it (accept / decline).
+   */
+  invite?: { id: string; startUtc: string | null };
 };
 
 // -----------------------------------------------------------------------------
@@ -107,6 +122,8 @@ export function normalizeSettings(raw: unknown): Settings {
     meetingReminderEnabled: bool(r.meetingReminderEnabled, SETTINGS_DEFAULTS.meetingReminderEnabled),
     reminderMinutes: minutes !== null && minutes >= 0 ? minutes : SETTINGS_DEFAULTS.reminderMinutes,
     notificationsEnabled: bool(r.notificationsEnabled, SETTINGS_DEFAULTS.notificationsEnabled),
+    meetingInvitesEnabled: bool(r.meetingInvitesEnabled, SETTINGS_DEFAULTS.meetingInvitesEnabled),
+    meetingSilencePrompt: bool(r.meetingSilencePrompt, SETTINGS_DEFAULTS.meetingSilencePrompt),
     monitorId: typeof r.monitorId === "string" ? r.monitorId : typeof r.monitorId === "number" ? String(r.monitorId) : null,
   };
 }
@@ -229,6 +246,19 @@ export const ipc = {
 
   activateNotification: (id: number) => callVoid("activate_notification", { id }),
   activateAppByAumid: (aumid: string) => callVoid("activate_app_by_aumid", { aumid }),
+
+  /** Only ever from an explicit user click: brings classic Outlook forward on its calendar, on `startUtc`'s day when given. */
+  outlookOpenCalendar: (startUtc: string | null) => callVoid("outlook_open_calendar", { startUtc }, { timeoutMs: 15_000 }),
+
+  /** Only ever from an explicit click. Outlook answers and sends the reply; it may show its own security prompt first. */
+  outlookRespondInvite: (id: string, response: InviteResponse) =>
+    callVoid("outlook_respond_invite", { id, response }, { timeoutMs: 65_000 }),
+
+  /** Only ever from an explicit click, with a link the backend itself reported (event.meetingUrl). */
+  openMeetingUrl: (url: string) => callVoid("open_meeting_url", { url }),
+
+  /** Raw events of another stretch of the calendar (at most 7 days); the calendar module normalises them. */
+  calendarGetRange: (fromUtc: string, toUtc: string) => call<unknown>("calendar_get_range", { fromUtc, toUtc }, { timeoutMs: 30_000 }),
 
   /** Arguments are passed flat: invoke("set_island_geometry", { width, height, radius }). */
   setIslandGeometry: (geometry: IslandGeometry) => callVoid("set_island_geometry", { ...geometry }, { timeoutMs: 3000 }),
