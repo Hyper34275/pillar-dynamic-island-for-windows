@@ -165,7 +165,7 @@ administrator's own `%LOCALAPPDATA%\com.companyisland.app`, which is empty.
 | Layer | Mechanism | Who controls it |
 |---|---|---|
 | Machine-wide autostart | HKLM `Run` value `CompanyIsland` (written by setup, removed by uninstall) | IT |
-| Per-user opt-out | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`, value `CompanyIsland`, `REG_BINARY` of 12 bytes: first byte `02` = enabled, `03` = disabled, the rest zero (`src-tauri/src/autostart.rs`) | The user (About tab > "Launch with Windows", or Task Manager > Startup apps) |
+| Per-user opt-out | `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run`, value `CompanyIsland`, `REG_BINARY` of 12 bytes: first byte `02` = enabled, `03` = disabled, the rest zero (`src-tauri/src/autostart.rs`) | The user (Settings tab > "Launch with Windows", or Task Manager > Startup apps) |
 | Setting | `launchWithWindows` in `settings.json`, default `true` | The user |
 
 Behaviour: the app adopts a change made outside it at its next start (Task Manager writes the same value).
@@ -235,7 +235,7 @@ in-memory settings and without a log file (codes `APP-002`, `APP-010`).
 | | |
 |---|---|
 | File | `%LOCALAPPDATA%\CompanyIsland\logs\companyisland.log` |
-| Open | tray menu "Open logs", or About tab > "Open logs" |
+| Open | tray menu "Open logs", or Settings tab > "Open logs" |
 | Rotation | at 1 MB the file becomes `.1.log`; five files in total (current + `.1` to `.4`) |
 | Level | `INFO` and above. Debug is opt-in: setting `debugLogging` or environment variable `COMPANYISLAND_LOG=debug` |
 | Format | one line per entry: `2026-10-06 16:23:01.289 INFO  [calendar] status waiting -> waiting code=OUTLOOK-101 events=0` |
@@ -249,7 +249,7 @@ neutralized so one entry is always one line.
 Never logged: meeting subjects, locations, organizers, attendees, bodies, notification titles or text, e-mail
 addresses, Outlook profile names (only a hash in debug mode).
 
-"Copy diagnostics" (About tab, explicit click, clipboard only) is separate from the log: its first line is a one-line summary for tickets, then it contains Windows
+"Copy diagnostics" (Settings tab, explicit click, clipboard only) is separate from the log: its first line is a one-line summary for tickets, then it contains Windows
 user (`DOMAIN\USER`), computer name, local IPv4 and adapter name, OS, build, WebView2 version, session id,
 Outlook status and mode, error code, cached-event count, last sync time and the last error codes. No meeting
 content. Treat it as containing personal identifiers when users paste it into tickets.
@@ -375,11 +375,11 @@ Package and deploy
 After install (per pilot user, after next logon)
 
 - [ ] Island visible at the top centre; shows `d/M` and the weekday; no UAC prompt; not elevated in Task Manager (Details > Elevated = No).
-- [ ] With Classic Outlook running: Calendar tab shows meetings; About tab shows Outlook "Running", mode "Classic Outlook".
+- [ ] With Classic Outlook running: Calendar tab shows meetings; Settings tab (diagnostics) shows Outlook "Running", mode "Classic Outlook".
 - [ ] Meeting 30 minutes ahead produces one alert, once.
 - [ ] No outbound traffic from `CompanyIsland.exe` / its WebView2 children.
 - [ ] Logs exist in `%LOCALAPPDATA%\CompanyIsland\logs`; no meeting text in them.
-- [ ] Help desk knows: About tab > "Copy diagnostics" for tickets; error codes in ARCHITECTURE.md section 8; per-user wipe command (section 7).
+- [ ] Help desk knows: Settings tab > "Copy diagnostics" for tickets; error codes in ARCHITECTURE.md section 8; per-user wipe command (section 7).
 
 Operations
 

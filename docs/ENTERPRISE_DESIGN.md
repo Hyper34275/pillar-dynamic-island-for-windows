@@ -14,13 +14,14 @@ Implementation agents MUST follow it. If something here is wrong, stop and repor
 | Installer | NSIS only, `installMode: perMachine`, x64, WebView2 `offlineInstaller` (embedded), MSI target dropped. Machine-wide autostart = HKLM `Run` value written by NSIS hook. App itself never writes HKLM. |
 | Per-user autostart opt-out | Setting `launchWithWindows` (default true). Toggled by writing HKCU `Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run` value (same mechanism as Task Manager): `02 00 00 00 + 8 zero bytes` = enabled, `03 00 00 00 + 8 zero bytes` = disabled. No admin needed. |
 | Outlook | Classic Outlook OOM via in-process Rust late-bound `IDispatch` (windows crate) on ONE dedicated STA worker thread. **Attach only** (`GetActiveObject` / ROT) — never `CoCreateInstance` of Outlook.Application. No sidecar, no .NET. |
-| Calendar reads | Default Calendar only (`GetDefaultFolder(9)` of the *default store of the running session*). Properties read: EntryID(hashed), Subject, Start, End, Location, Organizer(display name), AllDayEvent, IsRecurring, BusyStatus, ResponseStatus, MeetingStatus (a number; canceled meetings 5/7 are skipped). Organizer, IsRecurring and the meeting URL are not used by any V1 screen (reserved for a Join action). **Never** Body, Recipients, SenderEmailAddress, attachments. Meeting URL = regex over Location only. |
+| Calendar reads | Default Calendar only (`GetDefaultFolder(9)` of the *default store of the running session*). Properties read: EntryID(hashed), Subject, Start, End, Location, Organizer(display name), AllDayEvent, IsRecurring, BusyStatus, ResponseStatus, MeetingStatus (a number; canceled meetings 5/7 are skipped), Categories (names, only to look up a color). The master category list (`Session.Categories`: Name, Color) is re-read at most every 5 min; `OlCategoryColor` 1..25 maps to `#RRGGBB` in `outlook::category_color` (Outlook's "Black" lifted to dark gray for the black island). Organizer, IsRecurring and the meeting URL are not used by any V1 screen (reserved for a Join action). **Never** Body, Recipients, SenderEmailAddress, attachments. Meeting URL = regex over Location (Teams incl. .us, Skype for Business `lync.com`, Skype `join.skype.com`, Webex / Jabber `webex.com`, `ciscospark.com`, Zoom incl. `zoomgov.com`, Google Meet); when the Location has none, the add-ins' named properties `SkypeTeamsMeetingUrl` and `OnlineMeetingExternalLink` (PS_PUBLIC_STRINGS, via `PropertyAccessor`; any https host, as Skype for Business on-premises uses the company's own) — never the body. |
+| Meeting invitations | Setting `meetingInvitesEnabled` (default true; off = the Inbox is never read). Each sync filters the default Inbox (`GetDefaultFolder(6)`) with `Restrict("[MessageClass] = 'IPM.Schedule.Meeting.Request' AND [UnRead] = True")` (no date in the filter, so no locale parsing), sorted by ReceivedTime descending, at most 30 looked at, none older than 72 h, at most 10 kept. Per request: EntryID (hashed), Subject, ReceivedTime; of `GetAssociatedAppointment(false)` (look-up only, never adds): Start, End, Location, Organizer. Requests the user already answered (the calendar entry's ResponseStatus is tentative/accepted/declined) are skipped. A failed invite read never fails the calendar sync (WARN log, HRESULT only). They can be answered from the island (`outlook_respond_invite`). The island shows each invite once per app session if it arrived after the app started (10 min grace); a click opens Outlook on its calendar at the meeting's day (`outlook_open_calendar`). |
 | Cloud/AI/internet | None. Prism/Groq, `reqwest`, productivity/Focus, brightness, per-app mixer, battery, system monitor, SMTC music, foreground-app context are REMOVED. |
 | Notifications | Keep Windows toast mirroring, best-effort: `UserNotificationListener`. Never call `RemoveNotification` (non-destructive). Access status is an enum, never a panic. Denied/policy/unsupported ⇒ feature off + diagnostic code, app continues. |
 | Single instance | Per Windows session (named mutex `Local\CompanyIsland-<identifier-hash>` semantics; NOT `Global\`). Second launch in same session ⇒ signal first instance (toggle expand), exit. Different sessions run independently. |
-| Focus | Window is non-activating: `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, never calls `set_focus`/`SetForegroundWindow`/`AllowSetForegroundWindow(ASFW_ANY)`. Island has no text inputs in V1, so no activation toggle is needed. |
+| Focus | Window is non-activating: `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`, never calls `set_focus`/`SetForegroundWindow`/`AllowSetForegroundWindow(ASFW_ANY)`. The only `AllowSetForegroundWindow` is for the user's own Outlook PID, in `outlook::open_calendar`, right after a click on a meeting invitation. Island has no text inputs in V1, so no activation toggle is needed. |
 | Reminder semantics | Fixed offset before event *start* (default 30 min, setting `reminderMinutes`; engine supports a list of offsets later: 30/15/5/0). Skipped: all-day events, `BusyStatus` = free(0), `ResponseStatus` = declined(4), events already started, events ended. Fired-set persisted per user in `state\reminders.json`, key `"<eventHash>|<startUtcIso>|<reminderType>"`, pruned after 7 days. A missed window (PC asleep) fires late only if event hasn't started and ≥ 1 min remains; otherwise marked skipped. |
-| Locale | Two sources. Strings and text direction follow the Windows UI language (`navigator.language`, he/en table in `src/lib/i18n.ts`, other languages fall back to English strings). Dates, weekdays and times follow the Windows REGIONAL FORMAT (`GetUserDefaultLocaleName` via the `get_format_locale` command, read once before the first render; falls back to the UI language), formatted by Intl, so an English UI with an Israel region shows 6/10, as Windows does. RTL strings correct, but island layout is physically LTR: date left, weekday right (`dir="ltr"` on layout containers; text spans use `dir="auto"`/`unicode-bidi: plaintext`). |
+| Locale | The UI is **always Hebrew**, whatever language Windows runs in: `main.tsx` pins it with `setFixedLocale("he")` (strings from the he table in `src/lib/i18n.ts`, `<html lang="he-IL" dir="rtl">`, tray menu Hebrew too). Words inside dates (weekday and month names, "tomorrow", "in 5 min", AM/PM) use `getWordTag()` = he-IL; weekday and month names come from fixed tables in `src/lib/dateFormat.ts` (Sunday → יום ראשון … Saturday → יום שבת), so an English Windows (or a missing ICU locale) still shows Hebrew days. Numbers, their order and separators and the 12/24-hour clock follow the Windows REGIONAL FORMAT (`GetUserDefaultLocaleName` via the `get_format_locale` command, read once before the first render), so an Israel region shows 6/10, as Windows does. Without the pin (tests) strings follow the Windows UI language, as before. RTL strings correct, but island layout is physically LTR: date left, weekday right (`dir="ltr"` on layout containers; text spans use `dir="auto"`/`unicode-bidi: plaintext`). |
 | Notification/Alert priority | `meetingAlert (3) > notification (2) > userExpanded (1) > idle (0)`. Lower never interrupts higher; higher preempts lower and the preempted state is restored afterwards (except notification which is dropped if stale). |
 
 ## 1. Rust ⇄ TypeScript contract
@@ -36,6 +37,10 @@ Command errors are `Result<T, String>` where the string is `"CODE: short message
 - `open_log_dir() -> ()`
 - `get_settings() -> Settings`, `update_settings(patch: SettingsPatch) -> Settings` (single Rust `SettingsStore`, validated, schema-versioned, atomic write, emits `settings-changed`)
 - `calendar_get_snapshot() -> CalendarSnapshot`, `calendar_refresh() -> ()`
+- `outlook_respond_invite(id: string, response: "accept" | "tentative" | "decline") -> ()` — only from a click. The request's EntryID is looked up in Rust memory by the hashed id from the latest read (never sent to the page); `GetItemFromID` → `GetAssociatedAppointment(true)` → `Respond(olMeetingAccepted 3 / Tentative 2 / Declined 4, fNoUI=true)` → `Send()` on the reply when `ResponseRequested` (unknown counts as yes). Own STA thread, 60 s limit (Outlook may show its own security prompt), then a calendar refresh. Errors `OUTLOOK-101/103/104/105/108/109/110`.
+- `open_meeting_url(url: string) -> ()` — only from a click on Join, and only for a link the backend itself reported (https from a meeting property, or a known meeting host from a Location; `APP-020` otherwise). Teams web links go to the Teams app (`msteams:`) when it is installed, everything else to its default handler via `ShellExecuteW`. The link is never logged.
+- `calendar_get_range(fromUtc: string, toUtc: string) -> CalendarEventDto[]` — a day the user browses to in the Calendar tab (at most 7 days per call). Served by the same STA worker and watchdog as the sync (queued behind a running read), only while connected; nothing is cached in Rust and the machine (and so reminders) is untouched. The page keeps each day for 2 min.
+- `outlook_open_calendar(startUtc: string | null) -> ()` — only from a click on a meeting invitation. Attach-only (a closed Outlook is not started; `OUTLOOK-101/103/104`), on a fresh STA thread, 10 s limit (`OUTLOOK-109`): `ActiveExplorer.CurrentFolder = default calendar` (or `GetExplorer` + `Display` when Outlook has no main window), restore if minimized, `AllowSetForegroundWindow(outlook pid)` + `Activate`, then `CalendarView.GoToDate(local day of startUtc)`.
 - `reminder_state_load() -> Record<string, number>` (key → firedAtUnixMs), `reminder_state_save(map)`.
 - `notifications_get_status() -> NotificationStatus`, `notifications_request_access() -> NotificationStatus` (only on explicit user click), plus existing notification list/activate commands, trimmed.
 - Window: `set_island_geometry(width, height, radius)` (flat logical px; native window is sized EXACTLY to the island, rounded SetWindowRgn, no global mouse hook), `get_monitors() -> [{id,name,primary,isPrimary,width,height,scale}]`; setting key is `monitorId` (null = primary).
@@ -44,6 +49,7 @@ Command errors are `Result<T, String>` where the string is `"CODE: short message
 - `calendar-snapshot` (payload `CalendarSnapshot`) — emitted on every state change and after each successful sync.
 - `notification-received`, `notification-status`
 - `settings-changed`, `fullscreen-changed`, `display-changed`, `island-toggle` (from tray / second instance)
+- `foreground-changed` (no payload) — another process's window became active; forwarded from the fullscreen module's existing out-of-context `EVENT_SYSTEM_FOREGROUND` WinEvent hook. Closes the island on a click outside it without any mouse hook.
 
 ### Types (camelCase over IPC; Rust uses `#[serde(rename_all = "camelCase")]`)
 ```ts
@@ -68,6 +74,7 @@ type CalendarSnapshot = {
   lastSyncUnixMs: number | null; cachedCount: number;
   nextRetryUnixMs: number | null;
   events: CalendarEventDto[];                         // sorted by start asc, horizon: now-0 .. +48h, max 50
+  invites: MeetingInviteDto[];                        // unread meeting requests, newest first, max 10; [] when the setting is off
 }
 type CalendarEventDto = {
   id: string;           // stable: sha256(EntryID + "|" + startUtc) truncated to 16 hex. Raw EntryID never leaves Rust.
@@ -76,7 +83,16 @@ type CalendarEventDto = {
   allDay: boolean; location: string | null; organizer: string | null;
   isRecurring: boolean; meetingUrl: string | null;
   busyStatus: 'free'|'tentative'|'busy'|'oof'|'workingElsewhere'; responseStatus: 'none'|'organized'|'tentative'|'accepted'|'declined'|'notResponded';
+  color: string | null; // "#RRGGBB" of the first of the item's categories that has a color; the UI shows the default blue otherwise
 }
+type MeetingInviteDto = {
+  id: string;           // sha256("invite|" + EntryID) truncated to 16 hex
+  subject: string; organizer: string | null;
+  startUtc: string | null; endUtc: string | null;     // the requested meeting, when Outlook can tell
+  location: string | null; receivedUtc: string;
+}
+// Settings (get_settings / update_settings) also carries meetingInvitesEnabled: boolean and
+// meetingSilencePrompt: boolean (offer the ring / silent pill when a meeting starts), both default true.
 type NotificationStatus = 'allowed'|'denied'|'unspecified'|'unsupported'|'policy'|'error'
 ```
 
@@ -85,20 +101,20 @@ type NotificationStatus = 'allowed'|'denied'|'unspecified'|'unsupported'|'policy
 ```
 src/lib/appInfo.ts            product constants
 src/lib/i18n.ts               string tables (en, he) + t(key, params) + locale detection + isRtl
-src/lib/dateFormat.ts         Intl formatters (created once, cached per locale): shortDate, weekday, time, fullDate
+src/lib/dateFormat.ts         Intl formatters (cached per regional-format + word locale pair) and the Hebrew weekday/month tables: shortDate, weekday, time, fullDate, dayLabel
 src/lib/calendar/             CalendarProvider interface + registry, ClassicOutlookCalendarProvider (Tauri-backed), CalendarService (owns providers, merged snapshot), normalize, select, types
 src/lib/reminders/            ReminderEngine (pure, testable) + ReminderStore (Tauri-persisted)
 src/lib/island/               IslandStateManager (state.ts: pure reducer + priority), timing constants, geometryQueue
-src/hooks/                    useClock (minute-aligned), useCalendar, useReminders, useSystemInfo, useIslandState (reducer + alert/toast timers), usePillState (boot + hover/leave intent)
-src/components/Pill/          PillShell, CompactIsland, ExpandedIsland, MeetingAlert, NotificationToast (alert and toast render inside the island), panels/{DatetimeTab,CalendarTab,AboutTab}
+src/hooks/                    useClock (minute-aligned), useCalendar, useReminders, useSystemInfo, useIslandState (reducer + alert/toast timers), usePillState (boot + hover/leave intent), useNotifications + useMeetingInvites (invites become island notifications)
+src/components/Pill/          PillShell, CompactIsland, ExpandedIsland, MeetingAlert, NotificationToast (alert and toast render inside the island; an invite is a toast with a calendar tile), panels/{CalendarTab,AboutTab,SettingsTab}
 ```
-Interaction: no global mouse hook. The native window is exactly the island's size (`set_island_geometry(width, height, radius)`), so DOM pointer events are the island's own: hover (120 ms intent) expands, leave collapses (500 ms; 4 s when pinned by a click/toggle), a meeting alert (8 s) or toast (4.5 s) pauses while hovered.
+Interaction: no global mouse hook. The native window is exactly the island's size (`set_island_geometry(width, height, radius)`), so DOM pointer events are the island's own: hover (120 ms intent) expands, leave collapses (400 ms once the pointer has been on it, clicked or not; 4 s for an island opened from the tray / second launch that the pointer has not reached), a click outside it (desktop, taskbar, another app) collapses it at once via `foreground-changed` (the window is non-activating, so that click activates another window), a meeting alert (8 s) or toast (4.5 s) pauses while hovered.
 Rules: no Tauri `invoke` inside React components (only through `src/lib/*` / hooks). No Outlook logic in React. UI talks to `CalendarProvider` only.
-Tabs: DATE & TIME, CALENDAR, ABOUT. Collapsed island: `d/M` physically left, weekday physically right, black pill, near-white text.
+Tabs: CALENDAR (opens first), NOTIFICATIONS, ABOUT, SETTINGS. Calendar adds: a week strip (Sunday first; right to left in Hebrew; -14 .. +60 days; other days via `calendar_get_range`), a timeline of the day, Join buttons (`meetingUrl`), "pending invitations" with accept / maybe / decline, and a ring / silent toggle on a meeting in progress. Notifications: this session's notifications and invitations (memory only, max 50), click opens the app (or the calendar), remove one / clear all; silenced ones are marked. About: click the name or IP to copy. Collapsed island: 5 min before a meeting "in N min · subject", during it "in a meeting until HH:MM" with a progress bar and the red bell when silent; the unseen count sits inside the island. At a meeting's start the ring / silent pill appears (priority between alert and toast); a tap = silent until the meeting ends: Windows toasts and invitations then only go to the Notifications tab and the count, reminders still show; when it ends a short "ring" pill. Meeting alerts get Join and "remind me in 5 min" (only while more than 5 min are left). Calendar also lists every upcoming meeting in the 48 h window, grouped by day, the panel scrolls; each event carries its category color as a bar on its left; the next-meeting card has caption + countdown on top, time range + subject on one line under it. About: the computer name and the local IPv4, large, with an analog + digital clock (seconds, only while open) between them. Settings: the settings, then the diagnostics (formerly under About). Collapsed island: `d/M` physically left, weekday physically right (Hebrew, e.g. יום שלישי), black pill, near-white text.
 
 ## 3. Error codes
 
-`APP-001` unhandled panic caught · `APP-002` settings write failed · `APP-003` settings corrupt (quarantined) · `APP-010` log dir unavailable
+`APP-001` unhandled panic caught · `APP-020` meeting link rejected or could not be opened · `APP-002` settings write failed · `APP-003` settings corrupt (quarantined) · `APP-010` log dir unavailable
 `OUTLOOK-101` not running (informational) · `OUTLOOK-102` COM attach failed · `OUTLOOK-103` elevation mismatch · `OUTLOOK-104` New Outlook only · `OUTLOOK-105` busy/call rejected (retrying) · `OUTLOOK-106` MAPI namespace/profile unavailable · `OUTLOOK-107` default calendar unavailable · `OUTLOOK-108` reading items failed · `OUTLOOK-109` watchdog/unresponsive · `OUTLOOK-110` object model blocked by policy/prompt
 `NOTIF-201` denied · `NOTIF-202` policy/unspecified · `NOTIF-203` unsupported · `NOTIF-204` listener error
 `NET-301` no usable LAN IPv4 · `WIN-501` window geometry failed · `WIN-502` tray unavailable · `WIN-503` monitor enumeration failed · `WIN-504` clipboard busy/too large/write failed
@@ -111,7 +127,7 @@ Tabs: DATE & TIME, CALENDAR, ABOUT. Collapsed island: `d/M` physically left, wee
 5. If nothing qualifies, fall back to APIPA only if no other IPv4 exists, else `null` (`NET-301`). Result cached; recomputed on `NotifyIpInterfaceChange` or every 60 s while About is visible — never polled while collapsed.
 
 ## 5. Privacy rules (apply everywhere)
-No meeting subjects/locations/organizers in logs, diagnostics, crash reports or persisted caches. Logs may contain: event hash (first 8 hex), counts, timings, error codes. The reminder store holds only hash|start|type|firedAt. There is no persistent event cache on disk in V1 (events are re-read from Outlook's own local cache on attach).
+No meeting subjects/locations/organizers (of events or meeting invitations) in logs, diagnostics, crash reports or persisted caches; invites are held in memory only, and the "already shown" set is in memory only too. Logs may contain: event hash (first 8 hex), counts, timings, error codes. The reminder store holds only hash|start|type|firedAt. There is no persistent event cache on disk in V1 (events are re-read from Outlook's own local cache on attach).
 
 ## 6. Phase gate (every phase)
 `npx tsc --noEmit`, `npm test` (vitest, once added), `cargo check` + `cargo test` (PowerShell with `%USERPROFILE%\.cargo\bin` on PATH; Git Bash can't find cargo), review `git diff`, commit with message `phase N: …`.

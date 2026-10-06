@@ -14,7 +14,7 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 ```
 +----------------------------------------------------------------------------------------------+
 | UI  (React 18, WebView2; src/components/Pill, src/hooks)                                     |
-|   PillShell > CompactIsland | ExpandedIsland (tabs: DATE & TIME, CALENDAR, ABOUT)             |
+|   PillShell > CompactIsland | ExpandedIsland (tabs: CALENDAR, ABOUT, SETTINGS)                |
 |   MeetingAlert | NotificationToast | ContextMenu       "dir=ltr" layout, dir=auto text        |
 +--------------+---------------------------+---------------------------+-----------------------+
                | view = selectView(state)  | t(), Intl dates           | settings, system info
@@ -58,13 +58,13 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 |---|---|---|
 | UI | Renders the island; pointer hover/leave intent; announces to screen readers; never calls Outlook or `invoke` directly | `src/components/Pill/*`, `src/hooks/*` |
 | Island State Manager | Decides what the island shows by priority; remembers the user's expanded tab; queues alerts | `src/lib/island/state.ts`, `src/hooks/useIslandState.ts`, `timing.ts` |
-| Localization | Strings (en, he) and RTL flag from the UI language; plurals; Intl date/time formatting from the Windows regional format (`get_format_locale`); locale-correct short date | `src/lib/i18n.ts`, `src/lib/dateFormat.ts` |
+| Localization | UI pinned to Hebrew at startup (`setFixedLocale("he")` in `main.tsx`, whatever the Windows language); plurals; date words (weekday/month names from fixed Hebrew tables, "tomorrow", "in 5 min") in Hebrew; numbers, their order and the 12/24-hour clock from the Windows regional format (`get_format_locale`); locale-correct short date | `src/lib/i18n.ts`, `src/lib/dateFormat.ts`, `src/main.tsx` |
 | CalendarProvider | Source-agnostic calendar contract and merge | `src/lib/calendar/*` |
 | ClassicOutlookCalendarProvider | Frontend half of the Outlook source: initial read, pushed snapshots, throttled refresh (5 s) | `src/lib/calendar/classicOutlook.ts` |
-| Outlook worker (Rust) | The only code that talks to Outlook (late-bound COM on its own STA thread) | `src-tauri/src/outlook.rs`, `com.rs`, `calendar.rs` |
+| Outlook worker (Rust) | The only code that talks to Outlook (late-bound COM on its own STA thread): events with their category color, unread meeting requests (when the setting is on); plus `open_calendar` on an invite click (own short-lived STA thread) | `src-tauri/src/outlook.rs`, `com.rs`, `calendar.rs` |
 | Reminder Engine | Pure scheduler: fire-once reminders from events + settings; persisted fired set | `src/lib/reminders/*` |
 | System Info | Machine/user/OS/WebView2/IPv4 for About and diagnostics | `src-tauri/src/system.rs`, `src/hooks/useSystemInfo.ts` |
-| Notification Provider | Mirror Windows toasts (read-only), status as an enum | `src-tauri/src/notifications.rs`, `src/hooks/useNotifications.ts` |
+| Notification Provider | Mirror Windows toasts (read-only), status as an enum; new Outlook meeting requests from the calendar snapshot become island notifications too (once per session, only those received after start) | `src-tauri/src/notifications.rs`, `src/hooks/useNotifications.ts`, `useMeetingInvites.ts` |
 | Diagnostics | Privacy-safe status + last 10 error codes; "Copy diagnostics" text | `src-tauri/src/diagnostics.rs`, `src/lib/diagnostics.ts` |
 | Logging | One rotating file, one line per entry, scrubbed; UI forwards through `write_logs` | `src-tauri/src/debug_log.rs`, `src/lib/debugLog.ts`, `logger.ts` |
 | Settings | Typed, validated, schema-versioned store; autostart opt-out | `src-tauri/src/settings.rs`, `autostart.rs`, `src/hooks/useSettings.ts` |
@@ -95,7 +95,9 @@ island. A separate .NET (VSTO / interop) sidecar was considered and rejected:
 | Tokio blocking pool | Tauri `async_runtime` | `rt::run_blocking(...)`: settings, system info, diagnostics, clipboard, notification status, log-folder open | A command taking over 400 ms logs a `slow backend command` warning |
 | `companyisland-calendar` (supervisor + **watchdog**) | `calendar::start` | Owns the `Machine`; cheap process discovery; hands reads to the worker; waits at most 10 s for a reply (`WATCHDOG_MS`); wakes at least every 30 s to notice sleep/midnight | Pure scheduling logic; no COM here |
 | `companyisland-outlook-<generation>` (STA worker) | supervisor, on demand | `ComApartment::init_sta`, message filter, pumps messages; per job: attach -> read -> release | One worker at a time. A hung worker is **abandoned** (not killed) and replaced; if it ever returns it releases its COM objects and exits. Dropped when Outlook is not running |
-| `companyisland-fullscreen` | `fullscreen::start` (from a startup thread) | Message loop + out-of-context WinEvent hooks (foreground, minimize, location of the foreground window); 250 ms debounce; `SHQueryUserNotificationState` + geometry | Emits `fullscreen-changed`; hides/restores the window only if it hid it |
+| `companyisland-outlook-respond` (STA, short-lived) | `outlook_respond_invite` (Accept / Maybe / Decline on an invitation) | Attach, `GetItemFromID`, `Respond`, `Send` | Waits at most 60 s (an Outlook security prompt may be on screen) |
+| `companyisland-outlook-open` (STA, short-lived) | `outlook_open_calendar` (a click on a meeting invitation) | Attach, switch the active explorer to the calendar, `Activate`, `GoToDate` | The command waits at most 10 s (`OUTLOOK-109`); a fresh thread because blocking-pool threads may already be MTA |
+| `companyisland-fullscreen` | `fullscreen::start` (from a startup thread) | Message loop + out-of-context WinEvent hooks (foreground, minimize, location of the foreground window); 250 ms debounce; `SHQueryUserNotificationState` + geometry | Emits `fullscreen-changed`; hides/restores the window only if it hid it. Forwards every foreground change at once (not debounced) as `foreground-changed`, so a click on the desktop, taskbar or another app closes the island |
 | Notification threads | `notifications::start` / `spawn_sync` | `companyisland-notif-init` / `-sync` (short-lived): query access, subscribe or start the poller | `NotificationChanged` handlers run on WinRT callback threads and are wrapped in `catch` |
 | `companyisland-notif-poll` | `notifications` when `NotificationChanged` cannot be subscribed (typical for an unpackaged exe) | Reads the Action Center every 5 s (30 s after 3 failures), forwards only unseen ids; stops through a channel | Reports `notificationMode = polling` |
 | `startup` thread | `lib.rs` setup | `settings::sync_autostart` (registry) then `fullscreen::start` | Keeps registry work off the UI thread |
@@ -114,7 +116,10 @@ unwinding across the boundary. Panics are also logged with a (scrubbed) backtrac
    to the STA worker. The worker calls `GetActiveObject("Outlook.Application")`, `Session.GetDefaultFolder(9)`,
    sorts `Items` by `[Start]`, sets `IncludeRecurrences`, `Restrict`s with a locale-formatted filter (falls
    back to US format if empty or implausible), reads the allow-listed properties per item, builds
-   `CalendarEventDto`s (id = first 16 hex of sha256(EntryID + "|" + start)), releases every object.
+   `CalendarEventDto`s (id = first 16 hex of sha256(EntryID + "|" + start); `color` from the first of the
+   item's categories that has one, looked up in the master category list re-read every 5 min). When
+   `meetingInvitesEnabled` is on it also reads the newest unread meeting requests of the default Inbox (a
+   date-free `Restrict`; a failure here never fails the sync). Then it releases every object.
 3. **State**: `Machine::on_fetch_ok` stores the events (sorted, de-duplicated, max 50), status `connected`,
    next read in 60 s. `publish` stores the snapshot and emits `calendar-snapshot` if it changed; events that
    already ended are filtered out of what is published.
@@ -187,8 +192,11 @@ pinned) is never modified by temporary states; they sit on top of it.
 | `NOTIFICATION_DONE` | back to the user layer |
 | `TICK` | drops a waiting toast that went stale |
 
-Durations (`src/lib/island/timing.ts`): alert 8 s, toast 4.5 s, hover intent 120 ms, leave grace 500 ms
-(4 s when opened by click or toggle). Hover or a fullscreen-hidden island pauses the countdown.
+Durations (`src/lib/island/timing.ts`): alert 8 s, toast 4.5 s, hover intent 120 ms, leave grace 400 ms
+once the pointer has been on the expanded island (clicked or not); 4 s for an island opened from the tray or a
+second launch that the pointer has not reached yet. Another window becoming active (`foreground-changed`, i.e. a
+click outside the island) collapses it at once unless the pointer is on it or it opened less than 700 ms ago.
+Hover or a fullscreen-hidden island pauses the countdown.
 
 ### 4.3 Reminder decision (`src/lib/reminders/engine.ts`)
 
@@ -210,19 +218,22 @@ src/
   components/CrashBoundary.tsx
   components/Pill/        PillShell, CompactIsland, ExpandedIsland, MeetingAlert, NotificationToast,
                           ContextMenu, TabDock, TabBoundary, tabs.ts, animations.ts, alertLayout.ts,
-                          usePillGeometry.ts, useCompactLayout.ts, panels/{DatetimeTab,CalendarTab,AboutTab}
+                          usePillGeometry.ts, useCompactLayout.ts, panels/{CalendarTab,DayTimeline,WeekStrip,NotificationsTab,AboutTab,SettingsTab},
+                          RingerPill, IslandLayer, ui/{meetingActions,eventColor}
   hooks/                  useIslandState, usePillState, useIslandEvents, useCalendar, useReminders,
-                          useSettings, useSystemInfo, useNotifications, useClock, useScreenReader,
-                          useDesktopGestures, useCrashRecovery
+                          useSettings, useSystemInfo, useNotifications, useMeetingInvites, useMeetingSilence, useClock,
+                          useScreenReader, useDesktopGestures, useCrashRecovery
   lib/appInfo.ts          product constants (name, identifier, version)
-  lib/i18n.ts             string tables en/he, t(), detectLocale, isRtl, plurals
-  lib/dateFormat.ts       cached Intl formatters, minute/day helpers
+  lib/i18n.ts             string tables en/he, t(), detectLocale, isRtl, plurals, setFixedLocale/getWordTag
+  lib/dateFormat.ts       cached Intl formatters, Hebrew weekday/month tables, minute/day helpers
   lib/ipc.ts, tauri.ts    typed wrappers: commands + events (non-global @tauri-apps/api; null outside Tauri)
   lib/errors.ts, logger.ts, debugLog.ts, diagnostics.ts   code extraction, log forwarding, diagnostics text
   lib/calendar/           provider.ts (interface), registry.ts, service.ts, classicOutlook.ts,
-                          normalize.ts, select.ts, types.ts
+                          normalize.ts, select.ts, types.ts, dayRange.ts (on-demand days), meetingStatus.ts,
+                          inviteAnswers.ts
   lib/reminders/          engine.ts, store.ts, types.ts
-  lib/island/             state.ts, timing.ts, geometryQueue.ts, compactLayout.ts
+  lib/island/             state.ts, timing.ts, geometryQueue.ts, compactLayout.ts, morph.ts, silence.ts
+  lib/notifications/      history.ts (this session's notifications, memory only)
 src-tauri/
   tauri.conf.json         product, window (transparent, no decorations, non-focusable), CSP, NSIS bundle
   windows-app.manifest    asInvoker, PerMonitorV2, Common-Controls v6, long paths
@@ -244,8 +255,8 @@ IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open
 `update_settings`, `calendar_get_snapshot`, `calendar_refresh`, `reminder_state_load`, `reminder_state_save`,
 `set_island_geometry`, `get_monitors`, `get_fullscreen_state`, `get_system_info`, `get_format_locale`, `get_diagnostics`,
 `copy_text_to_clipboard`, `notifications_get_status`, `notifications_request_access`, `activate_notification`,
-`activate_app_by_aumid`. Events (Rust to JS): `calendar-snapshot`, `notification-received`,
-`notification-status`, `settings-changed`, `fullscreen-changed`, `display-changed`, `island-toggle`.
+`activate_app_by_aumid`, `outlook_open_calendar`, `outlook_respond_invite`, `open_meeting_url`, `calendar_get_range`. Events (Rust to JS): `calendar-snapshot`, `notification-received`,
+`notification-status`, `settings-changed`, `fullscreen-changed`, `display-changed`, `island-toggle`, `foreground-changed`.
 
 ## 6. Security and hardening summary
 
@@ -255,7 +266,8 @@ IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open
 - No global mouse/keyboard hook, no raw-input registration (`DeviceEventFilter::Always`), no injection;
   fullscreen detection uses out-of-context WinEvent hooks.
 - Outlook: attach-only (`GetActiveObject`), same session + SID + elevation, read-only, safe properties only,
-  every object released after each read.
+  every object released after each read. The one write-like call is showing the user's own Outlook on its
+  calendar after a click on an invitation (`AllowSetForegroundWindow` for that Outlook PID only, never `ASFW_ANY`).
 - Notifications: read-only (`RemoveNotification` is never called); activation of a toast's app is limited to
   AUMIDs the app has itself seen (allow-list of 64) and validated against shell metacharacters.
 - External programs are started by absolute path (`explorer.exe` from the Windows known folder).
@@ -266,14 +278,14 @@ IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open
 `settings.json` (schema version 1), camelCase, validated on load and on every patch:
 `launchWithWindows` (true), `hideInFullscreen` (true), `meetingReminderEnabled` (true), `reminderMinutes`
 (30, clamped 0-120; the UI offers 5/10/15/30), `monitorId` (null = primary; otherwise a zero-based index as a
-string, missing monitor falls back to primary), `notificationsEnabled` (true),
-`debugLogging` (false). A change emits `settings-changed`; `launchWithWindows` writes the HKCU StartupApproved
+string, missing monitor falls back to primary), `notificationsEnabled` (true), `meetingSilencePrompt` (true; the ring / silent pill at a meeting's start), `meetingInvitesEnabled` (true; off
+means the Inbox is not read at all, picked up at the next sync), `debugLogging` (false). A change emits `settings-changed`; `launchWithWindows` writes the HKCU StartupApproved
 value; `debugLogging` switches the log level; `monitorId` re-places the island; `hideInFullscreen`
 re-evaluates fullscreen; `notificationsEnabled` starts or stops delivery.
 
 ## 8. Error codes
 
-Codes appear in the log, in the Calendar tab (for calendar statuses), in About > diagnostics and in "Copy
+Codes appear in the log, in the Calendar tab (for calendar statuses), in Settings > diagnostics and in "Copy
 diagnostics" (last 10, repeats collapsed). Any WARN/ERROR log line containing a known code feeds the recent
 list; `OUTLOOK-101` and the notification status codes are INFO conditions (the latter are recorded
 explicitly). No code is fatal: the app keeps running in every case except a failure to start (`APP-001
@@ -284,6 +296,7 @@ failed to start`, process exits with code 1).
 | APP-001 | Unhandled panic caught, a background command task failed, UI render error in a tab, or the app failed to start | `debug_log::catch`, panic hook, `rt::run_blocking`, `TabBoundary`, `lib.rs` | A tab shows "Unavailable / Try again"; the rest keeps working | Collect the log; report |
 | APP-002 | Settings or reminder state could not be written / data folder unavailable | `settings.rs`, `reminder_state.rs` | Settings kept in memory only; reminders may repeat after a restart | Check profile volume and permissions |
 | APP-003 | Settings or reminder file corrupt or unreadable | `settings.rs`, `reminder_state.rs` | Defaults / empty set; bad file kept as `*.corrupt` | Delete or inspect `*.corrupt` |
+| APP-020 | A Join click with a link the island did not find itself, or no handler could open it | `outlook.rs` (`open_meeting_url`) | Nothing opens | Check the default browser / Teams install |
 | APP-010 | Log folder unavailable or cannot be opened | `debug_log.rs`, `paths.rs` | No log file; "Open logs" fails | Check `%LOCALAPPDATA%\CompanyIsland\logs` |
 | OUTLOOK-101 | Outlook not running (informational) | `calendar.rs` | "Waiting for Outlook" | Start Classic Outlook |
 | OUTLOOK-102 | Attach failed / Outlook not (yet) in the Running Object Table / connection lost / process list unreadable / worker could not start / COM apartment failed | `outlook.rs`, `calendar.rs` | "Connecting" then "Couldn't read the calendar" after about 2 minutes | Usually self-heals; check Outlook health |
@@ -361,8 +374,8 @@ The engine already schedules a list of offsets, one reminder each, and persists 
 
 1. Rust `settings.rs`: add `reminder_offsets: Vec<u32>` (clamped 0-120, sorted, de-duplicated, small maximum)
    to `Settings` and `SettingsPatch` with a default of `[30]`; keep `reminderMinutes` as the migration source.
-2. TypeScript: `Settings`, `SETTINGS_DEFAULTS` and `normalizeSettings` in `src/lib/ipc.ts`; the About >
-   Settings UI (`REMINDER_MINUTE_OPTIONS`).
+2. TypeScript: `Settings`, `SETTINGS_DEFAULTS` and `normalizeSettings` in `src/lib/ipc.ts`; the
+   Settings tab UI (`REMINDER_MINUTE_OPTIONS`).
 3. `src/hooks/useReminders.ts`: pass `offsetsMinutes: settings.reminderOffsets` instead of `[reminderMinutes]`.
 4. Nothing to change in the engine: `0` produces the "Meeting starting now" copy (`reminder.startingNow`) and
    a late fire reports the real remaining minutes; `valid_key` in `reminder_state.rs` already accepts
@@ -381,7 +394,7 @@ The engine already schedules a list of offsets, one reminder each, and persists 
    security review: that is where Outlook's object-model guard prompts appear.
 2. The 50-event cap and the 500-item scan cap apply to the merged result; revisit them if more calendars are
    read. Events are de-duplicated by id across calendars in `normalize_events`.
-3. Settings: a list of enabled calendar ids (`settings.rs`, `ipc.ts`), plus a chooser in About > Settings and
+3. Settings: a list of enabled calendar ids (`settings.rs`, `ipc.ts`), plus a chooser in the Settings tab and
    a way to list calendars (a new command that returns `calendarId` + a display name, never logged).
 4. Frontend: no change to `CalendarService`, `select.ts` (it keys by `calendarId|id|startUtc`) or the engine.
 5. Privacy: calendar display names are user content; treat them like subjects (UI only, never logged).
