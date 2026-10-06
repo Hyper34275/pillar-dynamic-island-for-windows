@@ -37,7 +37,7 @@ Command errors are `Result<T, String>` where the string is `"CODE: short message
 - `calendar_get_snapshot() -> CalendarSnapshot`, `calendar_refresh() -> ()`
 - `reminder_state_load() -> Record<string, number>` (key → firedAtUnixMs), `reminder_state_save(map)`.
 - `notifications_get_status() -> NotificationStatus`, `notifications_request_access() -> NotificationStatus` (only on explicit user click), plus existing notification list/activate commands, trimmed.
-- Window: `set_island_geometry({ width, height, radius? , animate?})`, `set_click_through(bool)`, `get_monitors() -> MonitorInfo[]` (only what the settings UI needs).
+- Window: `set_island_geometry(width, height, radius)` (flat logical px; native window is sized EXACTLY to the island, rounded SetWindowRgn, no global mouse hook), `set_click_through(bool)`, `get_monitors() -> [{id,name,primary,isPrimary,width,height,scale}]`; setting key is `monitorId` (null = primary).
 
 ### Events (Rust → JS)
 - `calendar-snapshot` (payload `CalendarSnapshot`) — emitted on every state change and after each successful sync.
@@ -85,12 +85,13 @@ type NotificationStatus = 'allowed'|'denied'|'unspecified'|'unsupported'|'policy
 src/lib/appInfo.ts            product constants
 src/lib/i18n.ts               string tables (en, he) + t(key, params) + locale detection + isRtl
 src/lib/dateFormat.ts         Intl formatters (created once, cached per locale): shortDate, weekday, time, fullDate
-src/lib/calendar/             CalendarProvider interface, ClassicOutlookCalendarProvider (Tauri-backed), types
+src/lib/calendar/             CalendarProvider interface + registry, ClassicOutlookCalendarProvider (Tauri-backed), CalendarService (owns providers, merged snapshot), normalize, select, types
 src/lib/reminders/            ReminderEngine (pure, testable) + ReminderStore (Tauri-persisted)
-src/lib/island/               IslandStateManager (pure reducer + priority) 
-src/hooks/                    useClock (minute-aligned), useCalendar, useReminders, useSystemInfo, useIslandState
-src/components/Pill/          PillShell, CompactIsland, ExpandedIsland, panels/{DatetimeTab,CalendarTab,AboutTab}
+src/lib/island/               IslandStateManager (state.ts: pure reducer + priority), timing constants, geometryQueue
+src/hooks/                    useClock (minute-aligned), useCalendar, useReminders, useSystemInfo, useIslandState (reducer + alert/toast timers), usePillState (boot + hover/leave intent)
+src/components/Pill/          PillShell, CompactIsland, ExpandedIsland, MeetingAlert, NotificationToast (alert and toast render inside the island), panels/{DatetimeTab,CalendarTab,AboutTab}
 ```
+Interaction: no global mouse hook. The native window is exactly the island's size (`set_island_geometry(width, height, radius)`), so DOM pointer events are the island's own: hover (120 ms intent) expands, leave collapses (500 ms; 4 s when pinned by a click/toggle), a meeting alert (8 s) or toast (4.5 s) pauses while hovered.
 Rules: no Tauri `invoke` inside React components (only through `src/lib/*` / hooks). No Outlook logic in React. UI talks to `CalendarProvider` only.
 Tabs: DATE & TIME, CALENDAR, ABOUT. Collapsed island: `d/M` physically left, weekday physically right, black pill, near-white text.
 
@@ -99,7 +100,7 @@ Tabs: DATE & TIME, CALENDAR, ABOUT. Collapsed island: `d/M` physically left, wee
 `APP-001` unhandled panic caught · `APP-002` settings write failed · `APP-003` settings corrupt (quarantined) · `APP-010` log dir unavailable
 `OUTLOOK-101` not running (informational) · `OUTLOOK-102` COM attach failed · `OUTLOOK-103` elevation mismatch · `OUTLOOK-104` New Outlook only · `OUTLOOK-105` busy/call rejected (retrying) · `OUTLOOK-106` MAPI namespace/profile unavailable · `OUTLOOK-107` default calendar unavailable · `OUTLOOK-108` reading items failed · `OUTLOOK-109` watchdog/unresponsive · `OUTLOOK-110` object model blocked by policy/prompt
 `NOTIF-201` denied · `NOTIF-202` policy/unspecified · `NOTIF-203` unsupported · `NOTIF-204` listener error
-`NET-301` no usable LAN IPv4 · `WIN-501` window geometry failed · `WIN-502` tray unavailable · `WIN-503` monitor enumeration failed
+`NET-301` no usable LAN IPv4 · `WIN-501` window geometry failed · `WIN-502` tray unavailable · `WIN-503` monitor enumeration failed · `WIN-504` clipboard busy/too large/write failed
 
 ## 4. Local IPv4 selection strategy (documented, deterministic)
 1. `GetAdaptersAddresses` (IPv4, skip DNS suffix/multicast), keep adapters with `IfOperStatus == Up`, not loopback/tunnel (`IF_TYPE_SOFTWARE_LOOPBACK`, `IF_TYPE_TUNNEL`), unicast address not `127/8`, not `169.254/16`.

@@ -1,18 +1,24 @@
 //! Windows toast mirroring via `UserNotificationListener` (best effort).
 //!
-//! Non-destructive: notifications are only read, never removed from Windows.
-//! Access is checked without prompting at startup; the prompt is only raised by
-//! the explicit `check_notification_access` command. Notification text is never
-//! logged.
+//! Non-destructive: notifications are only read, never removed from Windows
+//! (`RemoveNotification` is never called). Access is checked without prompting; the
+//! consent prompt is only raised by the explicit `notifications_request_access`
+//! command. Every outcome is a status string, never a panic, and the app carries on
+//! without the feature when access is denied, blocked by policy or unsupported.
+//! Notification text is never logged.
+//!
+//! Events: `notification-received` (one toast) and `notification-status` (string).
+//! The listener subscribes only while access is allowed *and*
+//! `settings.notificationsEnabled` is on, and follows both changes live.
 
-use crate::{debug_log, paths, rt, settings::SettingsStore};
-use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::{debug_log, diagnostics, paths, rt, settings::SettingsStore, system};
+use serde::Serialize;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use windows::core::HSTRING;
-use windows::Foundation::TypedEventHandler;
+use windows::Foundation::{AsyncOperationCompletedHandler, EventRegistrationToken, TypedEventHandler};
 use windows::UI::Notifications::Management::{UserNotificationListener, UserNotificationListenerAccessStatus};
 use windows::UI::Notifications::{
     NotificationKinds, UserNotification, UserNotificationChangedEventArgs, UserNotificationChangedKind,
@@ -20,58 +26,170 @@ use windows::UI::Notifications::{
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+const POLICY_KEY: &str = r"SOFTWARE\Policies\Microsoft\Windows\AppPrivacy";
+const POLICY_VALUE: &str = "LetAppsAccessNotifications";
+/// `LetAppsAccessNotifications`: 0 = user decides, 1 = force allow, 2 = force deny.
+const POLICY_FORCE_DENY: u32 = 2;
+const E_ELEMENT_NOT_FOUND: i32 = 0x80070490u32 as i32;
+const SUBSCRIBE_RETRIES: usize = 3;
+const SUBSCRIBE_RETRY_MS: u64 = 500;
+
+/// The notification as sent to the frontend (`normalizeNotification` in `src/lib/ipc.ts`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SystemNotification {
     pub id: u32,
     pub app_name: String,
     pub title: String,
     pub body: String,
-    pub timestamp: u64, // Unix timestamp in milliseconds
-    pub aumid: Option<String>, // App User Model ID for activating the source app
+    /// Unix timestamp in milliseconds.
+    pub timestamp: u64,
+    /// App User Model ID for activating the source app.
+    pub aumid: Option<String>,
 }
 
-/// Cached access status so list calls don't re-query it every time.
-static ACCESS_GRANTED: AtomicBool = AtomicBool::new(false);
-static SUBSCRIBED: AtomicBool = AtomicBool::new(false);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Status {
+    Allowed,
+    Denied,
+    Unspecified,
+    Unsupported,
+    Policy,
+    Error,
+}
+
+impl Status {
+    fn as_str(self) -> &'static str {
+        match self {
+            Status::Allowed => "allowed",
+            Status::Denied => "denied",
+            Status::Unspecified => "unspecified",
+            Status::Unsupported => "unsupported",
+            Status::Policy => "policy",
+            Status::Error => "error",
+        }
+    }
+
+    /// Diagnostic code of docs/ENTERPRISE_DESIGN.md §3 for a status that disables the feature.
+    fn code(self) -> Option<&'static str> {
+        match self {
+            Status::Allowed => None,
+            Status::Denied => Some("NOTIF-201"),
+            Status::Unspecified | Status::Policy => Some("NOTIF-202"),
+            Status::Unsupported => Some("NOTIF-203"),
+            Status::Error => Some("NOTIF-204"),
+        }
+    }
+}
+
+/// `Denied` while group policy forces notification access off is reported as `Policy`.
+fn classify(access: UserNotificationListenerAccessStatus, policy_denies: bool) -> Status {
+    match access {
+        UserNotificationListenerAccessStatus::Allowed => Status::Allowed,
+        UserNotificationListenerAccessStatus::Denied if policy_denies => Status::Policy,
+        UserNotificationListenerAccessStatus::Denied => Status::Denied,
+        UserNotificationListenerAccessStatus::Unspecified => Status::Unspecified,
+        _ => Status::Error,
+    }
+}
+
+fn policy_denies() -> bool {
+    system::hklm_dword(POLICY_KEY, POLICY_VALUE) == Some(POLICY_FORCE_DENY)
+}
+
+/// Last published status (`None` before the first check).
+static STATUS: Mutex<Option<Status>> = Mutex::new(None);
+/// Registration token of the live `NotificationChanged` subscription. Also serializes
+/// `sync` so concurrent callers cannot double-subscribe.
+static SUBSCRIPTION: Mutex<Option<i64>> = Mutex::new(None);
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 fn enabled(app: &AppHandle) -> bool {
     app.state::<SettingsStore>().get().notifications_enabled
 }
 
-fn note_access(status: UserNotificationListenerAccessStatus) {
-    ACCESS_GRANTED.store(status == UserNotificationListenerAccessStatus::Allowed, Ordering::Relaxed);
-    match status {
-        UserNotificationListenerAccessStatus::Allowed => {}
-        UserNotificationListenerAccessStatus::Denied => {
-            dlog!("INFO", "notifications", "NOTIF-201 notification access denied");
+pub fn current_status() -> Option<String> {
+    lock(&STATUS).map(|s| s.as_str().to_string())
+}
+
+/// Record and announce a status, once per change.
+fn publish(app: &AppHandle, status: Status) {
+    {
+        let mut current = lock(&STATUS);
+        if *current == Some(status) {
+            return;
         }
-        other => {
-            dlog!("INFO", "notifications", "NOTIF-202 notification access not granted ({:?})", other);
+        *current = Some(status);
+    }
+    match status.code() {
+        Some(code) => {
+            diagnostics::record_error(code);
+            dlog!("INFO", "notifications", "{} notification access is {}", code, status.as_str());
+        }
+        None => dlog!("INFO", "notifications", "notification access allowed"),
+    }
+    if let Err(e) = app.emit("notification-status", status.as_str()) {
+        dlog!("WARN", "notifications", "emit notification-status failed: {}", e);
+    }
+}
+
+/// Ask Windows for access. The poll is bounded; if the consent UI outlives it, the
+/// completion handler re-syncs so a late grant takes effect without a restart.
+fn request_access(app: &AppHandle, listener: &UserNotificationListener) {
+    let op = match listener.RequestAccessAsync() {
+        Ok(op) => op,
+        Err(e) => {
+            dlog!("WARN", "notifications", "NOTIF-204 access request failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = rt::poll_op(op.clone(), "NOTIF-204 access request") {
+        dlog!("INFO", "notifications", "{}", e);
+        if e.ends_with("timed out") {
+            let app = app.clone();
+            let handler = AsyncOperationCompletedHandler::new(move |_, _| {
+                let app = app.clone();
+                thread::spawn(move || {
+                    debug_log::catch("notifications", || sync(&app, false));
+                });
+                Ok(())
+            });
+            if let Err(e) = op.SetCompleted(&handler) {
+                dlog!("WARN", "notifications", "NOTIF-204 could not observe the access request: {}", e);
+            }
         }
     }
 }
 
-fn poll_notifications_list(listener: &UserNotificationListener) -> Result<Vec<UserNotification>, String> {
-    let op = listener
-        .GetNotificationsAsync(NotificationKinds::Toast)
-        .map_err(|e| format!("NOTIF-204: failed to get notifications: {e}"))?;
-    let list = rt::poll_op(op, "NOTIF-204 notifications")?;
-    let count = list.Size().unwrap_or(0);
-    Ok((0..count).filter_map(|i| list.GetAt(i).ok()).collect())
+fn query(app: &AppHandle, request: bool) -> (Status, Option<UserNotificationListener>) {
+    rt::ensure_com_initialized();
+    let listener = match UserNotificationListener::Current() {
+        Ok(l) => l,
+        Err(e) => {
+            dlog!("INFO", "notifications", "listener class unavailable: {}", e);
+            return (Status::Unsupported, None);
+        }
+    };
+    if request {
+        request_access(app, &listener);
+    }
+    // GetAccessStatus never prompts.
+    match listener.GetAccessStatus() {
+        Ok(access) => (classify(access, policy_denies()), Some(listener)),
+        Err(e) => {
+            dlog!("WARN", "notifications", "NOTIF-204 access status failed: {}", e);
+            (Status::Error, Some(listener))
+        }
+    }
 }
 
-/// Subscribe to NotificationChanged with retry for transient startup races.
-/// Some systems return HRESULT 0x80070490 (Element not found) even when polling works.
-fn subscribe_notification_changed(listener: &UserNotificationListener, app: &AppHandle) -> bool {
-    const RETRIES: usize = 3;
-    const RETRY_DELAY_MS: u64 = 500;
-    const E_ELEMENT_NOT_FOUND: i32 = 0x80070490u32 as i32;
-
-    if SUBSCRIBED.load(Ordering::Relaxed) {
-        return true;
-    }
-
-    for attempt in 1..=RETRIES {
+/// Subscribe to NotificationChanged with retry for transient startup races: some
+/// systems return HRESULT 0x80070490 (Element not found) before the listener is ready.
+fn subscribe(app: &AppHandle, listener: &UserNotificationListener) -> Option<i64> {
+    for attempt in 1..=SUBSCRIBE_RETRIES {
         let app = app.clone();
         let handler = TypedEventHandler::new(
             move |_listener: &Option<UserNotificationListener>, args: &Option<UserNotificationChangedEventArgs>| {
@@ -80,108 +198,100 @@ fn subscribe_notification_changed(listener: &UserNotificationListener, app: &App
                 Ok(())
             },
         );
-
         match listener.NotificationChanged(&handler) {
-            Ok(_) => {
-                SUBSCRIBED.store(true, Ordering::Relaxed);
+            Ok(token) => {
                 dlog!("INFO", "notifications", "subscribed to NotificationChanged (attempt {})", attempt);
-                return true;
+                return Some(token.Value);
+            }
+            Err(e) if e.code().0 == E_ELEMENT_NOT_FOUND && attempt < SUBSCRIBE_RETRIES => {
+                thread::sleep(Duration::from_millis(SUBSCRIBE_RETRY_MS));
             }
             Err(e) => {
-                let not_found = e.code().0 == E_ELEMENT_NOT_FOUND;
-                if not_found && attempt < RETRIES {
-                    thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
-                    continue;
-                }
-                dlog!(
-                    "WARN",
-                    "notifications",
-                    "NOTIF-204 NotificationChanged unavailable ({:#x}); polling only",
-                    e.code().0
-                );
-                return false;
+                dlog!("WARN", "notifications", "NOTIF-204 NotificationChanged unavailable ({:#x})", e.code().0);
+                return None;
             }
         }
     }
-    false
+    None
+}
+
+fn unsubscribe(listener: &UserNotificationListener, token: i64) {
+    match listener.RemoveNotificationChanged(EventRegistrationToken { Value: token }) {
+        Ok(()) => dlog!("INFO", "notifications", "unsubscribed from NotificationChanged"),
+        Err(e) => dlog!("WARN", "notifications", "NOTIF-204 unsubscribe failed: {}", e),
+    }
+}
+
+/// Bring status and subscription in line with Windows' access state and the setting.
+fn sync(app: &AppHandle, request: bool) -> Status {
+    let mut subscription = lock(&SUBSCRIPTION);
+    let (status, listener) = query(app, request);
+    publish(app, status);
+    let wanted = status == Status::Allowed && enabled(app);
+    match (&listener, wanted, *subscription) {
+        (Some(listener), true, None) => *subscription = subscribe(app, listener),
+        (Some(listener), false, Some(token)) => {
+            unsubscribe(listener, token);
+            *subscription = None;
+        }
+        _ => {}
+    }
+    status
 }
 
 fn on_changed(app: &AppHandle, args: Option<&UserNotificationChangedEventArgs>) {
-    if let Some(args) = args {
-        if let (Ok(UserNotificationChangedKind::Added), Ok(id)) = (args.ChangeKind(), args.UserNotificationId()) {
-            if let Ok(listener) = UserNotificationListener::Current() {
-                if let Ok(list) = poll_notifications_list(&listener) {
-                    let found = list.iter().find(|n| n.Id().unwrap_or(0) == id);
-                    if let Some(notification) = found.and_then(|n| extract_notification(n, 0)) {
-                        let _ = app.emit("notification-added", &notification);
-                        return;
-                    }
-                }
-            }
-        }
+    if !enabled(app) {
+        return;
     }
-    // Removed, or the added notification could not be read: let the UI re-list.
-    let _ = app.emit("notification-changed", ());
+    let Some(args) = args else { return };
+    let (Ok(UserNotificationChangedKind::Added), Ok(id)) = (args.ChangeKind(), args.UserNotificationId()) else {
+        return;
+    };
+    let Ok(listener) = UserNotificationListener::Current() else { return };
+    let Some(notification) = listener.GetNotification(id).ok().and_then(|n| extract_notification(&n)) else {
+        return;
+    };
+    if let Err(e) = app.emit("notification-received", &notification) {
+        dlog!("WARN", "notifications", "emit notification-received failed: {}", e);
+    }
 }
 
 /// Start the listener on a worker thread; never blocks setup.
 pub fn start(app: AppHandle) {
-    let spawned = thread::Builder::new().name("companyisland-notif-init".into()).spawn(move || {
-        debug_log::catch("notifications", || init(&app));
+    spawn_sync(app, "companyisland-notif-init");
+}
+
+/// `settings.notificationsEnabled` changed: subscribe or unsubscribe.
+pub fn on_enabled_changed(app: &AppHandle) {
+    spawn_sync(app.clone(), "companyisland-notif-sync");
+}
+
+fn spawn_sync(app: AppHandle, name: &str) {
+    let spawned = thread::Builder::new().name(name.into()).spawn(move || {
+        debug_log::catch("notifications", || sync(&app, false));
     });
     if let Err(e) = spawned {
         dlog!("WARN", "notifications", "NOTIF-204 could not start listener thread: {}", e);
     }
 }
 
-fn init(app: &AppHandle) {
-    rt::ensure_com_initialized();
-    if !enabled(app) {
-        dlog!("INFO", "notifications", "disabled in settings");
-        return;
-    }
-    let listener = match UserNotificationListener::Current() {
-        Ok(l) => l,
-        Err(e) => {
-            dlog!("WARN", "notifications", "NOTIF-203 listener unsupported: {}", e);
-            return;
-        }
-    };
-    // GetAccessStatus never prompts; only the explicit command does.
-    match listener.GetAccessStatus() {
-        Ok(status) => {
-            note_access(status);
-            if status == UserNotificationListenerAccessStatus::Allowed {
-                subscribe_notification_changed(&listener, app);
-            }
-        }
-        Err(e) => dlog!("WARN", "notifications", "NOTIF-204 access status failed: {}", e),
-    }
+/// Current access status; also picks up a grant made in Windows Settings since the last
+/// check (subscribing without a restart).
+#[tauri::command]
+pub async fn notifications_get_status(app: AppHandle) -> Result<String, String> {
+    rt::run_blocking("notifications_get_status", move || Ok(sync(&app, false).as_str().to_string())).await
 }
 
-/// Request notification access (may show the Windows consent UI) and subscribe
-/// when granted. Returns whether access is allowed.
+/// Raise the Windows consent prompt. Only ever called from an explicit user click.
 #[tauri::command]
-pub async fn check_notification_access(app: AppHandle) -> Result<bool, String> {
-    rt::run_blocking("check_notification_access", move || {
-        rt::ensure_com_initialized();
-        let listener = UserNotificationListener::Current().map_err(|e| format!("NOTIF-203: {e}"))?;
-        let op = listener.RequestAccessAsync().map_err(|e| format!("NOTIF-204: {e}"))?;
-        let status = rt::poll_op(op, "NOTIF-204 access request")?;
-        note_access(status);
-        let allowed = status == UserNotificationListenerAccessStatus::Allowed;
-        if allowed && enabled(&app) {
-            subscribe_notification_changed(&listener, &app);
-        }
-        Ok(allowed)
-    })
-    .await
+pub async fn notifications_request_access(app: AppHandle) -> Result<String, String> {
+    rt::run_blocking("notifications_request_access", move || Ok(sync(&app, true).as_str().to_string())).await
 }
 
 /// Extract a SystemNotification from a Windows UserNotification.
 /// Returns None if the notification has no meaningful content.
-fn extract_notification(notif: &UserNotification, idx: usize) -> Option<SystemNotification> {
-    let id = notif.Id().unwrap_or(idx as u32);
+fn extract_notification(notif: &UserNotification) -> Option<SystemNotification> {
+    let id = notif.Id().unwrap_or(0);
 
     let app_name = notif
         .AppInfo()
@@ -234,6 +344,10 @@ fn extract_notification(notif: &UserNotification, idx: usize) -> Option<SystemNo
         }
     }
 
+    if title.is_empty() && body.is_empty() {
+        return None;
+    }
+
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -247,33 +361,18 @@ fn extract_notification(notif: &UserNotification, idx: usize) -> Option<SystemNo
             ((dt.UniversalTime - EPOCH_OFFSET_100NS) / 10_000) as u64
         })
         .filter(|&t| t > 0 && t < now + 86400_000)
-        .unwrap_or_else(|| now.saturating_sub(idx as u64 * 60000));
-
-    if title.is_empty() && body.is_empty() {
-        return None;
-    }
+        .unwrap_or(now);
 
     Some(SystemNotification { id, app_name, title, body, timestamp, aumid })
 }
 
-/// Get recent notifications (empty unless access was granted and the feature is on).
-#[tauri::command]
-pub async fn get_notifications(app: AppHandle) -> Result<Vec<SystemNotification>, String> {
-    rt::run_blocking("get_notifications", move || {
-        rt::ensure_com_initialized();
-        if !ACCESS_GRANTED.load(Ordering::Relaxed) || !enabled(&app) {
-            return Ok(Vec::new());
-        }
-        let listener = UserNotificationListener::Current().map_err(|e| format!("NOTIF-203: {e}"))?;
-        let list = poll_notifications_list(&listener)?;
-        Ok(list
-            .iter()
-            .take(10)
-            .enumerate()
-            .filter_map(|(idx, notif)| extract_notification(notif, idx))
-            .collect())
-    })
-    .await
+fn poll_notifications_list(listener: &UserNotificationListener) -> Result<Vec<UserNotification>, String> {
+    let op = listener
+        .GetNotificationsAsync(NotificationKinds::Toast)
+        .map_err(|e| format!("NOTIF-204: failed to get notifications: {e}"))?;
+    let list = rt::poll_op(op, "NOTIF-204 notifications")?;
+    let count = list.Size().unwrap_or(0);
+    Ok((0..count).filter_map(|i| list.GetAt(i).ok()).collect())
 }
 
 /// AUMIDs are package-family names, reverse-DNS ids or `{KnownFolderGuid}\path\app.exe`
@@ -316,10 +415,10 @@ fn launch_aumid(aumid: &str) -> Result<(), String> {
 pub async fn activate_notification(id: u32) -> Result<(), String> {
     rt::run_blocking("activate_notification", move || {
         rt::ensure_com_initialized();
-        if !ACCESS_GRANTED.load(Ordering::Relaxed) {
+        let listener = UserNotificationListener::Current().map_err(|e| format!("NOTIF-203: {e}"))?;
+        if listener.GetAccessStatus().ok() != Some(UserNotificationListenerAccessStatus::Allowed) {
             return Err("NOTIF-201: notification access not granted".to_string());
         }
-        let listener = UserNotificationListener::Current().map_err(|e| format!("NOTIF-203: {e}"))?;
         let list = poll_notifications_list(&listener)?;
         let notif = list
             .iter()
@@ -350,6 +449,50 @@ mod tests {
     use super::*;
 
     #[test]
+    fn access_status_mapping() {
+        use UserNotificationListenerAccessStatus as A;
+        assert_eq!(classify(A::Allowed, false), Status::Allowed);
+        assert_eq!(classify(A::Allowed, true), Status::Allowed);
+        assert_eq!(classify(A::Denied, false), Status::Denied);
+        assert_eq!(classify(A::Denied, true), Status::Policy);
+        assert_eq!(classify(A::Unspecified, false), Status::Unspecified);
+        assert_eq!(classify(A::Unspecified, true), Status::Unspecified);
+        assert_eq!(classify(A(42), false), Status::Error);
+    }
+
+    #[test]
+    fn status_strings_match_the_contract() {
+        let all = [
+            (Status::Allowed, "allowed", None),
+            (Status::Denied, "denied", Some("NOTIF-201")),
+            (Status::Unspecified, "unspecified", Some("NOTIF-202")),
+            (Status::Policy, "policy", Some("NOTIF-202")),
+            (Status::Unsupported, "unsupported", Some("NOTIF-203")),
+            (Status::Error, "error", Some("NOTIF-204")),
+        ];
+        for (status, text, code) in all {
+            assert_eq!(status.as_str(), text);
+            assert_eq!(status.code(), code);
+        }
+    }
+
+    #[test]
+    fn payload_is_camel_case() {
+        let json = serde_json::to_value(SystemNotification {
+            id: 7,
+            app_name: "App".into(),
+            title: "T".into(),
+            body: "B".into(),
+            timestamp: 1,
+            aumid: None,
+        })
+        .unwrap();
+        for key in ["id", "appName", "title", "body", "timestamp", "aumid"] {
+            assert!(json.get(key).is_some(), "missing {key}");
+        }
+    }
+
+    #[test]
     fn accepts_real_world_aumids() {
         assert!(is_valid_aumid("Microsoft.WindowsCalendar_8wekyb3d8bbwe!App"));
         assert!(is_valid_aumid("com.squirrel.slack.slack"));
@@ -366,7 +509,7 @@ mod tests {
         assert!(!is_valid_aumid("%TEMP%\\evil"));
         assert!(!is_valid_aumid("a/b"));
         assert!(!is_valid_aumid(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\..\..\Windows\System32\calc.exe"));
-        assert!(!is_valid_aumid(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}....WindowsSystem32lc.exe"));
+        assert!(!is_valid_aumid(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}....WindowsSystem32lc.exe"));
         assert!(!is_valid_aumid("app\r\n"));
         assert!(!is_valid_aumid(&"a".repeat(300)));
     }

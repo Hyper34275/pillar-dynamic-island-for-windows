@@ -6,8 +6,8 @@
 //! `settings.json.corrupt` (APP-003) and defaults are used. If the data folder is
 //! unavailable the store works in memory only.
 
-use crate::{autostart, debug_log, paths, rt};
-use serde::{Deserialize, Deserializer, Serialize};
+use crate::{autostart, debug_log, fullscreen, notifications, paths, rt, window};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,7 +31,15 @@ pub struct Settings {
     pub meeting_reminder_enabled: bool,
     #[serde(deserialize_with = "de_minutes")]
     pub reminder_minutes: u32,
-    /// `"primary"` or a zero-based monitor index as a string.
+    /// `"primary"` or a zero-based monitor index as a string. On the wire this is
+    /// `monitorId` (`null` = primary, the id `get_monitors` returns otherwise);
+    /// the legacy name `monitor` is still accepted.
+    #[serde(
+        rename = "monitorId",
+        alias = "monitor",
+        serialize_with = "ser_monitor",
+        deserialize_with = "de_monitor"
+    )]
     pub monitor: String,
     pub notifications_enabled: bool,
     pub reduced_effects: bool,
@@ -64,6 +72,8 @@ pub struct SettingsPatch {
     meeting_reminder_enabled: Option<bool>,
     #[serde(default, deserialize_with = "de_minutes_opt")]
     reminder_minutes: Option<u32>,
+    /// Present-but-null selects the primary monitor.
+    #[serde(default, rename = "monitorId", alias = "monitor", deserialize_with = "de_monitor_patch")]
     monitor: Option<String>,
     notifications_enabled: Option<bool>,
     reduced_effects: Option<bool>,
@@ -90,6 +100,40 @@ fn normalize_monitor(value: &str) -> String {
     match value.trim().parse::<u32>() {
         Ok(index) if index <= MAX_MONITOR_INDEX => index.to_string(),
         _ => PRIMARY_MONITOR.to_string(),
+    }
+}
+
+/// A monitor id as the UI or an older file may spell it. Anything unusable (a bad
+/// type must never make the whole settings file unreadable) means "primary".
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum MonitorValue {
+    Text(String),
+    Number(u32),
+    Other(serde::de::IgnoredAny),
+}
+
+fn monitor_from(value: Option<MonitorValue>) -> String {
+    match value {
+        Some(MonitorValue::Text(s)) => normalize_monitor(&s),
+        Some(MonitorValue::Number(n)) => normalize_monitor(&n.to_string()),
+        _ => PRIMARY_MONITOR.to_string(),
+    }
+}
+
+fn de_monitor<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Option::<MonitorValue>::deserialize(d).map(monitor_from)
+}
+
+fn de_monitor_patch<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<MonitorValue>::deserialize(d).map(|v| Some(monitor_from(v)))
+}
+
+fn ser_monitor<S: Serializer>(value: &str, s: S) -> Result<S::Ok, S::Error> {
+    if value == PRIMARY_MONITOR {
+        s.serialize_none()
+    } else {
+        s.serialize_str(value)
     }
 }
 
@@ -257,6 +301,15 @@ pub fn apply_patch(app: &AppHandle, patch: SettingsPatch) -> Settings {
             dlog!("WARN", "settings", "emit settings-changed failed: {}", e);
         }
     }
+    if old.monitor != new.monitor {
+        window::reflow_on_main(app);
+    }
+    if old.hide_in_fullscreen != new.hide_in_fullscreen {
+        fullscreen::reevaluate();
+    }
+    if old.notifications_enabled != new.notifications_enabled {
+        notifications::on_enabled_changed(app);
+    }
     new
 }
 
@@ -341,6 +394,32 @@ mod tests {
         assert_eq!(base.patched(patch(r#"{"monitor": "99"}"#)).monitor, "primary");
         assert_eq!(base.patched(patch(r#"{"monitor": "left"}"#)).monitor, "primary");
         assert_eq!(base.patched(patch(r#"{"monitor": "-1"}"#)).monitor, "primary");
+    }
+
+    #[test]
+    fn monitor_is_monitor_id_on_the_wire() {
+        let base = Settings::default();
+        assert!(serde_json::to_value(&base).unwrap()["monitorId"].is_null());
+        let second = base.patched(patch(r#"{"monitorId": "1"}"#));
+        assert_eq!(second.monitor, "1");
+        assert_eq!(serde_json::to_value(&second).unwrap()["monitorId"], "1");
+        // null selects the primary monitor again; an absent key changes nothing
+        assert_eq!(second.patched(patch(r#"{"monitorId": null}"#)).monitor, "primary");
+        assert_eq!(second.patched(patch(r#"{"reducedEffects": true}"#)).monitor, "1");
+        // numbers and junk are tolerated
+        assert_eq!(base.patched(patch(r#"{"monitorId": 2}"#)).monitor, "2");
+        assert_eq!(base.patched(patch(r#"{"monitorId": {"a": 1}}"#)).monitor, "primary");
+    }
+
+    #[test]
+    fn legacy_monitor_key_and_bad_types_still_load() {
+        let legacy: Settings = serde_json::from_str(r#"{"monitor": "3"}"#).unwrap();
+        assert_eq!(legacy.monitor, "3");
+        let junk: Settings = serde_json::from_str(r#"{"monitorId": [1, 2], "reminderMinutes": 15}"#).unwrap();
+        assert_eq!(junk.monitor, "primary");
+        assert_eq!(junk.reminder_minutes, 15);
+        let round_trip: Settings = serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        assert_eq!(round_trip, legacy);
     }
 
     #[test]

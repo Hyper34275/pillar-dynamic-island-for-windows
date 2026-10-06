@@ -250,6 +250,11 @@ fn write_capped(timestamp_ms: Option<i64>, level: Level, scope: &str, message: &
     if (level as u8) < LEVEL.load(Ordering::Relaxed) {
         return;
     }
+    if level >= Level::Warn {
+        if let Some(code) = crate::diagnostics::code_in(message) {
+            crate::diagnostics::record_error(code);
+        }
+    }
     let Some(lock) = LOGGER.get() else { return };
     let mut logger = lock.lock().unwrap_or_else(|e| e.into_inner());
 

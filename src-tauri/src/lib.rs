@@ -1,9 +1,18 @@
 #[macro_use]
 pub mod debug_log;
+mod calendar;
+mod calendar_diag;
+mod com;
 mod autostart;
 mod notifications;
+mod outlook;
 pub mod paths;
-mod pointer;
+mod reminder_state;
+mod clipboard;
+mod diagnostics;
+mod fullscreen;
+mod monitors;
+mod system;
 mod rt;
 mod settings;
 mod tray;
@@ -24,21 +33,25 @@ pub fn run() {
             window::emit_island_toggle(app, None);
         }))
         .manage(settings::SettingsStore::load())
+        .manage(calendar::CalendarState::default())
         .invoke_handler(tauri::generate_handler![
             debug_log::write_logs,
             debug_log::log_frontend_error,
             debug_log::open_log_dir,
             settings::get_settings,
             settings::update_settings,
+            calendar::calendar_get_snapshot,
+            calendar::calendar_refresh,
+            reminder_state::reminder_state_load,
+            reminder_state::reminder_state_save,
             window::set_click_through,
-            window::position_window,
             window::set_island_geometry,
-            window::is_foreground_fullscreen,
-            // Global pointer monitor (native hit-testing for the island)
-            pointer::set_pill_hit_region,
-            pointer::get_pointer_tracker_status,
-            notifications::check_notification_access,
-            notifications::get_notifications,
+            window::get_monitors,
+            system::get_system_info,
+            diagnostics::get_diagnostics,
+            clipboard::copy_text_to_clipboard,
+            notifications::notifications_get_status,
+            notifications::notifications_request_access,
             notifications::activate_notification,
             notifications::activate_app_by_aumid,
         ])
@@ -51,12 +64,13 @@ pub fn run() {
             window::init(&handle);
             tray::init(&handle);
             notifications::start(handle.clone());
+            calendar::start(handle.clone());
 
             // Registry read/write and the hook install handshake stay off the UI thread.
             std::thread::spawn(move || {
                 debug_log::catch("startup", || {
                     settings::sync_autostart(&handle);
-                    pointer::start(handle.clone());
+                    fullscreen::start(handle.clone());
                 });
             });
             Ok(())
@@ -67,7 +81,10 @@ pub fn run() {
         Ok(app) => app.run(|_app, event| match event {
             // All windows closed without an explicit exit: stay alive in the tray.
             RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
-            RunEvent::Exit => debug_log::mark_clean_exit(),
+            RunEvent::Exit => {
+                calendar::stop();
+                debug_log::mark_clean_exit();
+            }
             _ => {}
         }),
         Err(e) => {
