@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDiagnosticsText, formatOs, outlookModeOf, outlookRunningOf } from "./diagnostics";
+import { buildDiagnosticsText, formatOs, notificationCodeOf, notificationWordsOf, outlookModeOf, outlookRunningOf } from "./diagnostics";
 import type { SystemInfo } from "./ipc";
 import { WAITING_SNAPSHOT, type CalendarSnapshot } from "./calendar/types";
 
@@ -28,33 +28,66 @@ const CONNECTED: CalendarSnapshot = {
 describe("buildDiagnosticsText", () => {
   const generatedAt = new Date(Date.UTC(2026, 9, 6, 10, 0, 0));
 
-  it("renders every field from the contract's diagnostics list", () => {
+  it("starts with the one-line summary support asks for", () => {
     const text = buildDiagnosticsText({ info: INFO, diagnostics: null, snapshot: CONNECTED, notifications: "allowed", generatedAt });
+    expect(text.split("\r\n")[0]).toBe(
+      "CompanyIsland 1.0.0 / Windows 10 21H2 Build 19044 / Computer: PC-0042 / User: CORP\\jdoe / Outlook: Connected / Calendar: Connected / Cached events: 7 / Notifications: Available"
+    );
+  });
+
+  it("names the failure and its internal error code in the summary", () => {
+    const failed: CalendarSnapshot = { ...CONNECTED, status: "failed", errorCode: "OUTLOOK-102" };
+    const text = buildDiagnosticsText({ info: INFO, diagnostics: null, snapshot: failed, notifications: "policy", generatedAt });
+    const summary = text.split("\r\n")[0];
+    expect(summary).toContain("Outlook: Connection Failed (Internal Error: OUTLOOK-102)");
+    expect(summary).toContain("Calendar: Unavailable");
+    expect(summary).toContain("Notifications: Restricted by policy (NOTIF-202)");
+  });
+
+  it("reports waiting without an error code (OUTLOOK-101 is informational)", () => {
+    const waiting: CalendarSnapshot = { ...WAITING_SNAPSHOT, errorCode: "OUTLOOK-101" };
+    const summary = buildDiagnosticsText({ info: INFO, diagnostics: null, snapshot: waiting, notifications: "off", generatedAt }).split("\r\n")[0];
+    expect(summary).toContain("Outlook: Waiting for Outlook / Calendar: Waiting for Outlook");
+    expect(summary).not.toContain("Internal Error");
+    expect(summary).toContain("Notifications: Off");
+  });
+
+  it("renders every field from the contract's diagnostics list below the summary", () => {
+    const text = buildDiagnosticsText({
+      info: INFO,
+      diagnostics: { outlookRunning: null, outlookMode: null, notificationMode: "polling", recentErrorCodes: [] },
+      snapshot: CONNECTED,
+      notifications: "allowed",
+      generatedAt,
+    });
     const lines = text.split("\r\n");
-    expect(lines[0]).toBe("CompanyIsland diagnostics");
+    expect(lines[1]).toBe("");
+    expect(lines[2]).toBe("CompanyIsland diagnostics");
     expect(lines).toContain("Generated: 2026-10-06T10:00:00.000Z");
     expect(lines).toContain("App version: 1.0.0");
     expect(lines).toContain("Windows user: CORP\\jdoe");
     expect(lines).toContain("Computer: PC-0042");
     expect(lines).toContain("Local IP: 10.20.30.40 (Ethernet)");
     expect(lines).toContain("OS: Windows 10 21H2 (build 19044)");
-    expect(lines).toContain("Outlook: running");
+    expect(lines).toContain("Outlook process: running");
     expect(lines).toContain("Outlook mode: classic");
     expect(lines).toContain("Calendar status: connected");
-    expect(lines).toContain("Cached events: 7");
     expect(lines).toContain("Last calendar sync: 2026-10-06T09:58:00.000Z");
     expect(lines).toContain("Notifications: allowed");
+    expect(lines).toContain("Notification delivery: polling");
   });
 
   it("degrades to n/a instead of failing when data is unavailable", () => {
     const text = buildDiagnosticsText({ info: null, diagnostics: null, snapshot: WAITING_SNAPSHOT, notifications: null, generatedAt });
-    expect(text).toContain("Computer: n/a");
+    expect(text.split("\r\n")[0]).toBe(
+      "CompanyIsland 1.0.0 / n/a / Computer: n/a / User: n/a / Outlook: Waiting for Outlook / Calendar: Waiting for Outlook / Cached events: 0 / Notifications: n/a"
+    );
     expect(text).toContain("Local IP: n/a");
     expect(text).toContain("OS: n/a");
     expect(text).toContain("Last calendar sync: n/a");
-    expect(text).toContain("Outlook: not running");
+    expect(text).toContain("Outlook process: not running");
     expect(text).toContain("Outlook mode: none");
-    expect(text).toContain("Notifications: n/a");
+    expect(text).toContain("Notification delivery: n/a");
   });
 
   it("includes the error code and recent codes, and never meeting content", () => {
@@ -81,7 +114,7 @@ describe("buildDiagnosticsText", () => {
     };
     const text = buildDiagnosticsText({
       info: INFO,
-      diagnostics: { outlookRunning: true, outlookMode: "classic", recentErrorCodes: ["OUTLOOK-105", "OUTLOOK-108"] },
+      diagnostics: { outlookRunning: true, outlookMode: "classic", notificationMode: "events", recentErrorCodes: ["OUTLOOK-105", "OUTLOOK-108"] },
       snapshot,
       notifications: "off",
       generatedAt,
@@ -93,14 +126,27 @@ describe("buildDiagnosticsText", () => {
   });
 });
 
+describe("notification wording", () => {
+  it("maps every status to words and the backend's NOTIF code", () => {
+    expect(notificationWordsOf("allowed")).toBe("Available");
+    expect(notificationWordsOf("denied")).toBe("Denied in Windows settings (NOTIF-201)");
+    expect(notificationWordsOf("unspecified")).toBe("Not allowed yet (NOTIF-202)");
+    expect(notificationWordsOf("unsupported")).toBe("Unsupported (NOTIF-203)");
+    expect(notificationWordsOf("error")).toBe("Unavailable (NOTIF-204)");
+    expect(notificationCodeOf("allowed")).toBeNull();
+    expect(notificationCodeOf("off")).toBeNull();
+    expect(notificationCodeOf(null)).toBeNull();
+  });
+});
+
 describe("outlook state helpers", () => {
   it("prefers the backend's report and otherwise infers from the calendar status", () => {
     expect(outlookModeOf({ ...CONNECTED, status: "newOutlookOnly" }, null)).toBe("new");
     expect(outlookModeOf(WAITING_SNAPSHOT, null)).toBe("none");
-    expect(outlookModeOf(WAITING_SNAPSHOT, { outlookRunning: null, outlookMode: "classic", recentErrorCodes: [] })).toBe("classic");
+    expect(outlookModeOf(WAITING_SNAPSHOT, { outlookRunning: null, outlookMode: "classic", notificationMode: null, recentErrorCodes: [] })).toBe("classic");
     expect(outlookRunningOf(CONNECTED, null)).toBe(true);
     expect(outlookRunningOf(WAITING_SNAPSHOT, null)).toBe(false);
-    expect(outlookRunningOf(WAITING_SNAPSHOT, { outlookRunning: true, outlookMode: null, recentErrorCodes: [] })).toBe(true);
+    expect(outlookRunningOf(WAITING_SNAPSHOT, { outlookRunning: true, outlookMode: null, notificationMode: null, recentErrorCodes: [] })).toBe(true);
   });
 });
 

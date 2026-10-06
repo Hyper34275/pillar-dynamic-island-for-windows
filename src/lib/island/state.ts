@@ -16,6 +16,8 @@ export const PRIORITY = { meetingAlert: 3, notification: 2, userExpanded: 1, idl
 
 /** A queued notification older than this is dropped instead of shown late. */
 export const NOTIFICATION_STALE_MS = 15_000;
+/** An alert whose meeting started longer ago than this is dropped instead of shown late. */
+export const ALERT_STALE_AFTER_START_MS = 60_000;
 /** Meeting alerts waiting behind the current one. Far above anything real; bounds a runaway producer. */
 export const MAX_QUEUED_ALERTS = 8;
 
@@ -45,7 +47,7 @@ export type IslandEvent =
   | { type: "USER_EXPAND"; tab?: TabId }
   | { type: "USER_COLLAPSE" }
   | { type: "PIN"; tab?: TabId }
-  /** Time passed with nothing else happening: forgets a waiting notification that went stale. */
+  /** Time passed with nothing else happening (e.g. the island was hidden): refreshes or drops stale alerts and forgets a stale waiting notification. */
   | { type: "TICK"; at: number };
 
 export type IslandView =
@@ -77,6 +79,19 @@ export function viewPriority(view: IslandView): number {
 
 function isFresh(received: ReceivedNotification | null, at: number): received is ReceivedNotification {
   return received !== null && at - received.receivedAt < NOTIFICATION_STALE_MS;
+}
+
+/**
+ * An alert that waited behind a hidden window must not say "in 30 minutes" about a meeting that
+ * is 10 minutes away or already over: the minutes only ever go down, and a meeting that started
+ * is dropped (null).
+ */
+function refreshAlert(alert: ReminderAlert, at: number): ReminderAlert | null {
+  const startMs = Date.parse(alert.startUtc);
+  if (Number.isNaN(startMs)) return alert;
+  if (startMs + ALERT_STALE_AFTER_START_MS <= at) return null;
+  const minutesRemaining = Math.min(alert.minutesRemaining, Math.max(0, Math.round((startMs - at) / 60_000)));
+  return minutesRemaining === alert.minutesRemaining ? alert : { ...alert, minutesRemaining };
 }
 
 export function islandReducer(state: IslandState, event: IslandEvent): IslandState {
@@ -120,7 +135,18 @@ export function islandReducer(state: IslandState, event: IslandEvent): IslandSta
     case "USER_COLLAPSE":
       return state.expanded || state.pinned ? { ...state, expanded: false, pinned: false } : state;
 
-    case "TICK":
-      return state.waiting && !isFresh(state.waiting, event.at) ? { ...state, waiting: null } : state;
+    case "TICK": {
+      let next = state;
+      const queue = state.alertQueue.map((queued) => refreshAlert(queued, event.at));
+      if (queue.some((queued, i) => queued !== state.alertQueue[i])) {
+        next = { ...next, alertQueue: queue.filter((queued): queued is ReminderAlert => queued !== null) };
+      }
+      if (next.alert) {
+        const refreshed = refreshAlert(next.alert, event.at);
+        if (refreshed === null) next = islandReducer(next, { type: "ALERT_DONE", at: event.at });
+        else if (refreshed !== next.alert) next = { ...next, alert: refreshed };
+      }
+      return next.waiting && !isFresh(next.waiting, event.at) ? { ...next, waiting: null } : next;
+    }
   }
 }

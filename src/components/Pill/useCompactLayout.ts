@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { shortDate, weekdayLong, weekdayShort } from "../../lib/dateFormat";
-import { getLocaleTag } from "../../lib/i18n";
+import { getFormatTag } from "../../lib/i18n";
 import { layoutCompact } from "../../lib/island/compactLayout";
 import { measureText } from "../../lib/textMeasure";
 import { pillDimensions } from "./animations";
@@ -39,7 +39,7 @@ function resolveFont(): string {
 export function useCompactLabels(today: Date): CompactLabels {
   const dayKey = today.getTime();
   return useMemo(() => {
-    const locale = getLocaleTag();
+    const locale = getFormatTag();
     const key = `${locale}|${dayKey}`;
     const hit = cache.get(key);
     if (hit) return hit;

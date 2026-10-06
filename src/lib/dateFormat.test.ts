@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { detectLocale, getFormatTag, getLocale, getLocaleTag, setFormatLocale } from "./i18n";
 import {
   dayLabel,
   formatTime,
@@ -162,5 +163,27 @@ describe("dayLabel", () => {
   it("counts calendar days, not 24-hour blocks, across a DST change", () => {
     const beforeDst = new Date(2026, 9, 24, 22, 0).getTime(); // Europe and the US change within days of this
     expect(dayLabel(new Date(2026, 9, 25, 7, 0), beforeDst, "en-GB")).toBe("Tomorrow");
+  });
+});
+
+describe("regional format locale", () => {
+  afterEach(() => setFormatLocale(null));
+
+  it("drives the default date and weekday, independently of the UI language", () => {
+    // Without a regional format the display language (navigator.language) is used.
+    expect(shortDate(TUESDAY)).toBe(shortDate(TUESDAY, getLocaleTag()));
+    setFormatLocale("he-IL");
+    expect(shortDate(TUESDAY)).toBe("6.10");
+    expect(weekdayLong(TUESDAY)).toBe("יום שלישי");
+    expect(getLocale()).toBe(detectLocale(getLocaleTag())); // strings keep following the UI language
+  });
+
+  it("ignores Windows sort-order suffixes and tags Intl rejects", () => {
+    setFormatLocale("en-GB_tradnl");
+    expect(getFormatTag()).toBe("en-GB");
+    setFormatLocale("not a tag!");
+    expect(getFormatTag()).toBe(getLocaleTag());
+    setFormatLocale(null);
+    expect(getFormatTag()).toBe(getLocaleTag());
   });
 });

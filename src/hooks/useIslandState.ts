@@ -80,6 +80,11 @@ export function useIslandState({ suppressed = false }: UseIslandStateOptions = {
   useCountdown(state.alert?.key ?? null, ALERT_MS, paused, actions.dismissAlert);
   useCountdown(state.notification ? String(state.notification.notification.id) : null, NOTIFICATION_MS, paused, actions.dismissNotification);
 
+  // Whatever waited behind a hidden window (a fullscreen app) may have gone stale.
+  useEffect(() => {
+    if (!suppressed) dispatch({ type: "TICK", at: Date.now() });
+  }, [suppressed]);
+
   // After a long hidden stretch (resume from sleep) a waiting notification may have gone stale.
   useEffect(() => {
     const onVisible = () => {

@@ -212,3 +212,41 @@ describe("TICK", () => {
     expect(ticked.alert?.key).toBe("a");
   });
 });
+
+describe("TICK and alerts that waited", () => {
+  const MIN = 60_000;
+  const start = Date.parse("2026-10-06T10:30:00.000Z");
+  const shown = () => run([{ type: "ALERT_SHOW", alert: alert("a") }]);
+
+  it("lowers the minutes to what is actually left", () => {
+    const ticked = islandReducer(shown(), { type: "TICK", at: start - 12 * MIN });
+    expect(ticked.alert?.minutesRemaining).toBe(12);
+  });
+
+  it("never raises the minutes", () => {
+    const base = shown();
+    expect(islandReducer(base, { type: "TICK", at: start - 45 * MIN })).toBe(base);
+  });
+
+  it("drops an alert whose meeting has started, and shows the next one", () => {
+    const later = { ...alert("b"), startUtc: "2026-10-06T11:30:00.000Z", endUtc: "2026-10-06T12:00:00.000Z", minutesRemaining: 60 };
+    const state = run([
+      { type: "ALERT_SHOW", alert: alert("a") },
+      { type: "ALERT_SHOW", alert: later },
+    ]);
+    const ticked = islandReducer(state, { type: "TICK", at: start + 5 * MIN });
+    expect(ticked.alert?.key).toBe("b");
+    expect(ticked.alert?.minutesRemaining).toBe(55);
+    expect(ticked.alertQueue).toHaveLength(0);
+  });
+
+  it("returns to idle when the only alert is over", () => {
+    expect(kind(islandReducer(shown(), { type: "TICK", at: start + 2 * MIN }))).toBe("idle");
+  });
+
+  it("keeps an alert for 'starting now' through its first minute", () => {
+    const now = { ...alert("n"), minutesRemaining: 0, reminderType: { kind: "beforeStart" as const, minutes: 0 } };
+    const base = run([{ type: "ALERT_SHOW", alert: now }]);
+    expect(islandReducer(base, { type: "TICK", at: start + 30_000 })).toBe(base);
+  });
+});

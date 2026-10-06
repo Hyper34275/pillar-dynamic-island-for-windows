@@ -12,7 +12,6 @@ describe("outside Tauri", () => {
     await expect(ipc.copyTextToClipboard("x")).resolves.toBe(false);
     await expect(ipc.openLogDir()).resolves.toBe(false);
     await expect(ipc.setIslandGeometry({ width: 1, height: 1 })).resolves.toBe(false);
-    await expect(ipc.setClickThrough(true)).resolves.toBe(false);
     await expect(ipc.calendarGetSnapshot()).resolves.toBeNull();
     await expect(ipc.calendarRefresh()).resolves.toBe(false);
     await expect(ipc.reminderStateLoad()).resolves.toBeNull();
@@ -54,8 +53,9 @@ describe("normalizeSettings", () => {
     });
   });
 
-  it("rejects non-positive and non-finite reminder offsets", () => {
-    for (const bad of [0, -5, Number.NaN, Infinity, "10"]) {
+  it("keeps 0 (remind at the start, as the backend allows) and rejects negative and non-finite reminder offsets", () => {
+    expect(normalizeSettings({ reminderMinutes: 0 }).reminderMinutes).toBe(0);
+    for (const bad of [-5, Number.NaN, Infinity, "10"]) {
       expect(normalizeSettings({ reminderMinutes: bad }).reminderMinutes).toBe(SETTINGS_DEFAULTS.reminderMinutes);
     }
   });

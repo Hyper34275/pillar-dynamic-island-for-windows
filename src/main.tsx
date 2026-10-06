@@ -7,7 +7,8 @@ import { useCrashRecovery } from "./hooks/useCrashRecovery";
 import { APP_VERSION } from "./lib/appInfo";
 import { dlog, installDebugLogging } from "./lib/debugLog";
 import { describeError, stackFrames } from "./lib/errors";
-import { applyDocumentLocale } from "./lib/i18n";
+import { ipc } from "./lib/ipc";
+import { applyDocumentLocale, setFormatLocale } from "./lib/i18n";
 
 function AppWithRecovery() {
   const { reportCrash } = useCrashRecovery({
@@ -52,8 +53,14 @@ applyDocumentLocale();
 installDebugLogging();
 dlog("info", "app", `app boot — v${APP_VERSION} dpr=${window.devicePixelRatio} win=${window.innerWidth}x${window.innerHeight}`);
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <AppWithRecovery />
-  </React.StrictMode>
-);
+// The date locale must be known before the first render: the compact island's width depends on it.
+void ipc
+  .getFormatLocale()
+  .then(setFormatLocale)
+  .finally(() => {
+    ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+      <React.StrictMode>
+        <AppWithRecovery />
+      </React.StrictMode>
+    );
+  });

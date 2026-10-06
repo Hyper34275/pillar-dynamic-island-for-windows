@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { onEvent } from "../lib/ipc";
+import { ipc, onEvent } from "../lib/ipc";
 import { isTabId, type TabId } from "../components/Pill/tabs";
 
 interface IslandEventHandlers {
@@ -42,6 +42,14 @@ export function useIslandEvents(handlers: IslandEventHandlers): void {
     }
     if (wantsFullscreen) {
       offs.push(onEvent<unknown>("fullscreen-changed", (payload) => ref.current.onFullscreenChanged?.(fullscreenFrom(payload))));
+      // The backend only announces changes: ask once for the state that was already in effect.
+      let disposed = false;
+      void ipc.getFullscreenState().then((fullscreen) => {
+        if (!disposed && fullscreen !== null) ref.current.onFullscreenChanged?.(fullscreen);
+      });
+      offs.push(() => {
+        disposed = true;
+      });
     }
     if (wantsDisplay) {
       offs.push(onEvent<unknown>("display-changed", () => ref.current.onDisplayChanged?.()));

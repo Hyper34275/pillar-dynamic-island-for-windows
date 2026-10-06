@@ -10,12 +10,13 @@ import { usePillState } from "./usePillState";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const alert = (key = "a"): ReminderAlert => ({
+// The meeting is two hours away on the (fake) clock, so waiting out an alert never makes it stale.
+const alert = (key = "a", startsInMs = 2 * 3_600_000): ReminderAlert => ({
   key,
   eventId: key,
   subject: "s",
-  startUtc: "2026-10-06T10:30:00.000Z",
-  endUtc: "2026-10-06T11:00:00.000Z",
+  startUtc: new Date(Date.now() + startsInMs).toISOString(),
+  endUtc: new Date(Date.now() + startsInMs + 1_800_000).toISOString(),
   location: null,
   minutesRemaining: 30,
   reminderType: { kind: "beforeStart", minutes: 30 },
@@ -212,6 +213,23 @@ describe("temporary states", () => {
     expect(view()).toBe("meetingAlert");
     await ms(1);
     expect(view()).toBe("idle");
+  });
+
+  it("drops an alert whose meeting started while the window was hidden", async () => {
+    await mountReady({ suppressed: true });
+    await call(() => api.island.showAlert(alert("a", 30 * 60_000)));
+    await ms(31 * 60_000);
+    expect(view()).toBe("meetingAlert");
+    await act(async () => root.render(<Harness suppressed={false} />));
+    expect(view()).toBe("idle");
+  });
+
+  it("corrects the minutes of an alert that waited while hidden", async () => {
+    await mountReady({ suppressed: true });
+    await call(() => api.island.showAlert(alert("a", 30 * 60_000)));
+    await ms(20 * 60_000);
+    await act(async () => root.render(<Harness suppressed={false} />));
+    expect(api.island.state.alert?.minutesRemaining).toBe(10);
   });
 
   it("shows queued alerts one after the other, each for its full time", async () => {

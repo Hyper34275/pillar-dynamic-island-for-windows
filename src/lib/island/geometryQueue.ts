@@ -19,6 +19,17 @@ export interface GeometryQueueOptions {
   clearTimer?: (handle: ReturnType<typeof setTimeout>) => void;
 }
 
+/** How far (logical px) the island may still stick out of a smaller window before the shrink is applied. */
+export const FIT_SLACK_PX = 2;
+
+/**
+ * True once the animated island is no larger than `target` (give or take the slack). The slack
+ * is a tolerance, never a margin: an island resting at exactly the target size must fit.
+ */
+export function islandFits(current: { width: number; height: number }, target: IslandGeometry): boolean {
+  return current.width <= target.width + FIT_SLACK_PX && current.height <= target.height + FIT_SLACK_PX;
+}
+
 function sameSize(a: IslandGeometry | null, b: IslandGeometry): boolean {
   return !!a && a.width === b.width && a.height === b.height && a.radius === b.radius;
 }

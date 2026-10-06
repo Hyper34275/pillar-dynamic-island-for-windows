@@ -4,8 +4,16 @@ import { useSettings } from "../../../hooks/useSettings";
 import { useSystemInfo } from "../../../hooks/useSystemInfo";
 import { APP_VERSION } from "../../../lib/appInfo";
 import { formatDateTime } from "../../../lib/dateFormat";
-import { buildDiagnosticsText, formatOs, outlookModeOf, outlookRunningOf, type NotificationDiagnostic } from "../../../lib/diagnostics";
-import { ipc, REMINDER_MINUTE_OPTIONS, type MonitorInfo, type NotificationStatus } from "../../../lib/ipc";
+import {
+  buildDiagnosticsText,
+  formatOs,
+  internalErrorOf,
+  notificationCodeOf,
+  outlookModeOf,
+  outlookRunningOf,
+  type NotificationDiagnostic,
+} from "../../../lib/diagnostics";
+import { ipc, onEvent, REMINDER_MINUTE_OPTIONS, type MonitorInfo, type NotificationStatus } from "../../../lib/ipc";
 import { t, type MessageKey } from "../../../lib/i18n";
 import type { CalendarStatus } from "../../../lib/calendar/types";
 import { Group, PillButton, SectionLabel, Segmented, Switch, SYSTEM_COLORS } from "../ui/primitives";
@@ -22,6 +30,12 @@ const STATUS_LABEL: Record<CalendarStatus, MessageKey> = {
   unresponsive: "status.unresponsive",
   failed: "status.failed",
 };
+
+const DELIVERY_LABEL = {
+  events: "about.deliveryEvents",
+  polling: "about.deliveryPolling",
+  none: "about.deliveryNone",
+} as const satisfies Record<string, MessageKey>;
 
 const MODE_LABEL = { classic: "about.modeClassic", new: "about.modeNew", none: "about.modeNone" } as const satisfies Record<string, MessageKey>;
 
@@ -86,11 +100,16 @@ export function AboutTab({ notificationStatus, onRequestNotificationAccess }: Ab
   const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
   useEffect(() => {
     let disposed = false;
-    void ipc.getMonitors().then((list) => {
-      if (!disposed && list) setMonitors(list);
-    });
+    const load = () =>
+      void ipc.getMonitors().then((list) => {
+        if (!disposed && list) setMonitors(list);
+      });
+    load();
+    // A display plugged in or removed while About is open.
+    const off = onEvent("display-changed", load);
     return () => {
       disposed = true;
+      off();
     };
   }, []);
 
@@ -107,6 +126,9 @@ export function AboutTab({ notificationStatus, onRequestNotificationAccess }: Ab
 
   const mode = outlookModeOf(snapshot, diagnostics);
   const running = outlookRunningOf(snapshot, diagnostics);
+  const internalError = internalErrorOf(snapshot);
+  const notificationCode = notificationCodeOf(notificationDiagnostic);
+  const recentCodes = diagnostics?.recentErrorCodes ?? [];
   const reminderOptions = [...new Set<number>([...REMINDER_MINUTE_OPTIONS, settings.reminderMinutes])]
     .sort((a, b) => a - b)
     .map((n) => ({ id: String(n), label: t("settings.minutes", { n }) }));
@@ -134,15 +156,16 @@ export function AboutTab({ notificationStatus, onRequestNotificationAccess }: Ab
           <Row label={t("about.version")}>{info?.appVersion ?? APP_VERSION}</Row>
           <Row label={t("about.outlook")}>{t(running ? "about.outlookRunning" : "about.outlookNotRunning")}</Row>
           <Row label={t("about.outlookMode")}>{t(MODE_LABEL[mode])}</Row>
-          <Row label={t("about.calendar")}>
-            {t(STATUS_LABEL[snapshot.status])}
-            {snapshot.errorCode && snapshot.status !== "waiting" ? ` · ${snapshot.errorCode}` : ""}
-          </Row>
+          <Row label={t("about.calendar")}>{t(STATUS_LABEL[snapshot.status])}</Row>
+          {internalError && <Row label={t("about.internalError")}>{internalError}</Row>}
           <Row label={t("about.cachedEvents")}>{snapshot.cachedCount}</Row>
           <Row label={t("about.lastSync")}>{snapshot.lastSyncUnixMs === null ? NONE : formatDateTime(new Date(snapshot.lastSyncUnixMs))}</Row>
           <Row label={t("about.notifications")}>
             {notificationDiagnostic === null ? NONE : t(`notif.status.${notificationDiagnostic}` as MessageKey)}
+            {notificationCode ? ` · ${notificationCode}` : ""}
           </Row>
+          {diagnostics?.notificationMode && <Row label={t("about.notificationDelivery")}>{t(DELIVERY_LABEL[diagnostics.notificationMode])}</Row>}
+          <Row label={t("about.recentErrors")}>{recentCodes.length > 0 ? recentCodes.join(", ") : NONE}</Row>
         </Group>
         <div dir="ltr" className="flex gap-2 mt-2.5">
           <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={copyDiagnostics}>

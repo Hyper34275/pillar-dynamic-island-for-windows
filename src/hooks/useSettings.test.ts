@@ -34,6 +34,25 @@ describe("settings store", () => {
     expect(store.getSnapshot().reminderMinutes).toBe(15);
   });
 
+  it("reports loaded only once the backend has answered, or the attempt failed", async () => {
+    const gate = deferred<Settings | null>();
+    const store = createSettingsStore(backendWith({ get: () => gate.promise }));
+    const listener = vi.fn();
+    store.subscribe(listener);
+    expect(store.isLoaded()).toBe(false);
+    gate.resolve({ ...SETTINGS_DEFAULTS, meetingReminderEnabled: false });
+    await flush();
+    expect(store.isLoaded()).toBe(true);
+    expect(store.getSnapshot().meetingReminderEnabled).toBe(false);
+    expect(listener).toHaveBeenCalled();
+
+    const failing = createSettingsStore(backendWith({ get: () => Promise.resolve(null) }));
+    failing.subscribe(() => {});
+    await flush();
+    expect(failing.isLoaded()).toBe(true);
+    expect(failing.getSnapshot()).toEqual(SETTINGS_DEFAULTS);
+  });
+
   it("applies a change optimistically and keeps the value Rust returns", async () => {
     const gate = deferred<Settings | null>();
     const store = createSettingsStore(backendWith({ update: () => gate.promise }));

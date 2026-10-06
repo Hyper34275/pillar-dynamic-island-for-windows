@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IslandGeometry } from "../ipc";
-import { createGeometryQueue } from "./geometryQueue";
+import { springConfig } from "../../components/Pill/animations";
+import { createGeometryQueue, FIT_SLACK_PX, islandFits } from "./geometryQueue";
 
 const size = (width: number, height: number): IslandGeometry => ({ width, height });
 
@@ -161,5 +162,38 @@ describe("geometry queue", () => {
     queue.dispose();
     queue.poke();
     expect(send).not.toHaveBeenCalled();
+  });
+});
+
+describe("islandFits", () => {
+  it("accepts an island resting at exactly the target size (slack is a tolerance, not a margin)", () => {
+    expect(islandFits({ width: 200, height: 34 }, size(200, 34))).toBe(true);
+    expect(islandFits({ width: 200 + FIT_SLACK_PX, height: 34 }, size(200, 34))).toBe(true);
+  });
+
+  it("rejects an island that still sticks out of the smaller window", () => {
+    expect(islandFits({ width: 200 + FIT_SLACK_PX + 0.5, height: 34 }, size(200, 34))).toBe(false);
+    expect(islandFits({ width: 200, height: 34 + FIT_SLACK_PX + 0.5 }, size(200, 34))).toBe(false);
+    expect(islandFits({ width: 404, height: 420 }, size(200, 34))).toBe(false);
+  });
+
+  it("is satisfied well before the shrink deadline when the real island spring collapses", () => {
+    // Semi-implicit Euler of the island spring (animations.ts: stiffness 420, damping 32, mass 0.95).
+    const { stiffness, damping, mass } = springConfig.island;
+    const target = size(200, 34);
+    const state = { width: 404, height: 420, vw: 0, vh: 0 };
+    const dt = 1;
+    let fitsAtMs = -1;
+    for (let ms = 0; ms < 1000 && fitsAtMs < 0; ms += dt) {
+      for (const axis of ["width", "height"] as const) {
+        const v = axis === "width" ? "vw" : "vh";
+        const force = -stiffness * (state[axis] - target[axis]) - damping * state[v];
+        state[v] += (force / mass) * (dt / 1000);
+        state[axis] += state[v] * (dt / 1000);
+      }
+      if (islandFits(state, target)) fitsAtMs = ms;
+    }
+    expect(fitsAtMs).toBeGreaterThan(0);
+    expect(fitsAtMs).toBeLessThan(300);
   });
 });

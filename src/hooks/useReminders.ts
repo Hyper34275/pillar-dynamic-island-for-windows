@@ -12,7 +12,7 @@ import { useSettings } from "./useSettings";
  */
 export function useReminders(onAlert: (alert: ReminderAlert) => void, store?: ReminderStore): void {
   const events = useCalendarEvents();
-  const { settings } = useSettings();
+  const { settings, loaded } = useSettings();
   const [engine, setEngine] = useState<ReminderEngine | null>(null);
   const onAlertRef = useRef(onAlert);
   onAlertRef.current = onAlert;
@@ -31,7 +31,9 @@ export function useReminders(onAlert: (alert: ReminderAlert) => void, store?: Re
   }, [store]);
 
   const { meetingReminderEnabled, reminderMinutes } = settings;
+  // Not before the user's own settings are in: a reminder they turned off (or set to 15 minutes)
+  // must not fire once with the defaults first.
   useEffect(() => {
-    engine?.update(events, { enabled: meetingReminderEnabled, offsetsMinutes: [reminderMinutes] });
-  }, [engine, events, meetingReminderEnabled, reminderMinutes]);
+    if (loaded) engine?.update(events, { enabled: meetingReminderEnabled, offsetsMinutes: [reminderMinutes] });
+  }, [engine, events, loaded, meetingReminderEnabled, reminderMinutes]);
 }

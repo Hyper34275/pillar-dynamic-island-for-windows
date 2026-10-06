@@ -274,8 +274,15 @@ export function EmptyState({
       >
         {icon}
       </div>
-      <span className="text-white text-[14px] font-semibold">{title}</span>
-      {subtitle && <span className="text-white/45 text-[12px]">{subtitle}</span>}
+      {/* Each text picks its own direction: the layout is LTR, but Hebrew with an English product name ("ממתין ל-Outlook") must not be shaped as an LTR paragraph. */}
+      <span dir="auto" className="text-white text-[14px] font-semibold" style={{ unicodeBidi: "plaintext" }}>
+        {title}
+      </span>
+      {subtitle && (
+        <span dir="auto" className="text-white/45 text-[12px]" style={{ unicodeBidi: "plaintext" }}>
+          {subtitle}
+        </span>
+      )}
       {children}
     </motion.div>
   );

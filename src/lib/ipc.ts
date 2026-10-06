@@ -27,10 +27,14 @@ export type SystemInfo = {
 
 export type OutlookMode = "classic" | "new" | "none";
 
+/** How Windows toasts reach the island: change events, a read-only poll when events cannot be subscribed, or not at all. */
+export type NotificationMode = "events" | "polling" | "none";
+
 /** Privacy-safe runtime diagnostics. Every field is optional on the wire. */
 export type Diagnostics = {
   outlookRunning: boolean | null;
   outlookMode: OutlookMode | null;
+  notificationMode: NotificationMode | null;
   recentErrorCodes: string[];
 };
 
@@ -101,7 +105,7 @@ export function normalizeSettings(raw: unknown): Settings {
     launchWithWindows: bool(r.launchWithWindows, SETTINGS_DEFAULTS.launchWithWindows),
     hideInFullscreen: bool(r.hideInFullscreen, SETTINGS_DEFAULTS.hideInFullscreen),
     meetingReminderEnabled: bool(r.meetingReminderEnabled, SETTINGS_DEFAULTS.meetingReminderEnabled),
-    reminderMinutes: minutes !== null && minutes > 0 ? minutes : SETTINGS_DEFAULTS.reminderMinutes,
+    reminderMinutes: minutes !== null && minutes >= 0 ? minutes : SETTINGS_DEFAULTS.reminderMinutes,
     notificationsEnabled: bool(r.notificationsEnabled, SETTINGS_DEFAULTS.notificationsEnabled),
     monitorId: typeof r.monitorId === "string" ? r.monitorId : typeof r.monitorId === "number" ? String(r.monitorId) : null,
   };
@@ -113,6 +117,7 @@ function normalizeDiagnostics(raw: unknown): Diagnostics {
   return {
     outlookRunning: typeof r.outlookRunning === "boolean" ? r.outlookRunning : null,
     outlookMode: mode === "classic" || mode === "new" || mode === "none" ? mode : null,
+    notificationMode: r.notificationMode === "events" || r.notificationMode === "polling" || r.notificationMode === "none" ? r.notificationMode : null,
     recentErrorCodes: Array.isArray(r.recentErrorCodes) ? r.recentErrorCodes.filter((c): c is string => typeof c === "string") : [],
   };
 }
@@ -192,6 +197,9 @@ async function callVoid(cmd: string, args?: Record<string, unknown>, options?: I
 export const ipc = {
   getSystemInfo: () => call<SystemInfo>("get_system_info"),
 
+  /** BCP-47 tag of the Windows regional format (dates, weekdays, times); null when unavailable. */
+  getFormatLocale: () => call<string | null>("get_format_locale", undefined, { timeoutMs: 2000 }),
+
   async getDiagnostics(): Promise<Diagnostics | null> {
     const raw = await call<unknown>("get_diagnostics");
     return raw === null ? null : normalizeDiagnostics(raw);
@@ -224,7 +232,6 @@ export const ipc = {
 
   /** Arguments are passed flat: invoke("set_island_geometry", { width, height, radius }). */
   setIslandGeometry: (geometry: IslandGeometry) => callVoid("set_island_geometry", { ...geometry }, { timeoutMs: 3000 }),
-  setClickThrough: (ignore: boolean) => callVoid("set_click_through", { ignore }),
 
   /** Raw snapshot: the calendar provider owns normalisation. */
   calendarGetSnapshot: () => call<unknown>("calendar_get_snapshot"),
@@ -236,6 +243,12 @@ export const ipc = {
     return raw === null ? null : normalizeReminderState(raw);
   },
   reminderStateSave: (map: Record<string, number>) => callVoid("reminder_state_save", { map }),
+
+  /** Whether a fullscreen app is in front right now (the event only reports changes). */
+  async getFullscreenState(): Promise<boolean | null> {
+    const value = await call<unknown>("get_fullscreen_state");
+    return typeof value === "boolean" ? value : null;
+  },
 
   async getMonitors(): Promise<MonitorInfo[] | null> {
     const raw = await call<unknown>("get_monitors");

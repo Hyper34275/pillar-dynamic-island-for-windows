@@ -80,6 +80,12 @@ const en = {
   "about.cachedEvents": "Cached events",
   "about.lastSync": "Last calendar sync",
   "about.notifications": "Notifications",
+  "about.notificationDelivery": "Notification delivery",
+  "about.deliveryEvents": "Live events",
+  "about.deliveryPolling": "Polling",
+  "about.deliveryNone": "None",
+  "about.internalError": "Internal Error",
+  "about.recentErrors": "Recent error codes",
   "about.settings": "Settings",
   "about.credit": "Based on PILLAR (MIT License)",
 
@@ -188,6 +194,12 @@ const he: Record<MessageKey, Message> = {
   "about.cachedEvents": "אירועים בזיכרון",
   "about.lastSync": "סנכרון יומן אחרון",
   "about.notifications": "התראות",
+  "about.notificationDelivery": "אספקת התראות",
+  "about.deliveryEvents": "אירועים חיים",
+  "about.deliveryPolling": "בדיקה מחזורית",
+  "about.deliveryNone": "אין",
+  "about.internalError": "שגיאה פנימית",
+  "about.recentErrors": "קודי שגיאה אחרונים",
   "about.settings": "הגדרות",
   "about.credit": "מבוסס על PILLAR (רישיון MIT)",
 
@@ -245,18 +257,37 @@ export function isRtl(tag: string | null | undefined): boolean {
 
 let cachedTag: string | null = null;
 
+/** `raw` when Intl accepts it as a locale, otherwise null (never throws). */
+function supportedTag(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    return Intl.DateTimeFormat.supportedLocalesOf([raw]).length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The Windows/WebView2 UI language, validated so Intl never throws on it. */
 export function getLocaleTag(): string {
   if (cachedTag) return cachedTag;
-  const raw = typeof navigator !== "undefined" ? navigator.language : "";
-  let tag = "en-US";
-  try {
-    if (raw && Intl.DateTimeFormat.supportedLocalesOf([raw]).length > 0) tag = raw;
-  } catch {
-    // malformed tag: keep the fallback
-  }
-  cachedTag = tag;
-  return tag;
+  cachedTag = supportedTag(typeof navigator !== "undefined" ? navigator.language : "") ?? "en-US";
+  return cachedTag;
+}
+
+let formatTag: string | null = null;
+
+/**
+ * Locale for dates, weekdays and times: the user's Windows regional format, which can differ
+ * from the display language (English UI + Israel region = 6/10, not 10/6). Strings and text
+ * direction keep following the UI language. Pass null to fall back to the UI language.
+ */
+export function setFormatLocale(raw: string | null | undefined): void {
+  // Windows sort-order suffixes ("de-DE_phoneb") are not BCP-47.
+  formatTag = supportedTag(raw?.split("_")[0]);
+}
+
+export function getFormatTag(): string {
+  return formatTag ?? getLocaleTag();
 }
 
 export function getLocale(): Locale {

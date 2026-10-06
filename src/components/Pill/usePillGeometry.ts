@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { MotionValue } from "motion/react";
-import { createGeometryQueue } from "../../lib/island/geometryQueue";
+import { createGeometryQueue, islandFits } from "../../lib/island/geometryQueue";
 import { ipc, type IslandGeometry } from "../../lib/ipc";
 import { dlog } from "../../lib/debugLog";
-
-/** Tolerance between the animated island and the window it must fit inside. */
-const FIT_SLACK_X = 4;
-const FIT_SLACK_Y = 2;
 
 interface Springs {
   width: MotionValue<number>;
@@ -33,7 +29,7 @@ export function usePillGeometry(target: IslandGeometry, springs: Springs): { inv
         else dlog("warn", "pill", `geometry ${geometry.width}x${geometry.height} failed [WIN-501]`);
         return ok;
       },
-      fits: (t) => springsRef.current.width.get() <= t.width - FIT_SLACK_X && springsRef.current.height.get() <= t.height - FIT_SLACK_Y,
+      fits: (t) => islandFits({ width: springsRef.current.width.get(), height: springsRef.current.height.get() }, t),
     });
   }
   const queue = queueRef.current;

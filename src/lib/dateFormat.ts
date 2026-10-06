@@ -1,7 +1,7 @@
 // Date/time formatting. Everything comes from Intl for the given locale — nothing is
 // translated or reordered by hand. Formatters are created once per locale and cached.
 
-import { getLocaleTag } from "./i18n";
+import { getFormatTag } from "./i18n";
 
 interface Formatters {
   /** numeric day + month + year, used only to derive the year-less short date */
@@ -77,32 +77,32 @@ export function stripYear(parts: Part[]): string {
   return kept.map((p) => p.value).join("");
 }
 
-export function shortDate(date: Date, locale: string = getLocaleTag()): string {
+export function shortDate(date: Date, locale: string = getFormatTag()): string {
   return stripYear(formatters(locale).fullNumeric.formatToParts(date));
 }
 
-export function weekdayLong(date: Date, locale: string = getLocaleTag()): string {
+export function weekdayLong(date: Date, locale: string = getFormatTag()): string {
   return formatters(locale).weekdayLong.format(date);
 }
 
-export function weekdayShort(date: Date, locale: string = getLocaleTag()): string {
+export function weekdayShort(date: Date, locale: string = getFormatTag()): string {
   return formatters(locale).weekdayShort.format(date);
 }
 
-export function fullDate(date: Date, locale: string = getLocaleTag()): string {
+export function fullDate(date: Date, locale: string = getFormatTag()): string {
   return formatters(locale).fullDate.format(date);
 }
 
-export function formatDateTime(date: Date, locale: string = getLocaleTag()): string {
+export function formatDateTime(date: Date, locale: string = getFormatTag()): string {
   return formatters(locale).dateTime.format(date);
 }
 
-export function formatTime(date: Date, locale: string = getLocaleTag()): string {
+export function formatTime(date: Date, locale: string = getFormatTag()): string {
   return formatters(locale).time.format(date);
 }
 
 /** Time split so a 12-hour day period ("AM") can be styled smaller than the digits. */
-export function timeParts(date: Date, locale: string = getLocaleTag()): { digits: string; period: string | null } {
+export function timeParts(date: Date, locale: string = getFormatTag()): { digits: string; period: string | null } {
   const parts = formatters(locale).time.formatToParts(date);
   const period = parts.find((p) => p.type === "dayPeriod")?.value ?? null;
   if (!period) return { digits: parts.map((p) => p.value).join(""), period: null };
@@ -115,7 +115,7 @@ export function timeParts(date: Date, locale: string = getLocaleTag()): { digits
 }
 
 /** "in 25 min." / "בעוד 25 דק׳" — whole minutes from now, rolled up to hours/days. */
-export function relativeMinutes(minutes: number, locale: string = getLocaleTag()): string {
+export function relativeMinutes(minutes: number, locale: string = getFormatTag()): string {
   const rtf = formatters(locale).relative;
   const rounded = Math.round(minutes);
   const abs = Math.abs(rounded);
@@ -146,7 +146,7 @@ export function msUntilNextDay(nowMs: number = Date.now()): number {
  * Which day a time falls on, relative to `nowMs`: null for today (or earlier), "Tomorrow"
  * (Intl.RelativeTimeFormat) for the next day, the weekday name beyond that.
  */
-export function dayLabel(date: Date, nowMs: number, locale: string = getLocaleTag()): string | null {
+export function dayLabel(date: Date, nowMs: number, locale: string = getFormatTag()): string | null {
   const days = Math.round((startOfDay(date.getTime()) - startOfDay(nowMs)) / 86_400_000);
   if (days <= 0) return null;
   const text = days === 1 ? formatters(locale).relative.format(1, "day") : weekdayLong(date, locale);

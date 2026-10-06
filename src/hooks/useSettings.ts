@@ -32,6 +32,8 @@ export function createSettingsStore(backend: SettingsBackend) {
   let view: Settings = SETTINGS_DEFAULTS;
   let nextId = 1;
   let started = false;
+  // False until Rust has answered once (or the attempt failed): until then `view` is only the defaults.
+  let loaded = false;
   // Updates go out one at a time so Rust applies them in the order the user made them.
   let queue: Promise<unknown> = Promise.resolve();
   const listeners = new Set<Listener>();
@@ -43,15 +45,23 @@ export function createSettingsStore(backend: SettingsBackend) {
     listeners.forEach((l) => l());
   }
 
+  function markLoaded() {
+    if (loaded) return;
+    loaded = true;
+    listeners.forEach((l) => l());
+  }
+
   function start() {
     if (started) return;
     started = true;
     backend.subscribe((raw) => {
       confirmed = normalizeSettings(raw);
+      markLoaded();
       publish();
     });
     void backend.get().then((settings) => {
       if (settings) confirmed = settings;
+      markLoaded();
       publish();
     });
   }
@@ -82,6 +92,7 @@ export function createSettingsStore(backend: SettingsBackend) {
       return () => listeners.delete(listener);
     },
     getSnapshot: () => view,
+    isLoaded: () => loaded,
     update,
   };
 }
@@ -94,12 +105,15 @@ const store = createSettingsStore({
 
 export interface UseSettingsResult {
   settings: Settings;
+  /** False while `settings` is still the defaults; true once the backend answered (or could not). */
+  loaded: boolean;
   /** Resolves true when Rust accepted the change; on false the UI has already reverted it. */
   update: (patch: SettingsPatch) => Promise<boolean>;
 }
 
 export function useSettings(): UseSettingsResult {
   const settings = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const loaded = useSyncExternalStore(store.subscribe, store.isLoaded);
   const update = useCallback((patch: SettingsPatch) => store.update(patch), []);
-  return { settings, update };
+  return { settings, loaded, update };
 }

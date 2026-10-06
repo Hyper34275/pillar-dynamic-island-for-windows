@@ -85,6 +85,26 @@ describe("CalendarView", () => {
     expect(html).not.toMatch(/in d+ min/);
   });
 
+  it("keeps a long meeting in progress from hiding the real next meeting", () => {
+    const html = render(connected([event("block", -120, 240, { subject: "All-morning block" }), event("next", 25, 55, { subject: "Standup" })]));
+    const card = html.slice(html.indexOf('aria-label="Next meeting"'));
+    expect(card).toContain("Standup");
+    expect(card).not.toContain("All-morning block");
+    expect(html.slice(0, html.indexOf('aria-label="Next meeting"'))).toContain("All-morning block"); // as a Now row above
+  });
+
+  it("uses the card for a meeting in progress when nothing else is coming", () => {
+    const html = render(connected([event("now", -10, 20, { subject: "Running" })]));
+    expect(html).toContain('aria-label="Now"');
+    expect(html).not.toContain("Next meeting");
+  });
+
+  it("lets the empty-state texts pick their own direction, so Hebrew around \"Outlook\" is shaped right-to-left", () => {
+    const html = render(WAITING_SNAPSHOT);
+    expect(html).toMatch(/<span dir="auto"[^>]*>Waiting for Outlook<\/span>/);
+    expect(html).toMatch(/<span dir="auto"[^>]*>Your meetings appear/);
+  });
+
   it("shows the connecting state", () => {
     expect(render({ ...WAITING_SNAPSHOT, status: "connecting" })).toContain("Connecting to Outlook");
   });
