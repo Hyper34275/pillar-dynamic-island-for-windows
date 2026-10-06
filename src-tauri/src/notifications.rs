@@ -13,6 +13,7 @@
 
 use crate::{debug_log, diagnostics, paths, rt, settings::SettingsStore, system};
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
@@ -96,6 +97,33 @@ fn classify(access: UserNotificationListenerAccessStatus, policy_denies: bool) -
 fn policy_denies() -> bool {
     system::hklm_dword(POLICY_KEY, POLICY_VALUE) == Some(POLICY_FORCE_DENY)
 }
+
+/// How many distinct notification senders are remembered for `activate_app_by_aumid`.
+const RECENT_AUMIDS_MAX: usize = 64;
+
+/// AUMIDs of the toasts forwarded to the island, oldest first. `activate_app_by_aumid` only
+/// launches one of these: an AUMID can also spell `{KnownFolder}\any.exe`, so without this
+/// the webview could name any shell target.
+#[derive(Default)]
+struct RecentAumids(VecDeque<String>);
+
+impl RecentAumids {
+    fn remember(&mut self, aumid: &str) {
+        if self.contains(aumid) {
+            return;
+        }
+        if self.0.len() == RECENT_AUMIDS_MAX {
+            self.0.pop_front();
+        }
+        self.0.push_back(aumid.to_string());
+    }
+
+    fn contains(&self, aumid: &str) -> bool {
+        self.0.iter().any(|known| known == aumid)
+    }
+}
+
+static RECENT_AUMIDS: Mutex<RecentAumids> = Mutex::new(RecentAumids(VecDeque::new()));
 
 /// Last published status (`None` before the first check).
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
@@ -251,6 +279,9 @@ fn on_changed(app: &AppHandle, args: Option<&UserNotificationChangedEventArgs>) 
     let Some(notification) = listener.GetNotification(id).ok().and_then(|n| extract_notification(&n)) else {
         return;
     };
+    if let Some(aumid) = &notification.aumid {
+        lock(&RECENT_AUMIDS).remember(aumid);
+    }
     if let Err(e) = app.emit("notification-received", &notification) {
         dlog!("WARN", "notifications", "emit notification-received failed: {}", e);
     }
@@ -434,10 +465,14 @@ pub async fn activate_notification(id: u32) -> Result<(), String> {
     .await
 }
 
-/// Activate an app by its AUMID directly (the notification may already be gone).
+/// Activate an app by its AUMID directly (the notification may already be gone). Only the
+/// sender of a toast the island has shown can be activated.
 #[tauri::command]
 pub async fn activate_app_by_aumid(aumid: String) -> Result<(), String> {
     rt::run_blocking("activate_app_by_aumid", move || {
+        if !lock(&RECENT_AUMIDS).contains(&aumid) {
+            return Err("NOTIF-204: unknown application id".to_string());
+        }
         rt::ensure_com_initialized();
         launch_aumid(&aumid)
     })
@@ -490,6 +525,23 @@ mod tests {
         for key in ["id", "appName", "title", "body", "timestamp", "aumid"] {
             assert!(json.get(key).is_some(), "missing {key}");
         }
+    }
+
+    #[test]
+    fn only_remembered_senders_can_be_activated_and_the_list_is_bounded() {
+        let mut recent = RecentAumids::default();
+        assert!(!recent.contains("MSEdge"));
+        recent.remember("MSEdge");
+        recent.remember("MSEdge");
+        assert!(recent.contains("MSEdge"));
+        assert_eq!(recent.0.len(), 1);
+        for i in 0..RECENT_AUMIDS_MAX + 10 {
+            recent.remember(&format!("app.{i}"));
+        }
+        assert_eq!(recent.0.len(), RECENT_AUMIDS_MAX);
+        assert!(!recent.contains("MSEdge"), "oldest entries are evicted");
+        assert!(recent.contains(&format!("app.{}", RECENT_AUMIDS_MAX + 9)));
+        assert!(!recent.contains(r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\cmd.exe"));
     }
 
     #[test]

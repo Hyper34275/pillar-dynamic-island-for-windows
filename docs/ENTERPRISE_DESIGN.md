@@ -114,3 +114,25 @@ No meeting subjects/locations/organizers in logs, diagnostics, crash reports or 
 
 ## 6. Phase gate (every phase)
 `npx tsc --noEmit`, `npm test` (vitest, once added), `cargo check` + `cargo test` (PowerShell with `%USERPROFILE%\.cargo\bin` on PATH; Git Bash can't find cargo), review `git diff`, commit with message `phase N: …`.
+
+## 7. Windows 10 21H2 (build 19044) compatibility and runtime hardening
+
+Audited from the built exe's import table and the Rust sources. Nothing needs anything newer than Windows 10 1607 (build 14393); the one 1607 dependency is `UserNotificationListener`, which is best effort by design (§0).
+
+| Area | API / feature | Minimum | Notes |
+|---|---|---|---|
+| Window | `SetWindowSubclass`/`DefSubclassProc` (comctl32 v6) | XP | needs the Common-Controls 6 manifest dependency (`windows-app.manifest`; tauri's `common-controls-v6` feature does the same for tao/muda) |
+| Window | `WS_EX_NOACTIVATE \| WS_EX_TOOLWINDOW`, `SetWindowRgn`, `SetWindowPos`, `WM_STYLECHANGING` | Win2000 | identical on 10 and 11; tao's `DwmEnableBlurBehindWindow` (empty region) provides the transparent surface on Windows 10, WebView2 supplies the alpha-0 background (`DefaultBackgroundColor`, available in runtimes far older than the 111 baseline) |
+| DPI | `GetDpiForMonitor` (shcore) | 8.1 | values are physical only with the PerMonitorV2 manifest (`windows-app.manifest`); without it every monitor reports 96 |
+| Fullscreen | `SetWinEventHook` (out of context), `SHQueryUserNotificationState` | Win2000 / Vista | no injection, no admin; UWP fullscreen (ApplicationFrameWindow) relies on `QUNS_BUSY` plus the covers-monitor geometry |
+| Network | `GetAdaptersAddresses` (skip flags only), `GetIpForwardTable2`, `NotifyIpInterfaceChange`, `NotifyUnicastIpAddressChange` | Vista | event driven, never polled |
+| System | `RtlGetVersion`, `GetUserNameExW(NameSamCompatible)`, `GetComputerNameExW`, `RegGetValueW` (HKLM, read only) | Vista | no manifest version lie |
+| COM | `CoRegisterMessageFilter`, `GetActiveObject`, `CLSIDFromProgID`, late-bound `IDispatch` | Win2000 | attach only |
+| Locale | `GetDateFormatEx`, `GetTimeFormatEx`, `GetUserDefaultUILanguage` | Vista | |
+| WinRT | `UserNotificationListener` (+ `NotificationChanged`) | 10.0.14393 | behaviour of an unpackaged exe is unverified on 21H2: every failure is a status (`unsupported`/`denied`/`error`), never a panic |
+| Shell | `SHGetKnownFolderPath`, `ShellExecuteW("shell:AppsFolder\...")` | Vista / 8 | explorer.exe is resolved from the Windows known folder |
+| Registry | HKCU `StartupApproved\Run` write; HKLM reads only | | the app never writes HKLM |
+
+Frontend baseline is Chromium 111 (`build.target`, installer `minimumWebview2Version`). Used: `Intl.DateTimeFormat` (`formatToParts`, `hourCycle`), `Intl.RelativeTimeFormat`, `Intl.PluralRules`, `color-mix()`, `:where()`. Deliberately not used: `Intl.Locale.getWeekInfo` (not in 111), `backdrop-filter`, CSS nesting, `@layer`, container queries. Windows 11 extras are not used, so there is nothing to fall back from: no Mica/Acrylic, no `DWMWA_WINDOW_CORNER_PREFERENCE` (the pill shape is `SetWindowRgn`), no Segoe UI Variable dependency (it is only the first entry of a font stack that ends in Segoe UI).
+
+Runtime hardening that is not in `tauri.conf.json` (see `lib.rs`): the WebView2 profile lives in `%LOCALAPPDATA%\CompanyIsland\EBWebView` (via `appDirectoriesOverride`), WebView2 runs with `--disable-background-networking` next to wry's defaults, and raw keyboard/mouse input registration is removed (`DeviceEventFilter::Always`). The page reaches Rust through `@tauri-apps/api` only (`window.__TAURI__` is not read), and the capability file grants `core:event:allow-listen/unlisten` only.

@@ -125,15 +125,52 @@ fn truncate_utf8(s: &str, max_bytes: usize) -> Cow<'_, str> {
     Cow::Owned(format!("{}{}", &s[..end], TRUNCATED))
 }
 
+/// Replace `profile` (already ASCII-lowercased) wherever it occurs in `message`, ignoring
+/// ASCII case: Windows paths are case-insensitive, so `c:\users\x` must not slip through
+/// because `USERPROFILE` spells it `C:\Users\x`. ASCII lowercasing keeps every byte offset,
+/// so the matches index straight into `message`.
+fn scrub_with<'a>(message: &'a str, profile: &str) -> Cow<'a, str> {
+    let lowered = message.to_ascii_lowercase();
+    if !lowered.contains(profile) {
+        return Cow::Borrowed(message);
+    }
+    let mut out = String::with_capacity(message.len());
+    let mut copied = 0;
+    for (at, _) in lowered.match_indices(profile) {
+        out.push_str(&message[copied..at]);
+        out.push_str("%USERPROFILE%");
+        copied = at + profile.len();
+    }
+    out.push_str(&message[copied..]);
+    Cow::Owned(out)
+}
+
 /// Replace the user's profile path so user names never reach the log.
 fn scrub_profile(message: &str) -> Cow<'_, str> {
     let profile = PROFILE_DIR.get_or_init(|| {
-        std::env::var("USERPROFILE").ok().filter(|p| p.len() > 3)
+        std::env::var("USERPROFILE").ok().filter(|p| p.len() > 3).map(|p| p.to_ascii_lowercase())
     });
     match profile {
-        Some(p) if message.contains(p.as_str()) => Cow::Owned(message.replace(p.as_str(), "%USERPROFILE%")),
-        _ => Cow::Borrowed(message),
+        Some(p) => scrub_with(message, p),
+        None => Cow::Borrowed(message),
     }
+}
+
+/// One entry is one line, whatever the caller passes (the webview can send any string):
+/// CR is dropped, LF becomes " | " and every other control character, including ESC, NEL and
+/// the Unicode line separators, becomes a space, so text can neither forge a log line nor
+/// carry terminal escapes into whatever tails the file.
+fn single_line(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\r' => {}
+            '\n' => out.push_str(" | "),
+            c if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn open_current(dir: &Path) -> Option<(File, u64)> {
@@ -262,10 +299,9 @@ fn write_capped(timestamp_ms: Option<i64>, level: Level, scope: &str, message: &
         .and_then(chrono::DateTime::from_timestamp_millis)
         .map(|dt| dt.with_timezone(&chrono::Local))
         .unwrap_or_else(chrono::Local::now);
-    // Keep each entry on one line so the log greps cleanly.
-    let message = message.replace('\r', "").replace('\n', " | ");
+    let message = single_line(message);
     let message = truncate_utf8(scrub_profile(&message).as_ref(), cap).into_owned();
-    let scope: String = scope.chars().take(MAX_SCOPE_CHARS).collect();
+    let scope: String = single_line(scope).chars().take(MAX_SCOPE_CHARS).collect();
     let line = format!(
         "{} {:<5} [{}] {}\n",
         ts.format("%Y-%m-%d %H:%M:%S%.3f"),
@@ -403,6 +439,23 @@ mod tests {
         let cut = truncate_utf8(&long, 40);
         assert!(cut.len() <= 40);
         assert!(cut.ends_with(TRUNCATED));
+    }
+
+    #[test]
+    fn entries_stay_on_one_line() {
+        assert_eq!(single_line("a\r\nb\nc"), "a | b | c");
+        assert_eq!(single_line("x\u{1b}[31mred\u{85}y\u{2028}z\tw"), "x [31mred y z w");
+        assert_eq!(single_line("שלום – plain"), "שלום – plain");
+    }
+
+    #[test]
+    fn profile_scrub_ignores_ascii_case_and_keeps_the_rest() {
+        let profile = r"c:\users\dana";
+        let scrubbed = scrub_with(r"cannot open C:\Users\Dana\AppData and c:\USERS\DANA", profile);
+        assert_eq!(scrubbed, r"cannot open %USERPROFILE%\AppData and %USERPROFILE%");
+        assert!(matches!(scrub_with("nothing to hide", profile), Cow::Borrowed(_)));
+        // multi-byte text around the match keeps its byte offsets
+        assert_eq!(scrub_with(r"שלום C:\Users\Dana\x", profile), r"שלום %USERPROFILE%\x");
     }
 
     #[test]

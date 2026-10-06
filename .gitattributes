@@ -1,0 +1,6 @@
+# Normalize line endings for text files committed from now on; existing files are not renormalized.
+* text=auto
+
+# Binary assets: never touch their bytes.
+*.ico binary
+*.png binary

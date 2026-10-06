@@ -18,12 +18,40 @@ mod settings;
 mod tray;
 mod window;
 
+use tauri::utils::config::AppDirectoriesOverride;
 use tauri::{Manager, RunEvent};
+
+/// WebView2 switches for the island window. Passing any switch replaces wry's defaults, so
+/// those are repeated first: no "mini menu", no PDF toolbar, no SmartScreen reputation
+/// lookups. `--disable-background-networking` stops the runtime's own background traffic
+/// (component updates, variations, safe-browsing lists): the page is local and offline.
+const WEBVIEW_ARGS: &str =
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-networking";
+
+/// Config that is only known at runtime: the WebView2 profile (cache, cookies, crash dumps)
+/// lives under the same per-user root as everything else instead of a second
+/// `%LOCALAPPDATA%\<identifier>` folder, and the webview gets the switches above.
+fn prepare(context: &mut tauri::Context) {
+    let config = context.config_mut();
+    if let Ok(root) = paths::root() {
+        config.app.app_directories_override = Some(AppDirectoriesOverride::Root(root));
+    }
+    for window in config.app.windows.iter_mut() {
+        window.additional_browser_args = Some(WEBVIEW_ARGS.to_string());
+    }
+}
 
 pub fn run() {
     debug_log::init(env!("CARGO_PKG_VERSION"));
 
+    let mut context = tauri::generate_context!();
+    prepare(&mut context);
+
     let built = tauri::Builder::default()
+        // The page only needs ordinary pointer messages. Without this, tao registers the
+        // process for raw keyboard and mouse input (the pattern endpoint security tools flag
+        // as a key logger) and receives it for nothing; `Always` removes the registration.
+        .device_event_filter(tauri::DeviceEventFilter::Always)
         // Single instance per Windows session: tauri-plugin-single-instance creates its
         // mutex without a Global\ prefix (session-local namespace) and finds the first
         // instance with FindWindowW on the current desktop, so other sessions are independent.
@@ -75,7 +103,7 @@ pub fn run() {
             });
             Ok(())
         })
-        .build(tauri::generate_context!());
+        .build(context);
 
     match built {
         Ok(app) => app.run(|_app, event| match event {
@@ -91,5 +119,20 @@ pub fn run() {
             dlog!("ERROR", "app", "APP-001 failed to start: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WEBVIEW_ARGS;
+
+    #[test]
+    fn webview_args_keep_wrys_defaults_and_stay_offline() {
+        // Setting any argument replaces wry's own `--disable-features=...` default.
+        for feature in ["msWebOOUI", "msPdfOOUI", "msSmartScreenProtection"] {
+            assert!(WEBVIEW_ARGS.contains(feature), "{feature}");
+        }
+        assert!(WEBVIEW_ARGS.contains("--disable-background-networking"));
+        assert!(!WEBVIEW_ARGS.contains("--disable-gpu"));
     }
 }

@@ -16,9 +16,8 @@ use windows::Wdk::System::SystemServices::RtlGetVersion;
 use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS, HANDLE};
 use windows::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GetAdaptersAddresses, GetIpForwardTable2, NotifyIpInterfaceChange, NotifyUnicastIpAddressChange,
-    GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
-    IP_ADAPTER_ADDRESSES_LH, MIB_IPFORWARD_TABLE2, MIB_IPINTERFACE_ROW, MIB_NOTIFICATION_TYPE,
-    MIB_UNICASTIPADDRESS_ROW,
+    GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH,
+    MIB_IPFORWARD_TABLE2, MIB_IPINTERFACE_ROW, MIB_NOTIFICATION_TYPE, MIB_UNICASTIPADDRESS_ROW,
 };
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
@@ -325,7 +324,7 @@ fn default_routes() -> Vec<(u32, u32)> {
 
 fn collect_candidates() -> Result<Vec<AdapterCandidate>, String> {
     let routes = default_routes();
-    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER | GAA_FLAG_INCLUDE_GATEWAYS;
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
     // u64 storage keeps the buffer 8-byte aligned for IP_ADAPTER_ADDRESSES_LH.
     let mut buffer: Vec<u64> = vec![0; 16 * 1024 / 8];
     let mut bytes = (buffer.len() * 8) as u32;

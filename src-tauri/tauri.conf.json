@@ -11,7 +11,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "label": "main",
@@ -31,16 +31,39 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost;"
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "CompanyIsland",
+    "copyright": "Copyright (c) 2026 CompanyIsland",
+    "category": "Utility",
+    "shortDescription": "Date, time and Outlook meeting reminders in a Dynamic Island style overlay",
+    "longDescription": "CompanyIsland shows the date, weekday and time in a compact island at the top of the screen and reminds you of upcoming Classic Outlook meetings. It runs offline, never needs administrator rights and stores its data per user.",
+    "icon": [
+      "icons/icon.ico"
+    ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
       "nsis": {
-        "installMode": "perMachine"
+        "installMode": "perMachine",
+        "installerHooks": "installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "languages": [
+          "English",
+          "Hebrew"
+        ],
+        "displayLanguageSelector": false,
+        "compression": "lzma",
+        "startMenuFolder": "CompanyIsland",
+        "minimumWebview2Version": "111.0.1661.41"
       }
     }
   }
