@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { TabId } from "../components/Pill/tabs";
-import { HOVER_INTENT_MS, LEAVE_COLLAPSE_MS, PINNED_LEAVE_COLLAPSE_MS } from "../lib/island/timing";
+import { dlog } from "../lib/debugLog";
+import { FOREGROUND_GRACE_MS, HOVER_INTENT_MS, LEAVE_COLLAPSE_MS, UNATTENDED_COLLAPSE_MS } from "../lib/island/timing";
 
 interface PillIsland {
   /** The user layer is expanded (it may be hidden behind an alert or a toast). */
   expanded: boolean;
-  pinned: boolean;
   /** A meeting alert or a notification is on screen. */
   temporary: boolean;
   expand: (tab?: TabId) => void;
@@ -25,27 +25,36 @@ interface UsePillStateReturn {
    * dismissed alert, a toggle). Lifts as soon as the pointer leaves.
    */
   holdCollapsed: () => void;
+  /** Another app's window became active (backend `foreground-changed`). */
+  foregroundChanged: () => void;
 }
 
 /**
  * How the pointer drives the user layer of the island (the state itself lives in the island
- * reducer). Nothing here is global: there is no mouse hook and no outside-click detection,
- * the window is non-activating and island-sized.
+ * reducer). Nothing here is global: there is no mouse hook, the window is non-activating and
+ * island-sized.
  *
  *  - Rest on the island for HOVER_INTENT_MS: it expands to the last-used tab.
- *  - Leave: it collapses after LEAVE_COLLAPSE_MS, or PINNED_LEAVE_COLLAPSE_MS when a click or
- *    toggle pinned it. The same timer covers an island that was opened while the pointer was
- *    elsewhere (tray, second launch), so it can never stay open unattended.
+ *  - Leave: once the pointer has been on the expanded island, it collapses LEAVE_COLLAPSE_MS
+ *    after leaving, whether or not it was clicked. An island opened while the pointer was
+ *    elsewhere (tray, second launch) gets UNATTENDED_COLLAPSE_MS to be reached, so it can never
+ *    stay open unattended.
+ *  - A click outside it (desktop, taskbar, another app) activates that window; the backend
+ *    reports the foreground change and the island collapses at once, unless the pointer is on
+ *    it or it opened less than FOREGROUND_GRACE_MS ago.
  *  - While a meeting alert or toast is showing nothing is armed; when it ends the rules above
  *    apply again to whatever the user had open.
- * Both are effects of (pointer, island) state, so a stale timer cannot outlive its condition.
+ * The timers are effects of (pointer, island) state, so a stale timer cannot outlive its condition.
  */
 export function usePillState(island: PillIsland): UsePillStateReturn {
-  const { expanded, pinned, temporary, expand, collapse, setHovering } = island;
+  const { expanded, temporary, expand, collapse, setHovering } = island;
   const [isBooting, setBooting] = useState(true);
   const [inside, setInside] = useState(false);
+  // The pointer has been on the island since it last expanded (decides which leave grace applies).
+  const [visited, setVisited] = useState(false);
   const heldRef = useRef(false);
   const insideRef = useRef(false);
+  const expandedAtRef = useRef(0);
 
   const completeBootAnimation = useCallback(() => setBooting(false), []);
 
@@ -69,6 +78,19 @@ export function usePillState(island: PillIsland): UsePillStateReturn {
   }, []);
 
   useEffect(() => {
+    if (expanded) {
+      expandedAtRef.current = Date.now();
+      setVisited(insideRef.current);
+    } else {
+      setVisited(false);
+    }
+  }, [expanded]);
+
+  useEffect(() => {
+    if (expanded && inside) setVisited(true);
+  }, [expanded, inside]);
+
+  useEffect(() => {
     if (!inside || isBooting || expanded || temporary || heldRef.current) return;
     const handle = setTimeout(() => expand(), HOVER_INTENT_MS);
     return () => clearTimeout(handle);
@@ -76,9 +98,20 @@ export function usePillState(island: PillIsland): UsePillStateReturn {
 
   useEffect(() => {
     if (!expanded || inside || temporary) return;
-    const handle = setTimeout(collapse, pinned ? PINNED_LEAVE_COLLAPSE_MS : LEAVE_COLLAPSE_MS);
+    const delay = visited ? LEAVE_COLLAPSE_MS : UNATTENDED_COLLAPSE_MS;
+    const handle = setTimeout(() => {
+      dlog("info", "pill", visited ? `collapse: pointer left (${delay} ms)` : `collapse: opened elsewhere, pointer never arrived (${delay} ms)`);
+      collapse();
+    }, delay);
     return () => clearTimeout(handle);
-  }, [expanded, pinned, inside, temporary, collapse]);
+  }, [expanded, inside, temporary, visited, collapse]);
 
-  return { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed };
+  const foregroundChanged = useCallback(() => {
+    if (!expanded || temporary || insideRef.current) return;
+    if (Date.now() - expandedAtRef.current < FOREGROUND_GRACE_MS) return;
+    dlog("info", "pill", "collapse: another window became active (click outside the island)");
+    collapse();
+  }, [expanded, temporary, collapse]);
+
+  return { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed, foregroundChanged };
 }

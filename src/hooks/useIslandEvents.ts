@@ -8,6 +8,8 @@ interface IslandEventHandlers {
   onFullscreenChanged?: (fullscreen: boolean) => void;
   /** Monitor layout or DPI changed: the native window must be re-sized and re-centred. */
   onDisplayChanged?: () => void;
+  /** Another app's window became active (e.g. the user clicked the desktop, the taskbar or an app). */
+  onForegroundChanged?: () => void;
 }
 
 function fullscreenFrom(payload: unknown): boolean {
@@ -29,6 +31,7 @@ export function useIslandEvents(handlers: IslandEventHandlers): void {
   const wantsToggle = !!handlers.onToggle;
   const wantsFullscreen = !!handlers.onFullscreenChanged;
   const wantsDisplay = !!handlers.onDisplayChanged;
+  const wantsForeground = !!handlers.onForegroundChanged;
 
   useEffect(() => {
     const offs: Array<() => void> = [];
@@ -54,6 +57,9 @@ export function useIslandEvents(handlers: IslandEventHandlers): void {
     if (wantsDisplay) {
       offs.push(onEvent<unknown>("display-changed", () => ref.current.onDisplayChanged?.()));
     }
+    if (wantsForeground) {
+      offs.push(onEvent<unknown>("foreground-changed", () => ref.current.onForegroundChanged?.()));
+    }
     return () => offs.forEach((off) => off());
-  }, [wantsToggle, wantsFullscreen, wantsDisplay]);
+  }, [wantsToggle, wantsFullscreen, wantsDisplay, wantsForeground]);
 }

@@ -3,7 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IslandNotification } from "../lib/ipc";
-import { ALERT_MS, HOVER_INTENT_MS, LEAVE_COLLAPSE_MS, NOTIFICATION_MS, PINNED_LEAVE_COLLAPSE_MS } from "../lib/island/timing";
+import {
+  ALERT_MS,
+  FOREGROUND_GRACE_MS,
+  HOVER_INTENT_MS,
+  LEAVE_COLLAPSE_MS,
+  NOTIFICATION_MS,
+  UNATTENDED_COLLAPSE_MS,
+} from "../lib/island/timing";
 import type { ReminderAlert } from "../lib/reminders/types";
 import { useIslandState, type IslandController } from "./useIslandState";
 import { usePillState } from "./usePillState";
@@ -31,7 +38,6 @@ function Harness({ suppressed = false }: { suppressed?: boolean }) {
   const island = useIslandState({ suppressed });
   const pill = usePillState({
     expanded: island.state.expanded,
-    pinned: island.state.pinned,
     temporary: island.view.kind === "meetingAlert" || island.view.kind === "notification",
     expand: island.expand,
     pin: island.pin,
@@ -120,12 +126,12 @@ describe("hover and leave", () => {
     expect(view()).toBe("idle");
   });
 
-  it("keeps a pinned island open for the longer grace", async () => {
+  it("collapses a clicked (pinned) island just as quickly once the pointer leaves it", async () => {
     await mountReady();
     await call(() => api.island.pin());
     await call(() => api.pill.pointerEnter());
     await call(() => api.pill.pointerLeave());
-    await ms(PINNED_LEAVE_COLLAPSE_MS - 1);
+    await ms(LEAVE_COLLAPSE_MS - 1);
     expect(view()).toBe("userExpanded");
     await ms(1);
     expect(view()).toBe("idle");
@@ -134,9 +140,21 @@ describe("hover and leave", () => {
   it("never leaves an island that was opened while the pointer was elsewhere open forever", async () => {
     await mountReady();
     await call(() => api.island.pin("calendar")); // tray click or second launch
-    await ms(PINNED_LEAVE_COLLAPSE_MS - 1);
+    await ms(UNATTENDED_COLLAPSE_MS - 1);
     expect(view()).toBe("userExpanded");
     await ms(1);
+    expect(view()).toBe("idle");
+  });
+
+  it("gives a remotely opened island the short grace once the pointer has reached it and left", async () => {
+    await mountReady();
+    await call(() => api.island.pin()); // tray click
+    await ms(1000);
+    await call(() => api.pill.pointerEnter());
+    await ms(5000);
+    expect(view()).toBe("userExpanded");
+    await call(() => api.pill.pointerLeave());
+    await ms(LEAVE_COLLAPSE_MS);
     expect(view()).toBe("idle");
   });
 
@@ -167,6 +185,51 @@ describe("hover and leave", () => {
     await call(() => api.pill.pointerEnter());
     await ms(HOVER_INTENT_MS);
     expect(view()).toBe("userExpanded");
+  });
+});
+
+describe("click outside (another window became active)", () => {
+  it("collapses at once when the pointer is away from the island", async () => {
+    await mountReady();
+    await call(() => api.pill.pointerEnter());
+    await ms(HOVER_INTENT_MS); // expands (separate step so the expansion renders at this time)
+    await ms(FOREGROUND_GRACE_MS);
+    await call(() => api.pill.pointerLeave());
+    await call(() => api.pill.foregroundChanged()); // clicked the desktop
+    expect(view()).toBe("idle");
+  });
+
+  it("closes a remotely opened island without waiting for the unattended grace", async () => {
+    await mountReady();
+    await call(() => api.island.pin()); // tray click
+    await ms(FOREGROUND_GRACE_MS);
+    await call(() => api.pill.foregroundChanged());
+    expect(view()).toBe("idle");
+  });
+
+  it("ignores the foreground shuffle right after opening (tray menu, second launch)", async () => {
+    await mountReady();
+    await call(() => api.island.pin());
+    await ms(FOREGROUND_GRACE_MS - 1);
+    await call(() => api.pill.foregroundChanged());
+    expect(view()).toBe("userExpanded");
+  });
+
+  it("stays open while the pointer is on the island", async () => {
+    await mountReady();
+    await call(() => api.pill.pointerEnter());
+    await ms(HOVER_INTENT_MS);
+    await ms(FOREGROUND_GRACE_MS);
+    await call(() => api.pill.foregroundChanged()); // e.g. an app popped up a window on its own
+    expect(view()).toBe("userExpanded");
+  });
+
+  it("does not cut a meeting alert short", async () => {
+    await mountReady();
+    await call(() => api.island.showAlert(alert()));
+    await ms(FOREGROUND_GRACE_MS);
+    await call(() => api.pill.foregroundChanged());
+    expect(view()).toBe("meetingAlert");
   });
 });
 
@@ -256,7 +319,7 @@ describe("temporary states", () => {
     await ms(1);
     expect(view()).toBe("userExpanded");
     expect(tab()).toBe("calendar");
-    await ms(PINNED_LEAVE_COLLAPSE_MS);
+    await ms(LEAVE_COLLAPSE_MS);
     expect(view()).toBe("idle");
   });
 
