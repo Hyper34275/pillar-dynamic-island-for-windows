@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { detectLocale, getFormatTag, getLocale, getLocaleTag, setFormatLocale } from "./i18n";
+import { detectLocale, getFormatTag, getLocale, getLocaleTag, setFixedLocale, setFormatLocale, t } from "./i18n";
 import {
   dayLabel,
   formatTime,
@@ -185,5 +185,62 @@ describe("regional format locale", () => {
     expect(getFormatTag()).toBe(getLocaleTag());
     setFormatLocale(null);
     expect(getFormatTag()).toBe(getLocaleTag());
+  });
+});
+
+describe("Hebrew UI on an English Windows", () => {
+  afterEach(() => {
+    setFixedLocale(null);
+    setFormatLocale(null);
+  });
+
+  // 4-10 October 2026 is Sunday to Saturday.
+  const week = Array.from({ length: 7 }, (_, i) => new Date(2026, 9, 4 + i, 12, 0));
+
+  it("names every day in Hebrew: Sunday is יום ראשון ... Saturday is יום שבת", () => {
+    setFixedLocale("he");
+    setFormatLocale("en-US");
+    expect(week.map((d) => weekdayLong(d))).toEqual(["יום ראשון", "יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "יום שבת"]);
+    expect(weekdayShort(week[2])).toBe("יום ג׳");
+  });
+
+  it("keeps the Windows number format but words the rest in Hebrew", () => {
+    setFixedLocale("he");
+    setFormatLocale("en-US");
+    const tuesday = week[2];
+    expect(shortDate(tuesday)).toBe("10/6"); // US order, as Windows is set
+    expect(fullDate(tuesday)).toBe("יום שלישי, 6 באוקטובר 2026");
+    expect(relativeMinutes(25)).toMatch(/^בעוד 25/);
+    expect(dayLabel(new Date(2026, 9, 7, 9, 0), tuesday.getTime())).toBe("מחר");
+    expect(dayLabel(new Date(2026, 9, 8, 9, 0), tuesday.getTime())).toBe("יום חמישי");
+    expect(t("tab.calendar")).toBe("יומן");
+  });
+
+  it("follows Windows again once unpinned", () => {
+    setFormatLocale("en-US");
+    expect(weekdayLong(week[0])).toBe("Sunday");
+    expect(t("tab.calendar")).toBe("Calendar");
+  });
+});
+
+describe("Hebrew 12-hour clock", () => {
+  afterEach(() => {
+    setFixedLocale(null);
+    setFormatLocale(null);
+  });
+
+  it("says before/after noon in Hebrew when Windows uses a 12-hour clock", () => {
+    setFixedLocale("he");
+    setFormatLocale("en-US");
+    expect(formatTime(new Date(2026, 9, 6, 9, 5))).toContain("לפנה״צ");
+    expect(formatTime(new Date(2026, 9, 6, 23, 12))).toContain("אחה״צ");
+    expect(formatTime(new Date(2026, 9, 6, 23, 12))).not.toMatch(/AM|PM/);
+    expect(timeParts(new Date(2026, 9, 6, 23, 12)).period).toBe("אחה״צ");
+  });
+
+  it("keeps a 24-hour clock without any day period", () => {
+    setFixedLocale("he");
+    setFormatLocale("he-IL");
+    expect(formatTime(new Date(2026, 9, 6, 23, 12))).toBe("23:12");
   });
 });

@@ -31,7 +31,7 @@ describe("t", () => {
   it("returns the string for the requested locale", () => {
     expect(t("tab.about", undefined, "en")).toBe("About");
     expect(t("tab.about", undefined, "he")).toBe("אודות");
-    expect(t("tab.datetime", undefined, "he")).toBe("תאריך ושעה");
+    expect(t("tab.settings", undefined, "he")).toBe("הגדרות");
   });
 
   it("interpolates parameters and leaves unknown placeholders alone", () => {
@@ -41,7 +41,7 @@ describe("t", () => {
 
   it("covers every key the UI relies on in both languages", () => {
     const required: MessageKey[] = [
-      "tab.datetime", "tab.calendar", "tab.about",
+      "tab.calendar", "tab.about", "tab.settings",
       "calendar.next", "calendar.waiting", "calendar.noEvents", "calendar.newOutlook",
       "calendar.elevation", "calendar.unresponsive", "calendar.failed",
       "reminder.inMinutes", "reminder.startingNow",
@@ -49,7 +49,8 @@ describe("t", () => {
       "about.windowsUser", "about.os", "about.version", "about.outlook", "about.calendar",
       "about.cachedEvents", "about.lastSync", "about.notifications",
       "settings.launchWithWindows", "settings.hideInFullscreen", "settings.meetingReminders",
-      "settings.reminderMinutes", "settings.notifications",
+      "settings.reminderMinutes", "settings.notifications", "settings.meetingInvites",
+      "invite.label", "about.time",
       "notif.allow", "notif.dismiss",
     ];
     for (const key of required) {

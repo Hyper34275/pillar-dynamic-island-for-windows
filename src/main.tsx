@@ -8,7 +8,7 @@ import { APP_VERSION } from "./lib/appInfo";
 import { dlog, installDebugLogging } from "./lib/debugLog";
 import { describeError, stackFrames } from "./lib/errors";
 import { ipc } from "./lib/ipc";
-import { applyDocumentLocale, setFormatLocale } from "./lib/i18n";
+import { applyDocumentLocale, setFixedLocale, setFormatLocale } from "./lib/i18n";
 
 function AppWithRecovery() {
   const { reportCrash } = useCrashRecovery({
@@ -49,6 +49,10 @@ function AppWithRecovery() {
   );
 }
 
+// The island is always Hebrew, whatever language Windows runs in: strings, weekday and month
+// names, "tomorrow", "in 5 min". Number order and the 12/24-hour clock keep following the
+// Windows regional format.
+setFixedLocale("he");
 applyDocumentLocale();
 installDebugLogging();
 dlog("info", "app", `app boot — v${APP_VERSION} dpr=${window.devicePixelRatio} win=${window.innerWidth}x${window.innerHeight}`);

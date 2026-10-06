@@ -11,9 +11,10 @@ type PluralForms = { other: string } & Partial<Record<Intl.LDMLPluralRule, strin
 type Message = string | PluralForms;
 
 const en = {
-  "tab.datetime": "Date & Time",
   "tab.calendar": "Calendar",
   "tab.about": "About",
+  "tab.settings": "Settings",
+  "tab.notifications": "Notifications",
 
   "island.tabs": "Island sections",
   "island.expandedLabel": "{app} expanded",
@@ -44,12 +45,30 @@ const en = {
   "calendar.allDay": "All day",
   "calendar.noSubject": "(No subject)",
   "calendar.code": "Code {code}",
+  "calendar.endsIn": "Ends {rel}",
+  "calendar.join": "Join",
+  "calendar.joinAria": "Join the meeting: {subject}",
+  "calendar.today": "Today",
+  "calendar.prevWeek": "Previous week",
+  "calendar.nextWeek": "Next week",
+  "calendar.dayEmpty": "No meetings this day",
+  "calendar.loading": "Loading from Outlook…",
+  "calendar.dayFailed": "Couldn't load this day",
+  "calendar.timeline": "Meetings across the day",
+  "calendar.invites": "Pending invitations",
+  "calendar.silence": "Silence notifications until the meeting ends",
+  "calendar.unsilence": "Turn notifications back on",
 
   "reminder.inMinutes": {
     one: "Meeting in {n} minute",
     other: "Meeting in {n} minutes",
   },
   "reminder.startingNow": "Meeting starting now",
+  "reminder.snooze": "Remind me in 5 min",
+  "status.inMeetingUntil": "In a meeting until {time}",
+  "ringer.ring": "Ring",
+  "ringer.silent": "Silent",
+  "ringer.hint": "Tap to silence notifications until the meeting ends",
 
   "status.waiting": "Waiting for Outlook",
   "status.connecting": "Connecting",
@@ -61,6 +80,8 @@ const en = {
 
   "about.computer": "Computer",
   "about.ip": "Local IP",
+  "about.time": "Current time",
+  "about.copyHint": "Click to copy",
   "about.diagnostics": "Diagnostics",
   "about.copy": "Copy diagnostics",
   "about.copied": "Copied",
@@ -95,6 +116,8 @@ const en = {
   "settings.reminderMinutes": "Remind me before",
   "settings.minutes": "{n} min",
   "settings.notifications": "Show notifications",
+  "settings.meetingInvites": "Meeting invitations",
+  "settings.meetingSilence": "Offer silence when a meeting starts",
   "settings.monitor": "Display",
   "settings.monitorPrimary": "Primary",
   "settings.monitorN": "Display {n}",
@@ -111,6 +134,23 @@ const en = {
   "notif.dismiss": "Dismiss notification",
   "notif.default": "Notification",
   "notif.now": "now",
+  "invite.label": "Meeting invitation",
+  "invite.from": "From {name}",
+  "invite.open": "Open the invitation day in the Outlook calendar",
+  "invite.accept": "Accept",
+  "invite.tentative": "Maybe",
+  "invite.decline": "Decline",
+  "invite.accepted": "Accepted",
+  "invite.tentativeDone": "Answered maybe",
+  "invite.declined": "Declined",
+  "invite.sending": "Sending…",
+  "invite.failed": "Couldn't answer",
+  "notifs.empty": "No notifications",
+  "notifs.emptyHint": "Notifications you receive appear here until the app restarts.",
+  "notifs.off": "Showing notifications is turned off in Settings.",
+  "notifs.clear": "Clear all",
+  "notifs.remove": "Remove notification",
+  "notifs.silenced": "Arrived during a silenced meeting",
   "notif.announce": {
     one: "{n} new notification",
     other: "{n} new notifications",
@@ -124,9 +164,10 @@ const en = {
 export type MessageKey = keyof typeof en;
 
 const he: Record<MessageKey, Message> = {
-  "tab.datetime": "תאריך ושעה",
   "tab.calendar": "יומן",
   "tab.about": "אודות",
+  "tab.settings": "הגדרות",
+  "tab.notifications": "התראות",
 
   "island.tabs": "מקטעי האי",
   "island.expandedLabel": "{app} מורחב",
@@ -157,6 +198,19 @@ const he: Record<MessageKey, Message> = {
   "calendar.allDay": "כל היום",
   "calendar.noSubject": "(ללא נושא)",
   "calendar.code": "קוד {code}",
+  "calendar.endsIn": "מסתיימת {rel}",
+  "calendar.join": "הצטרף",
+  "calendar.joinAria": "הצטרף לפגישה: {subject}",
+  "calendar.today": "היום",
+  "calendar.prevWeek": "השבוע הקודם",
+  "calendar.nextWeek": "השבוע הבא",
+  "calendar.dayEmpty": "אין פגישות ביום הזה",
+  "calendar.loading": "טוען מ-Outlook…",
+  "calendar.dayFailed": "לא ניתן לטעון את היום הזה",
+  "calendar.timeline": "הפגישות לאורך היום",
+  "calendar.invites": "זימונים ממתינים",
+  "calendar.silence": "השתק התראות עד סוף הפגישה",
+  "calendar.unsilence": "החזר את ההתראות",
 
   "reminder.inMinutes": {
     one: "פגישה בעוד דקה",
@@ -164,6 +218,11 @@ const he: Record<MessageKey, Message> = {
     other: "פגישה בעוד {n} דקות",
   },
   "reminder.startingNow": "הפגישה מתחילה עכשיו",
+  "reminder.snooze": "הזכר בעוד 5 דק׳",
+  "status.inMeetingUntil": "בפגישה עד {time}",
+  "ringer.ring": "צלצול",
+  "ringer.silent": "שקט",
+  "ringer.hint": "לחיצה משתיקה את ההתראות עד סוף הפגישה",
 
   "status.waiting": "ממתין ל-Outlook",
   "status.connecting": "מתחבר",
@@ -175,6 +234,8 @@ const he: Record<MessageKey, Message> = {
 
   "about.computer": "מחשב",
   "about.ip": "כתובת IP מקומית",
+  "about.time": "השעה הנוכחית",
+  "about.copyHint": "לחיצה להעתקה",
   "about.diagnostics": "אבחון",
   "about.copy": "העתק אבחון",
   "about.copied": "הועתק",
@@ -209,6 +270,8 @@ const he: Record<MessageKey, Message> = {
   "settings.reminderMinutes": "הזכר לי לפני",
   "settings.minutes": "{n} דק׳",
   "settings.notifications": "הצג התראות",
+  "settings.meetingInvites": "זימונים לפגישות",
+  "settings.meetingSilence": "הצע שקט בתחילת פגישה",
   "settings.monitor": "תצוגה",
   "settings.monitorPrimary": "ראשית",
   "settings.monitorN": "תצוגה {n}",
@@ -225,6 +288,23 @@ const he: Record<MessageKey, Message> = {
   "notif.dismiss": "סגור התראה",
   "notif.default": "התראה",
   "notif.now": "עכשיו",
+  "invite.label": "זימון לפגישה",
+  "invite.from": "מאת {name}",
+  "invite.open": "פתח את יום הזימון ביומן Outlook",
+  "invite.accept": "אשר",
+  "invite.tentative": "אולי",
+  "invite.decline": "דחה",
+  "invite.accepted": "אושר",
+  "invite.tentativeDone": "נענה אולי",
+  "invite.declined": "נדחה",
+  "invite.sending": "שולח…",
+  "invite.failed": "לא ניתן להשיב",
+  "notifs.empty": "אין התראות",
+  "notifs.emptyHint": "התראות שיתקבלו יופיעו כאן עד הפעלה מחדש של האפליקציה.",
+  "notifs.off": "הצגת ההתראות כבויה בהגדרות.",
+  "notifs.clear": "נקה הכול",
+  "notifs.remove": "הסר התראה",
+  "notifs.silenced": "הגיעה בזמן פגישה מושתקת",
   "notif.announce": {
     one: "התראה חדשה אחת",
     two: "שתי התראות חדשות",
@@ -290,14 +370,35 @@ export function getFormatTag(): string {
   return formatTag ?? getLocaleTag();
 }
 
+const LOCALE_TAGS: Record<Locale, string> = { en: "en-US", he: "he-IL" };
+
+let fixedLocale: Locale | null = null;
+
+/**
+ * Pins the UI language instead of following Windows. The app pins Hebrew at startup (main.tsx):
+ * the island is always Hebrew, on an English Windows too. Null follows Windows again (tests).
+ */
+export function setFixedLocale(locale: Locale | null): void {
+  fixedLocale = locale;
+}
+
 export function getLocale(): Locale {
-  return detectLocale(getLocaleTag());
+  return fixedLocale ?? detectLocale(getLocaleTag());
+}
+
+/**
+ * Locale for the *words* in dates (weekday and month names, "tomorrow", "in 5 min", AM/PM):
+ * the pinned UI language when there is one, otherwise the regional format. Numbers, their
+ * order and the 12/24-hour choice always follow the regional format (getFormatTag).
+ */
+export function getWordTag(): string {
+  return fixedLocale ? LOCALE_TAGS[fixedLocale] : getFormatTag();
 }
 
 /** Applies lang/dir to <html> so text renders with the right direction. Layout stays LTR. */
 export function applyDocumentLocale(): void {
   if (typeof document === "undefined") return;
-  const tag = getLocaleTag();
+  const tag = fixedLocale ? LOCALE_TAGS[fixedLocale] : getLocaleTag();
   document.documentElement.lang = tag;
   document.documentElement.dir = isRtl(tag) ? "rtl" : "ltr";
 }
