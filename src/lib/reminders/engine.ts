@@ -13,7 +13,7 @@ import { isRealMeeting } from "../calendar/select";
 import type { CalendarEventDto } from "../calendar/types";
 import { dlog } from "../debugLog";
 import { describeError } from "../errors";
-import { reminderKey, type ReminderAlert, type ReminderSettings, type ReminderStore, type ReminderType } from "./types";
+import { isOwnCalendar, reminderKey, remindsFor, type ReminderAlert, type ReminderSettings, type ReminderSourcePolicy, type ReminderStore, type ReminderType } from "./types";
 
 /** Longest single sleep; bounds how late a reminder can be after the PC resumed from sleep. */
 export const MAX_SLEEP_MS = 60_000;
@@ -26,6 +26,12 @@ export const ON_TIME_TOLERANCE_MS = 5_000;
 export const MIN_REMAINING_MS = 60_000;
 /** Fired-set entries older than this are dropped (events are only read 48 h ahead). */
 export const FIRED_RETENTION_MS = 7 * 24 * 3_600_000;
+/**
+ * At most this many reminders are shown for one moment. Shared operational schedules can start
+ * many items at once (shift changes); the rest are marked fired and stay visible in the calendar.
+ * The user's own calendars go first.
+ */
+export const MAX_REMINDERS_PER_BURST = 3;
 
 export interface ReminderEngineOptions {
   now: () => number;
@@ -70,10 +76,10 @@ export function createReminderEngine(options: ReminderEngineOptions): ReminderEn
       .catch((error) => dlog("warn", "reminders", `saving the fired set failed: ${describeError(error)}`));
   }
 
-  function candidates(events: readonly CalendarEventDto[], offsets: readonly number[], at: number): Candidate[] {
+  function candidates(events: readonly CalendarEventDto[], offsets: readonly number[], at: number, policy: ReminderSourcePolicy | undefined): Candidate[] {
     const out: Candidate[] = [];
     for (const event of events) {
-      if (!isRealMeeting(event)) continue;
+      if (!isRealMeeting(event) || !remindsFor(policy, event)) continue;
       const startMs = Date.parse(event.startUtc);
       if (!(startMs > at) || !(Date.parse(event.endUtc) > at)) continue;
       for (const minutes of offsets) {
@@ -95,7 +101,7 @@ export function createReminderEngine(options: ReminderEngineOptions): ReminderEn
     if (disposed || !ready || !current || !current.settings.enabled) return;
 
     const at = now();
-    const pending = candidates(current.events, current.settings.offsetsMinutes, at);
+    const pending = candidates(current.events, current.settings.offsetsMinutes, at, current.settings.sources);
     const due: Candidate[] = [];
     let nextDueMs = Number.POSITIVE_INFINITY;
     let skipped = 0;
@@ -111,10 +117,14 @@ export function createReminderEngine(options: ReminderEngineOptions): ReminderEn
       else skipped++;
     }
 
+    // Own calendars first, then by start; beyond the burst limit the rest stay quiet (already marked fired).
+    due.sort((a, b) => Number(isOwnCalendar(b.event.sourceKind)) - Number(isOwnCalendar(a.event.sourceKind)) || a.startMs - b.startMs);
+    const quiet = due.splice(MAX_REMINDERS_PER_BURST);
     if (due.length + skipped > 0) {
       persist();
       if (skipped > 0) dlog("info", "reminders", `${skipped} reminder(s) skipped: too late`);
     }
+    if (quiet.length > 0) dlog("info", "reminders", `${quiet.length} simultaneous reminder(s) not shown (burst limit)`);
     for (const candidate of due) {
       const { event, type, key } = candidate;
       dlog("info", "reminders", `fire ${key.slice(0, 8)} (${type.minutes} min before)`);
@@ -122,6 +132,9 @@ export function createReminderEngine(options: ReminderEngineOptions): ReminderEn
         onFire({
           key,
           eventId: event.id,
+          calendarId: event.calendarId,
+          calendarName: event.calendarName,
+          sourceKind: event.sourceKind,
           subject: event.subject,
           startUtc: event.startUtc,
           endUtc: event.endUtc,

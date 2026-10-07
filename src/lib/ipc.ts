@@ -51,6 +51,8 @@ export type Settings = {
   notificationsEnabled: boolean;
   /** New Outlook meeting requests pop up in the island (and the Inbox is read for them). */
   meetingInvitesEnabled: boolean;
+  /** Meeting reminders also for checked calendars other than the user's own (shared, other). Off keeps their events visible. */
+  sharedCalendarReminders: boolean;
   /** When a meeting starts the island offers to silence notifications until it ends. */
   meetingSilencePrompt: boolean;
   /** Display the island lives on; null = primary. */
@@ -74,6 +76,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   reminderMinutes: 30,
   notificationsEnabled: true,
   meetingInvitesEnabled: true,
+  sharedCalendarReminders: true,
   meetingSilencePrompt: true,
   monitorId: null,
   onboardingDone: false,
@@ -155,6 +158,7 @@ export function normalizeSettings(raw: unknown): Settings {
     reminderMinutes: minutes !== null && minutes >= 0 ? minutes : SETTINGS_DEFAULTS.reminderMinutes,
     notificationsEnabled: bool(r.notificationsEnabled, SETTINGS_DEFAULTS.notificationsEnabled),
     meetingInvitesEnabled: bool(r.meetingInvitesEnabled, SETTINGS_DEFAULTS.meetingInvitesEnabled),
+    sharedCalendarReminders: bool(r.sharedCalendarReminders, SETTINGS_DEFAULTS.sharedCalendarReminders),
     meetingSilencePrompt: bool(r.meetingSilencePrompt, SETTINGS_DEFAULTS.meetingSilencePrompt),
     monitorId: typeof r.monitorId === "string" ? r.monitorId : typeof r.monitorId === "number" ? String(r.monitorId) : null,
     onboardingDone: bool(r.onboardingDone, SETTINGS_DEFAULTS.onboardingDone),

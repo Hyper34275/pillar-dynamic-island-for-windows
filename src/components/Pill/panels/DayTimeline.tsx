@@ -102,9 +102,9 @@ export function DayTimeline({ events, dayStartMs, nowMs, colorOf }: DayTimelineP
         ))}
         {blocks.map(({ event, left, width, lane }) => (
           <span
-            key={event.id}
+            key={`${event.calendarId}:${event.id}`}
             className="ci-mark absolute rounded"
-            title={`${formatTime(new Date(event.startUtc))} ${event.subject}`}
+            title={`${formatTime(new Date(event.startUtc))} ${event.subject}${event.sourceKind && event.sourceKind !== "primary" && event.calendarName ? ` · ${event.calendarName}` : ""}`}
             style={{
               insetInlineStart: `${left * 100}%`,
               width: `max(3px, calc(${width * 100}% - 1px))`,

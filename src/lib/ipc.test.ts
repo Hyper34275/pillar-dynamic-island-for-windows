@@ -66,6 +66,7 @@ describe("normalizeSettings", () => {
       reminderMinutes: 15,
       notificationsEnabled: false,
       meetingInvitesEnabled: true,
+      sharedCalendarReminders: true,
       meetingSilencePrompt: true,
       monitorId: "2",
       onboardingDone: false,

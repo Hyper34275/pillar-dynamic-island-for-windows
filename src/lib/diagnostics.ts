@@ -99,6 +99,35 @@ function iso(unixMs: number | null): string {
 }
 
 /**
+ * The calendars the island found in Outlook, by number and type only: their names are business
+ * data (a colleague's name, a department), so they never reach a copied ticket.
+ */
+export function calendarSourceLines(snapshot: CalendarSnapshot): string[] {
+  const report = snapshot.sources;
+  if (!report) return ["Calendar provider: Classic Outlook", "Calendar discovery: not yet"];
+  const sources = report.sources;
+  const shared = sources.filter((s) => s.kind === "shared");
+  const primary = sources.find((s) => s.kind === "primary");
+  return [
+    "Calendar provider: Classic Outlook",
+    `Primary calendar: ${primary ? (primary.state === "ok" ? "Connected" : primary.state) : NA}`,
+    `Calendar groups detected: ${report.groups}`,
+    `Calendars detected: ${sources.length}`,
+    `Calendars selected: ${sources.filter((s) => s.active).length}`,
+    `Shared calendars detected: ${shared.length}`,
+    `Shared calendars selected: ${shared.filter((s) => s.active).length}`,
+    `Calendar selection from: ${report.selection}`,
+    `Last calendar discovery: ${iso(report.discoveredUnixMs)}`,
+    `Navigation event listener: ${report.listener ? "Active" : "Inactive"}`,
+    ...sources.map(
+      (s, i) =>
+        `Calendar source #${i + 1}: type=${s.kind} group=${s.group} selected=${s.selected} active=${s.active} state=${s.state}` +
+        `${s.errorCode ? ` code=${s.errorCode}` : ""} events=${s.eventCount}`
+    ),
+  ];
+}
+
+/**
  * The block copied by "Copy diagnostics": a one-line summary first (what a ticket needs),
  * then every field. Support-facing, so it is English and unlocalised.
  * Privacy: system identifiers and counts only — never meeting subjects, locations,
@@ -134,6 +163,7 @@ export function buildDiagnosticsText({ info, diagnostics, snapshot, notification
     `Outlook mode: ${outlookModeOf(snapshot, diagnostics)}`,
     `Calendar status: ${snapshot.status}${snapshot.errorCode ? ` (${snapshot.errorCode})` : ""}`,
     `Last calendar sync: ${iso(snapshot.lastSyncUnixMs)}`,
+    ...calendarSourceLines(snapshot),
     `Notifications: ${notifications ?? NA}`,
     `Notification delivery: ${diagnostics?.notificationMode ?? NA}`,
   ];

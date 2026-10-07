@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { textDirection } from "../../../design/direction";
+import { sourceDirection, textDirection } from "../../../design/direction";
 import { alert as alertTokens, color, compact, control, icon } from "../../../design/tokens";
 import { useCalendar } from "../../../hooks/useCalendar";
 import { useMinute, useToday } from "../../../hooks/useClock";
@@ -10,6 +10,9 @@ import { dayCache, eventsOfDay, useCalendarDay, type DayState } from "../../../l
 import { isRealMeeting, selectAllDay, selectUpcoming } from "../../../lib/calendar/select";
 import type { CalendarEventDto, CalendarSnapshot, CalendarStatus, MeetingInviteDto } from "../../../lib/calendar/types";
 import { silence, useSilenceUntil } from "../../../lib/island/silence";
+import { minutesUntil } from "../../../lib/island/countdown";
+import { eventSourceLabel, hasSourcesToShow } from "../../../lib/calendar/sources";
+import { CalendarSources } from "./CalendarSources";
 import { inviteBody } from "../../../hooks/useMeetingInvites";
 import { GROUP_CLASS } from "../ui/primitives";
 import { EmptyState, ErrorState, STATE_ICON } from "../ui/states";
@@ -75,6 +78,16 @@ function timeRange(event: CalendarEventDto): string {
 
 function subjectOf(event: CalendarEventDto): string {
   return event.subject.trim() || t("calendar.noSubject");
+}
+
+/** Which calendar an event is from, when that is not the user's own default one. */
+function sourceOf(event: CalendarEventDto): string | null {
+  return eventSourceLabel(event, (key) => t(key));
+}
+
+/** React key: event ids are per calendar copy, the calendar id keeps them apart for certain. */
+function keyOf(event: CalendarEventDto): string {
+  return `${event.calendarId}:${event.id}`;
 }
 
 /** The range is an LTR run (start first, as written) even inside a Hebrew line; the day label stays in the flow. */
@@ -145,15 +158,24 @@ function NextMeetingCard({ event, nowMs, silenceUntil }: { event: CalendarEventD
   const caption = t(ongoing ? "calendar.now" : "calendar.next");
   const countdown = ongoing
     ? t("calendar.endsIn", { rel: relativeMinutes((Date.parse(event.endUtc) - nowMs) / 60_000) })
-    : relativeMinutes((startMs - nowMs) / 60_000);
+    : relativeMinutes(minutesUntil(startMs, nowMs));
   const hasActions = !!event.meetingUrl || ongoing;
+  const source = sourceOf(event);
   return (
     <section className="ci-surface rounded-surface p-card-pad flex flex-col gap-3" aria-label={caption}>
       <div className="flex gap-3">
         <span className="ci-mark flex-shrink-0 self-stretch rounded-full" style={{ width: ROW_BAR_WIDTH, background: colorOf(event) }} aria-hidden="true" />
         <div className="min-w-0 flex-1 flex flex-col">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-meta text-fg-tertiary truncate">{caption}</span>
+            <span className="text-meta text-fg-tertiary truncate" title={source ?? undefined}>
+              {caption}
+              {source && (
+                <>
+                  {" · "}
+                  <bdi dir={sourceDirection(source)}>{source}</bdi>
+                </>
+              )}
+            </span>
             <span className="flex-shrink-0 text-meta text-fg-secondary tabular-nums">{countdown}</span>
           </div>
           <h3 dir={textDirection(subjectOf(event))} className="bidi mt-1 text-title text-fg line-clamp-2 [overflow-wrap:anywhere]">{subjectOf(event)}</h3>
@@ -177,6 +199,7 @@ function NextMeetingCard({ event, nowMs, silenceUntil }: { event: CalendarEventD
 
 /** A compact row: colour bar, a fixed-width lead (time, "Now", "All day"), the subject, and join. */
 function EventRow({ event, lead, leadIsLabel = false, joinable = false }: { event: CalendarEventDto; lead: string; leadIsLabel?: boolean; joinable?: boolean }) {
+  const source = sourceOf(event);
   return (
     <li className="flex items-center gap-3 px-3" style={{ minHeight: ROW_HEIGHT }}>
       <ColorBar event={event} height={ROW_BAR_HEIGHT} />
@@ -186,7 +209,14 @@ function EventRow({ event, lead, leadIsLabel = false, joinable = false }: { even
       >
         {lead}
       </span>
-      <span dir={textDirection(subjectOf(event))} className="bidi min-w-0 flex-1 truncate text-body text-fg">{subjectOf(event)}</span>
+      <span className="min-w-0 flex-1 flex flex-col">
+        <span dir={textDirection(subjectOf(event))} className="bidi truncate text-body text-fg">{subjectOf(event)}</span>
+        {source && (
+          <span dir={sourceDirection(source)} className="bidi truncate text-micro text-fg-tertiary" title={source}>
+            {source}
+          </span>
+        )}
+      </span>
       {joinable && <JoinIcon event={event} />}
     </li>
   );
@@ -221,7 +251,7 @@ function LaterList({ events, nowMs }: { events: CalendarEventDto[]; nowMs: numbe
           <GroupLabel>{dayLabel(new Date(group.day), nowMs) ?? t("calendar.later")}</GroupLabel>
           <RowGroup>
             {group.events.map((event) => (
-              <EventRow key={event.id} event={event} lead={formatTime(new Date(event.startUtc))} joinable />
+              <EventRow key={keyOf(event)} event={event} lead={formatTime(new Date(event.startUtc))} joinable />
             ))}
           </RowGroup>
         </div>
@@ -253,12 +283,18 @@ function InvitesSection({ invites, nowMs }: { invites: readonly MeetingInviteDto
   );
 }
 
-function StatusLine({ status, errorCode }: { status: Exclude<CalendarStatus, "connected">; errorCode: string | null }) {
+/** Shown above cached meetings while Outlook is away: what is wrong, and how old the list is (it is not fresh). */
+function StatusLine({ status, errorCode, lastSyncUnixMs }: { status: Exclude<CalendarStatus, "connected">; errorCode: string | null; lastSyncUnixMs: number | null }) {
   return (
-    <div className="flex items-center justify-center gap-2 text-meta text-fg-secondary">
-      <span className="ci-mark rounded-full flex-shrink-0" style={{ width: compact.statusDot, height: compact.statusDot, background: color.warning }} aria-hidden="true" />
-      <span className="bidi !text-center truncate">{t(STATUS_COPY[status].title)}</span>
-      {errorCode && status !== "waiting" && <span className="tabular-nums text-fg-tertiary">{errorCode}</span>}
+    <div className="flex flex-col items-center">
+      <div className="flex items-center justify-center gap-2 text-meta text-fg-secondary">
+        <span className="ci-mark rounded-full flex-shrink-0" style={{ width: compact.statusDot, height: compact.statusDot, background: color.warning }} aria-hidden="true" />
+        <span className="bidi !text-center truncate">{t(STATUS_COPY[status].title)}</span>
+        {errorCode && status !== "waiting" && <span className="tabular-nums text-fg-tertiary">{errorCode}</span>}
+      </div>
+      {lastSyncUnixMs !== null && (
+        <span className="bidi text-micro text-fg-tertiary tabular-nums">{t("calendar.lastSynced", { time: formatTime(new Date(lastSyncUnixMs)) })}</span>
+      )}
     </div>
   );
 }
@@ -289,11 +325,12 @@ export function CalendarView({ snapshot, nowMs, answeredInvites, silenceUntil = 
   const allDayList = allDay.length > 0 && (
     <RowGroup label={t("calendar.allDay")}>
       {allDay.map((event) => (
-        <EventRow key={event.id} event={event} lead={t("calendar.allDay")} leadIsLabel />
+        <EventRow key={keyOf(event)} event={event} lead={t("calendar.allDay")} leadIsLabel />
       ))}
     </RowGroup>
   );
   const invitesSection = <InvitesSection invites={invites} nowMs={nowMs} />;
+  const sourcesSection = hasSourcesToShow(snapshot.sources) && <CalendarSources report={snapshot.sources} />;
 
   if (!next) {
     return (
@@ -305,24 +342,26 @@ export function CalendarView({ snapshot, nowMs, answeredInvites, silenceUntil = 
         ) : (
           <EmptyState icon={<CalendarIcon size={STATE_ICON} />} title={t("calendar.noEvents")} hint={t("calendar.noEventsHint")} />
         )}
+        {sourcesSection}
       </div>
     );
   }
 
   return (
     <div className="flex flex-col gap-2">
-      {snapshot.status !== "connected" && <StatusLine status={snapshot.status} errorCode={snapshot.errorCode} />}
+      {snapshot.status !== "connected" && <StatusLine status={snapshot.status} errorCode={snapshot.errorCode} lastSyncUnixMs={snapshot.lastSyncUnixMs} />}
       {invitesSection}
       {allDayList}
       {inProgress.length > 0 && (
         <RowGroup label={t("calendar.now")}>
           {inProgress.map((event) => (
-            <EventRow key={event.id} event={event} lead={t("calendar.now")} leadIsLabel joinable />
+            <EventRow key={keyOf(event)} event={event} lead={t("calendar.now")} leadIsLabel joinable />
           ))}
         </RowGroup>
       )}
       <NextMeetingCard event={next} nowMs={nowMs} silenceUntil={silenceUntil} />
       {later.length > 0 && <LaterList events={later} nowMs={nowMs} />}
+      {sourcesSection}
     </div>
   );
 }
@@ -363,14 +402,14 @@ export function DayView({ nowMs, day, status, onRetry }: DayViewProps) {
       {allDay.length > 0 && (
         <RowGroup label={t("calendar.allDay")}>
           {allDay.map((event) => (
-            <EventRow key={event.id} event={event} lead={t("calendar.allDay")} leadIsLabel />
+            <EventRow key={keyOf(event)} event={event} lead={t("calendar.allDay")} leadIsLabel />
           ))}
         </RowGroup>
       )}
       {timed.length > 0 && (
         <RowGroup>
           {timed.map((event) => (
-            <EventRow key={event.id} event={event} lead={formatTime(new Date(event.startUtc))} joinable={Date.parse(event.endUtc) > nowMs} />
+            <EventRow key={keyOf(event)} event={event} lead={formatTime(new Date(event.startUtc))} joinable={Date.parse(event.endUtc) > nowMs} />
           ))}
         </RowGroup>
       )}

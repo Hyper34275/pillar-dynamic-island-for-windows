@@ -12,9 +12,44 @@ export type CalendarStatus =
 export type CalendarBusyStatus = "free" | "tentative" | "busy" | "oof" | "workingElsewhere";
 export type CalendarResponseStatus = "none" | "organized" | "tentative" | "accepted" | "declined" | "notResponded";
 
+/** What a calendar is to the user (decided by the backend from Outlook's group type and store, never from names). */
+export type CalendarSourceKind = "primary" | "personal" | "shared" | "other";
+/** The Outlook Calendar navigation group a calendar sits in. */
+export type CalendarSourceGroup = "my" | "shared" | "other" | "rooms" | "custom" | "unknown";
+export type CalendarSourceState = "ok" | "notSelected" | "unavailable" | "pending";
+
+/** One calendar of the user's Outlook Calendar module. Discovered = all of them; active = the ones that contribute events. */
+export type CalendarSourceDto = {
+  id: string; // the events' calendarId
+  name: string; // display name, presentation only
+  group: CalendarSourceGroup;
+  kind: CalendarSourceKind;
+  selected: boolean; // checked in Outlook (as last known)
+  active: boolean; // contributes events (selected, or the primary calendar)
+  state: CalendarSourceState;
+  errorCode: string | null; // e.g. "CAL-SHARED-101"
+  eventCount: number;
+  lastReadUnixMs: number | null;
+};
+
+/** "outlook": read from Outlook's pane now; "remembered": Outlook is not on its calendar, last readout; "primaryOnly": nothing known yet. */
+export type CalendarSelectionOrigin = "outlook" | "remembered" | "primaryOnly";
+
+export type CalendarSourcesReport = {
+  sources: CalendarSourceDto[]; // primary first, then Outlook's pane order
+  selection: CalendarSelectionOrigin;
+  groups: number;
+  listener: boolean; // Outlook's navigation change notifications are connected
+  discoveredUnixMs: number | null;
+};
+
 export type CalendarEventDto = {
   id: string; // sha256(EntryID + "|" + startUtc) truncated to 16 hex
   calendarId: string;
+  /** The source calendar's display name (always set by `normalizeEvent`). */
+  calendarName?: string;
+  /** Always set by `normalizeEvent`; older payloads mean the primary calendar. */
+  sourceKind?: CalendarSourceKind;
   subject: string;
   startUtc: string; // ISO-8601 UTC
   endUtc: string;
@@ -47,6 +82,8 @@ export type CalendarSnapshot = {
   nextRetryUnixMs: number | null;
   events: CalendarEventDto[]; // sorted by start asc, now..+48h, max 50
   invites: MeetingInviteDto[]; // newest first, max 10
+  /** The calendars of the latest discovery (kept while Outlook is away); null before the first. */
+  sources?: CalendarSourcesReport | null;
 };
 
 export const WAITING_SNAPSHOT: CalendarSnapshot = {
@@ -57,4 +94,5 @@ export const WAITING_SNAPSHOT: CalendarSnapshot = {
   nextRetryUnixMs: null,
   events: [],
   invites: [],
+  sources: null,
 };

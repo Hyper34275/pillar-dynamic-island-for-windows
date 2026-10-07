@@ -39,12 +39,18 @@ export function useReminders(onAlert: (alert: ReminderAlert) => void, store?: Re
     };
   }, [store]);
 
-  const { meetingReminderEnabled, reminderMinutes } = settings;
+  const { meetingReminderEnabled, reminderMinutes, sharedCalendarReminders } = settings;
   // Not before the user's own settings are in: a reminder they turned off (or set to 15 minutes)
   // must not fire once with the defaults first.
   useEffect(() => {
-    if (loaded) engine?.update(events, { enabled: meetingReminderEnabled, offsetsMinutes: [reminderMinutes] });
-  }, [engine, events, loaded, meetingReminderEnabled, reminderMinutes]);
+    if (loaded) {
+      engine?.update(events, {
+        enabled: meetingReminderEnabled,
+        offsetsMinutes: [reminderMinutes],
+        sources: sharedCalendarReminders ? { kind: "all" } : { kind: "own" },
+      });
+    }
+  }, [engine, events, loaded, meetingReminderEnabled, reminderMinutes, sharedCalendarReminders]);
 
   const snoozes = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {

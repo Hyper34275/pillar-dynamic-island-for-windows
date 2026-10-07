@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { normalizeEvent, normalizeInvite, normalizeSnapshot } from "./normalize";
+import { normalizeEvent, normalizeInvite, normalizeSnapshot, normalizeSources } from "./normalize";
 
 const good = {
   id: "abc123",
   calendarId: "cal1",
+  calendarName: "צוות תמיכה",
+  sourceKind: "shared",
   subject: "Planning",
   startUtc: "2026-10-06T10:00:00.000Z",
   endUtc: "2026-10-06T11:00:00.000Z",
@@ -26,6 +28,8 @@ describe("normalizeEvent", () => {
     expect(normalizeEvent({ id: "x", startUtc: good.startUtc, endUtc: good.endUtc })).toEqual({
       id: "x",
       calendarId: "default",
+      calendarName: "",
+      sourceKind: "primary",
       subject: "",
       startUtc: good.startUtc,
       endUtc: good.endUtc,
@@ -95,6 +99,7 @@ describe("normalizeSnapshot", () => {
       nextRetryUnixMs: null,
       invites: [],
       events: [],
+      sources: null,
     });
   });
 
@@ -150,5 +155,45 @@ describe("normalizeInvite", () => {
     const snapshot = normalizeSnapshot({ status: "connected", invites: [null, { id: "x" }, ...many] });
     expect(snapshot?.invites.map((i) => i.id)).toEqual(many.slice(0, 10).map((i) => i.id));
     expect(normalizeSnapshot({ status: "connected", invites: "lots" })?.invites).toEqual([]);
+  });
+});
+
+describe("normalizeSources", () => {
+  const source = {
+    id: "0123456789abcdef",
+    name: "  לוח משמרות — Support ",
+    group: "shared",
+    kind: "shared",
+    selected: true,
+    active: true,
+    state: "ok",
+    errorCode: null,
+    eventCount: 4,
+    lastReadUnixMs: 5,
+  };
+
+  it("keeps a complete report and trims names without touching their text", () => {
+    const report = normalizeSources({ sources: [source], selection: "remembered", groups: 3, listener: true, discoveredUnixMs: 9 });
+    expect(report).toEqual({
+      sources: [{ ...source, name: "לוח משמרות — Support" }],
+      selection: "remembered",
+      groups: 3,
+      listener: true,
+      discoveredUnixMs: 9,
+    });
+  });
+
+  it("drops sources without an id and reads unknown values the safe way", () => {
+    const report = normalizeSources({ sources: [null, { name: "no id" }, { id: "x", kind: "boss", state: "??", active: "yes" }], selection: "x" });
+    expect(report?.sources).toEqual([
+      { id: "x", name: "", group: "unknown", kind: "shared", selected: false, active: false, state: "unavailable", errorCode: null, eventCount: 0, lastReadUnixMs: null },
+    ]);
+    expect(report?.selection).toBe("primaryOnly");
+    expect(report?.listener).toBe(false);
+  });
+
+  it("reaches the snapshot, and is null when the backend has none yet", () => {
+    expect(normalizeSnapshot({ status: "connected", sources: { sources: [source], selection: "outlook" } })?.sources?.sources).toHaveLength(1);
+    expect(normalizeSnapshot({ status: "waiting" })?.sources).toBeNull();
   });
 });

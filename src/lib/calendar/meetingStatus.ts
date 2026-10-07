@@ -3,6 +3,7 @@
 
 import { formatTime, relativeMinutes } from "../dateFormat";
 import { t } from "../i18n";
+import { minutesUntil } from "../island/countdown";
 import { isRealMeeting } from "./select";
 import type { CalendarEventDto } from "./types";
 
@@ -30,7 +31,7 @@ export function meetingStatus(events: readonly CalendarEventDto[], nowMs: number
       if (!current || start > Date.parse(current.startUtc)) current = event;
     }
   }
-  if (soon) return { kind: "soon", event: soon, minutes: Math.max(1, Math.ceil((Date.parse(soon.startUtc) - nowMs) / 60_000)) };
+  if (soon) return { kind: "soon", event: soon, minutes: Math.max(1, minutesUntil(Date.parse(soon.startUtc), nowMs)) };
   if (current) {
     const start = Date.parse(current.startUtc);
     const end = Date.parse(current.endUtc);

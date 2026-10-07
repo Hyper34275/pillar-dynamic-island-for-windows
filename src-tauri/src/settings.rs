@@ -48,6 +48,9 @@ pub struct Settings {
     pub meeting_silence_prompt: bool,
     /// New Outlook meeting requests pop up in the island. Off means the Inbox is not read at all.
     pub meeting_invites_enabled: bool,
+    /// Meeting reminders also for events of checked calendars other than the user's own
+    /// (shared, other). Off keeps showing their events, without reminders.
+    pub shared_calendar_reminders: bool,
     /// Opt-in debug-level logging (`COMPANYISLAND_LOG=debug` does the same).
     pub debug_logging: bool,
     /// The Welcome page of the Island Center was shown once (first run, or the first start after
@@ -69,6 +72,7 @@ impl Default for Settings {
             monitor: PRIMARY_MONITOR.to_string(),
             notifications_enabled: true,
             meeting_invites_enabled: true,
+            shared_calendar_reminders: true,
             meeting_silence_prompt: true,
             debug_logging: false,
             onboarding_done: false,
@@ -91,6 +95,7 @@ pub struct SettingsPatch {
     monitor: Option<String>,
     notifications_enabled: Option<bool>,
     meeting_invites_enabled: Option<bool>,
+    shared_calendar_reminders: Option<bool>,
     meeting_silence_prompt: Option<bool>,
     debug_logging: Option<bool>,
     onboarding_done: Option<bool>,
@@ -210,6 +215,9 @@ impl Settings {
         }
         if let Some(v) = patch.meeting_invites_enabled {
             next.meeting_invites_enabled = v;
+        }
+        if let Some(v) = patch.shared_calendar_reminders {
+            next.shared_calendar_reminders = v;
         }
         if let Some(v) = patch.debug_logging {
             next.debug_logging = v;
@@ -492,6 +500,16 @@ mod tests {
         assert_eq!(serde_json::to_value(&off).unwrap()["meetingInvitesEnabled"], false);
         let old: Settings = serde_json::from_str(r#"{"schemaVersion": 1, "notificationsEnabled": false}"#).unwrap();
         assert!(old.meeting_invites_enabled);
+    }
+
+    #[test]
+    fn shared_calendar_reminders_toggle_and_old_files_default_to_on() {
+        let off = Settings::default().patched(patch(r#"{"sharedCalendarReminders": false}"#));
+        assert!(!off.shared_calendar_reminders);
+        assert!(off.meeting_reminder_enabled);
+        assert_eq!(serde_json::to_value(&off).unwrap()["sharedCalendarReminders"], false);
+        let old: Settings = serde_json::from_str(r#"{"schemaVersion": 1}"#).unwrap();
+        assert!(old.shared_calendar_reminders);
     }
 
     #[test]

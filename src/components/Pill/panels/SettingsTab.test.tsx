@@ -188,6 +188,7 @@ describe("SettingsTab Island Center section", () => {
       "Hide in fullscreen apps",
       "Meeting reminders",
       "Meeting invitations",
+      "Reminders from shared calendars",
       "Offer silence when a meeting starts",
       "Show notifications",
     ]);

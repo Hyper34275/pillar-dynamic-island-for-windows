@@ -1,3 +1,5 @@
+import type { CalendarEventDto, CalendarSourceKind } from "../calendar/types";
+
 /** Fire a reminder `minutes` before the event starts (0 = at the start). Other kinds can join later. */
 export type ReminderType = { kind: "beforeStart"; minutes: number };
 
@@ -14,6 +16,10 @@ export function reminderKey(eventId: string, startUtc: string, type: ReminderTyp
 export interface ReminderAlert {
   key: string;
   eventId: string;
+  /** The calendar the event came from (presentation and policy; not part of the key). */
+  calendarId?: string;
+  calendarName?: string;
+  sourceKind?: CalendarSourceKind;
   subject: string;
   startUtc: string;
   endUtc: string;
@@ -35,4 +41,26 @@ export interface ReminderSettings {
   enabled: boolean;
   /** Minutes before the start, one reminder per entry (V1 passes [reminderMinutes]). */
   offsetsMinutes: readonly number[];
+  /** Which calendars remind; absent = every active calendar. */
+  sources?: ReminderSourcePolicy;
+}
+
+/**
+ * Which calendars' events remind. Kept apart from discovery: the backend decides which calendars
+ * are active (what is shown), this decides which of those remind.
+ * - "all": every active calendar (the user's own and the checked shared ones)
+ * - "own": the user's own calendars only (primary + personal); shared events are shown, not reminded
+ * - "calendars": exactly these calendar ids (for a later per-calendar setting)
+ */
+export type ReminderSourcePolicy = { kind: "all" } | { kind: "own" } | { kind: "calendars"; calendarIds: readonly string[] };
+
+export function remindsFor(policy: ReminderSourcePolicy | undefined, event: Pick<CalendarEventDto, "calendarId" | "sourceKind">): boolean {
+  if (!policy || policy.kind === "all") return true;
+  if (policy.kind === "own") return isOwnCalendar(event.sourceKind);
+  return policy.calendarIds.includes(event.calendarId);
+}
+
+/** The user's own calendars come first when several reminders are due together. */
+export function isOwnCalendar(kind: CalendarSourceKind | undefined): boolean {
+  return kind === undefined || kind === "primary" || kind === "personal";
 }

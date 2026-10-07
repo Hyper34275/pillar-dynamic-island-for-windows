@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { CalendarEventDto } from "../calendar/types";
-import { createReminderEngine, FIRED_RETENTION_MS, MAX_SLEEP_MS } from "./engine";
-import { reminderKey, reminderTypeId, type ReminderAlert, type ReminderSettings, type ReminderStore } from "./types";
+import { createReminderEngine, FIRED_RETENTION_MS, MAX_REMINDERS_PER_BURST, MAX_SLEEP_MS } from "./engine";
+import { reminderKey, reminderTypeId, remindsFor, type ReminderAlert, type ReminderSettings, type ReminderStore } from "./types";
 
 // The test tsconfig has no node types; process.env.TZ is how the time zone is switched at run time.
 const env = (globalThis as unknown as { process: { env: Record<string, string | undefined> } }).process.env;
@@ -112,6 +112,7 @@ describe("ReminderEngine", () => {
       {
         key: reminderKey("a", iso(T0 + 60 * MIN), { kind: "beforeStart", minutes: 30 }),
         eventId: "a",
+        calendarId: "cal",
         subject: "Subject a",
         startUtc: iso(T0 + 60 * MIN),
         endUtc: iso(T0 + 105 * MIN),
@@ -485,3 +486,44 @@ describe("reminder keys", () => {
   });
 });
 
+
+describe("ReminderEngine and calendar sources", () => {
+  const shared = (id: string, startMin: number) => event(id, startMin, 30, { calendarId: "team", calendarName: "Team", sourceKind: "shared" });
+
+  it("reminds for checked shared calendars and carries their name to the alert", async () => {
+    const h = harness();
+    await settle();
+    h.engine.update([shared("s", 40)], { ...on(30), sources: { kind: "all" } });
+    h.advance(10 * MIN);
+    expect(h.fired.map((a) => [a.eventId, a.calendarName, a.sourceKind])).toEqual([["s", "Team", "shared"]]);
+  });
+
+  it("with shared reminders off, shared events stay quiet and own ones still remind", async () => {
+    const h = harness();
+    await settle();
+    h.engine.update([shared("s", 40), event("mine", 40)], { ...on(30), sources: { kind: "own" } });
+    h.advance(10 * MIN);
+    expect(h.fired.map((a) => a.eventId)).toEqual(["mine"]);
+  });
+
+  it("can follow a list of calendars", () => {
+    expect(remindsFor({ kind: "calendars", calendarIds: ["team"] }, { calendarId: "team", sourceKind: "shared" })).toBe(true);
+    expect(remindsFor({ kind: "calendars", calendarIds: ["team"] }, { calendarId: "cal", sourceKind: "primary" })).toBe(false);
+    expect(remindsFor(undefined, { calendarId: "x", sourceKind: "other" })).toBe(true);
+    expect(remindsFor({ kind: "own" }, { calendarId: "x", sourceKind: "personal" })).toBe(true);
+    expect(remindsFor({ kind: "own" }, { calendarId: "x" })).toBe(true);
+  });
+
+  it("shows at most a few reminders for one moment, own calendars first, and never re-fires the rest", async () => {
+    const h = harness();
+    await settle();
+    const burst = [shared("s1", 40), shared("s2", 40), shared("s3", 40), shared("s4", 40), event("mine", 40)];
+    h.engine.update(burst, on(30));
+    h.advance(10 * MIN);
+    expect(h.fired).toHaveLength(MAX_REMINDERS_PER_BURST);
+    expect(h.fired[0].eventId).toBe("mine");
+    h.engine.update(burst, on(30));
+    h.advance(5 * MIN);
+    expect(h.fired).toHaveLength(MAX_REMINDERS_PER_BURST);
+  });
+});

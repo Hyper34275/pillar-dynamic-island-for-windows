@@ -185,6 +185,11 @@ export function SettingsView({
             onChange={() => change({ meetingInvitesEnabled: !settings.meetingInvitesEnabled })}
           />
           <SwitchRow
+            label={t("settings.sharedCalendarReminders")}
+            checked={settings.sharedCalendarReminders}
+            onChange={() => change({ sharedCalendarReminders: !settings.sharedCalendarReminders })}
+          />
+          <SwitchRow
             label={t("settings.meetingSilence")}
             checked={settings.meetingSilencePrompt}
             onChange={() => change({ meetingSilencePrompt: !settings.meetingSilencePrompt })}

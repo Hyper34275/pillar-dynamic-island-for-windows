@@ -160,3 +160,51 @@ describe("formatOs", () => {
     expect(formatOs(null)).toBeNull();
   });
 });
+
+describe("calendar sources in diagnostics", () => {
+  const generatedAt = new Date(Date.UTC(2026, 9, 6, 10, 42, 0));
+  const withSources: CalendarSnapshot = {
+    ...WAITING_SNAPSHOT,
+    status: "connected",
+    lastSyncUnixMs: Date.UTC(2026, 9, 6, 10, 42, 12),
+    sources: {
+      groups: 3,
+      selection: "outlook",
+      listener: true,
+      discoveredUnixMs: Date.UTC(2026, 9, 6, 10, 40, 3),
+      sources: [
+        { id: "a", name: "My Calendar", group: "my", kind: "primary", selected: true, active: true, state: "ok", errorCode: null, eventCount: 3, lastReadUnixMs: 1 },
+        { id: "b", name: "Support — Dana Levi", group: "shared", kind: "shared", selected: true, active: true, state: "ok", errorCode: null, eventCount: 2, lastReadUnixMs: 1 },
+        { id: "c", name: "Management (CEO)", group: "shared", kind: "shared", selected: false, active: false, state: "notSelected", errorCode: null, eventCount: 0, lastReadUnixMs: null },
+        { id: "d", name: "Old Dept", group: "other", kind: "other", selected: true, active: true, state: "unavailable", errorCode: "CAL-SHARED-101", eventCount: 0, lastReadUnixMs: null },
+      ],
+    },
+  };
+
+  it("lists counts and numbered calendars by type, never their names", () => {
+    const text = buildDiagnosticsText({ info: null, diagnostics: null, snapshot: withSources, notifications: "allowed", generatedAt });
+    for (const line of [
+      "Calendar provider: Classic Outlook",
+      "Primary calendar: Connected",
+      "Calendar groups detected: 3",
+      "Calendars detected: 4",
+      "Calendars selected: 3",
+      "Shared calendars detected: 2",
+      "Shared calendars selected: 1",
+      "Calendar selection from: outlook",
+      "Last calendar discovery: 2026-10-06T10:40:03.000Z",
+      "Navigation event listener: Active",
+      "Calendar source #2: type=shared group=shared selected=true active=true state=ok events=2",
+      "Calendar source #3: type=shared group=shared selected=false active=false state=notSelected events=0",
+      "Calendar source #4: type=other group=other selected=true active=true state=unavailable code=CAL-SHARED-101 events=0",
+    ]) {
+      expect(text.split("\r\n")).toContain(line);
+    }
+    for (const name of ["My Calendar", "Dana Levi", "Management", "Old Dept"]) expect(text).not.toContain(name);
+  });
+
+  it("says when nothing has been discovered yet", () => {
+    const text = buildDiagnosticsText({ info: null, diagnostics: null, snapshot: WAITING_SNAPSHOT, notifications: "allowed", generatedAt });
+    expect(text).toContain("Calendar discovery: not yet");
+  });
+});
