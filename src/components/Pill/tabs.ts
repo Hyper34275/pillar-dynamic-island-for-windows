@@ -1,7 +1,7 @@
 import type { MessageKey } from "../../lib/i18n";
-import { BellIcon, CalendarIcon, GearIcon, InfoIcon } from "./ui/icons";
+import { BellIcon, CalendarIcon, GearIcon, InfoIcon, NoteIcon } from "./ui/icons";
 
-export type TabId = "calendar" | "notifications" | "about" | "settings";
+export type TabId = "calendar" | "notifications" | "notes" | "about" | "settings";
 
 export interface TabConfig {
   id: TabId;
@@ -13,6 +13,7 @@ export interface TabConfig {
 export const TABS: readonly TabConfig[] = [
   { id: "calendar", labelKey: "tab.calendar", Icon: CalendarIcon },
   { id: "notifications", labelKey: "tab.notifications", Icon: BellIcon },
+  { id: "notes", labelKey: "tab.notes", Icon: NoteIcon },
   { id: "about", labelKey: "tab.about", Icon: InfoIcon },
   { id: "settings", labelKey: "tab.settings", Icon: GearIcon },
 ];

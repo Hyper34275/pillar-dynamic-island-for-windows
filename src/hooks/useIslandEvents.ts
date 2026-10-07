@@ -3,8 +3,11 @@ import { ipc, onEvent } from "../lib/ipc";
 import { isTabId, type TabId } from "../components/Pill/tabs";
 
 interface IslandEventHandlers {
-  /** Tray click or second launch: toggle the island, optionally on a tab. */
-  onToggle?: (tab?: TabId) => void;
+  /**
+   * Tray click or second launch: toggle the island, optionally on a tab. `show` is set when the
+   * Island Center asked for the island to be open on that tab (an open island must stay open).
+   */
+  onToggle?: (tab?: TabId, show?: boolean) => void;
   onFullscreenChanged?: (fullscreen: boolean) => void;
   /** Monitor layout or DPI changed: the native window must be re-sized and re-centred. */
   onDisplayChanged?: () => void;
@@ -37,9 +40,9 @@ export function useIslandEvents(handlers: IslandEventHandlers): void {
     const offs: Array<() => void> = [];
     if (wantsToggle) {
       offs.push(
-        onEvent<{ tab?: unknown } | null>("island-toggle", (payload) => {
+        onEvent<{ tab?: unknown; show?: unknown } | null>("island-toggle", (payload) => {
           const tab = payload?.tab;
-          ref.current.onToggle?.(isTabId(tab) ? tab : undefined);
+          ref.current.onToggle?.(isTabId(tab) ? tab : undefined, payload?.show === true);
         })
       );
     }

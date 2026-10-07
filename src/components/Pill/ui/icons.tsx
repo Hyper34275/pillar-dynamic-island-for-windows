@@ -115,3 +115,36 @@ export const CheckIcon = (p: IconProps) => (
     <path d="m5 12.5 4.5 4.5L19 7.5" />
   </Svg>
 );
+
+/** A sticky note with a folded corner and two lines of text. */
+export const NoteIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M5 3.5h14a2 2 0 0 1 2 2V14l-6.5 6.5H5a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" />
+    <path d="M21 14h-4.5a2 2 0 0 0-2 2v4.5" />
+    <path d="M7 8.5h10M7 12.5h5" />
+  </Svg>
+);
+
+/** A push-pin; pass `fill="currentColor"` for the pinned state. */
+export const PinIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 3.5h6l-1 5.5 3 3.2V14H7v-1.8L10 9 9 3.5Z" />
+    <path d="M12 14v6.5" />
+  </Svg>
+);
+
+export const CopyIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="9" y="9" width="12" height="12" rx="2.5" />
+    <path d="M5.5 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v.5" />
+  </Svg>
+);
+
+export const TrashIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 6.5h17" />
+    <path d="M9 6.5V4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+    <path d="m18.5 6.5-.8 12.4a2 2 0 0 1-2 1.6H8.3a2 2 0 0 1-2-1.6L5.5 6.5" />
+    <path d="M10 11v5.5M14 11v5.5" />
+  </Svg>
+);

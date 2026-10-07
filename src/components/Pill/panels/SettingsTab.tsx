@@ -13,9 +13,20 @@ import {
   outlookRunningOf,
   type NotificationDiagnostic,
 } from "../../../lib/diagnostics";
-import { ipc, onEvent, REMINDER_MINUTE_OPTIONS, type MonitorInfo, type NotificationStatus } from "../../../lib/ipc";
+import {
+  ipc,
+  onEvent,
+  REMINDER_MINUTE_OPTIONS,
+  type Diagnostics,
+  type IslandDisplay,
+  type MonitorInfo,
+  type NotificationStatus,
+  type Settings,
+  type SettingsPatch,
+  type SystemInfo,
+} from "../../../lib/ipc";
 import { t, type MessageKey } from "../../../lib/i18n";
-import type { CalendarStatus } from "../../../lib/calendar/types";
+import type { CalendarSnapshot, CalendarStatus } from "../../../lib/calendar/types";
 import { Group, PillButton, SectionLabel, Segmented, Switch, SYSTEM_COLORS } from "../ui/primitives";
 
 const NONE = "—";
@@ -36,6 +47,13 @@ const DELIVERY_LABEL = {
   polling: "about.deliveryPolling",
   none: "about.deliveryNone",
 } as const satisfies Record<string, MessageKey>;
+
+/** What the collapsed island shows (physical order: date, clock, weekday). */
+const DISPLAY_OPTIONS: ReadonlyArray<{ id: IslandDisplay; labelKey: MessageKey }> = [
+  { id: "full", labelKey: "settings.display.full" },
+  { id: "clock", labelKey: "settings.display.clock" },
+  { id: "date", labelKey: "settings.display.date" },
+];
 
 const MODE_LABEL = { classic: "about.modeClassic", new: "about.modeNew", none: "about.modeNone" } as const satisfies Record<string, MessageKey>;
 
@@ -67,63 +85,47 @@ function monitorLabel(monitor: MonitorInfo, index: number): string {
   return monitor.name || (monitor.isPrimary ? t("settings.monitorPrimary") : t("settings.monitorN", { n: index + 1 }));
 }
 
-interface SettingsTabProps {
-  notificationStatus: NotificationStatus | null;
-  onRequestNotificationAccess: () => void;
+/** What the diagnostics report for notifications: "off" when the user turned them off, else Windows' own status. */
+function notificationDiagnosticOf(settings: Settings, notificationStatus: NotificationStatus | null): NotificationDiagnostic | null {
+  return settings.notificationsEnabled ? notificationStatus : "off";
 }
 
-/** The app's settings, then the diagnostics IT asks for. (Both used to sit under About.) */
-export function SettingsTab({ notificationStatus, onRequestNotificationAccess }: SettingsTabProps) {
-  const { info, diagnostics } = useSystemInfo();
-  const snapshot = useCalendar();
-  const { settings, update } = useSettings();
+export type SettingsFlash = "copied" | "failed" | "saveFailed";
 
-  const notificationDiagnostic: NotificationDiagnostic | null = settings.notificationsEnabled ? notificationStatus : "off";
+export interface SettingsViewProps {
+  settings: Settings;
+  monitors: readonly MonitorInfo[];
+  info: SystemInfo | null;
+  diagnostics: Diagnostics | null;
+  snapshot: CalendarSnapshot;
+  notificationStatus: NotificationStatus | null;
+  /** Transient feedback on the diagnostics button / the settings header; null when there is none. */
+  flash: SettingsFlash | null;
+  onChange: (patch: SettingsPatch) => void;
+  onRequestNotificationAccess: () => void;
+  onCopyDiagnostics: () => void;
+  onOpenLogs: () => void;
+  onOpenCenter: () => void;
+  onOpenTour: () => void;
+}
 
-  // Transient button feedback; one timer, always cleared.
-  const [flash, setFlash] = useState<"copied" | "failed" | "saveFailed" | null>(null);
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showFlash = useCallback((kind: "copied" | "failed" | "saveFailed") => {
-    if (flashTimer.current !== null) clearTimeout(flashTimer.current);
-    setFlash(kind);
-    flashTimer.current = setTimeout(() => {
-      flashTimer.current = null;
-      setFlash(null);
-    }, FLASH_MS);
-  }, []);
-  useEffect(
-    () => () => {
-      if (flashTimer.current !== null) clearTimeout(flashTimer.current);
-    },
-    []
-  );
-
-  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
-  useEffect(() => {
-    let disposed = false;
-    const load = () =>
-      void ipc.getMonitors().then((list) => {
-        if (!disposed && list) setMonitors(list);
-      });
-    load();
-    // A display plugged in or removed while Settings is open.
-    const off = onEvent("display-changed", load);
-    return () => {
-      disposed = true;
-      off();
-    };
-  }, []);
-
-  const copyDiagnostics = () => {
-    const text = buildDiagnosticsText({ info, diagnostics, snapshot, notifications: notificationDiagnostic, generatedAt: new Date() });
-    void ipc.copyTextToClipboard(text).then((ok) => showFlash(ok ? "copied" : "failed"));
-  };
-
-  const change = (patch: Parameters<typeof update>[0]) => {
-    void update(patch).then((ok) => {
-      if (!ok) showFlash("saveFailed");
-    });
-  };
+/** Pure rendering of the settings and diagnostics (the tour renders it with mock data, no IPC). */
+export function SettingsView({
+  settings,
+  monitors,
+  info,
+  diagnostics,
+  snapshot,
+  notificationStatus,
+  flash,
+  onChange: change,
+  onRequestNotificationAccess,
+  onCopyDiagnostics,
+  onOpenLogs,
+  onOpenCenter,
+  onOpenTour,
+}: SettingsViewProps) {
+  const notificationDiagnostic = notificationDiagnosticOf(settings, notificationStatus);
 
   const mode = outlookModeOf(snapshot, diagnostics);
   const running = outlookRunningOf(snapshot, diagnostics);
@@ -133,6 +135,8 @@ export function SettingsTab({ notificationStatus, onRequestNotificationAccess }:
   const reminderOptions = [...new Set<number>([...REMINDER_MINUTE_OPTIONS, settings.reminderMinutes])]
     .sort((a, b) => a - b)
     .map((n) => ({ id: String(n), label: t("settings.minutes", { n }) }));
+
+  const displayOptions = DISPLAY_OPTIONS.map(({ id, labelKey }) => ({ id, label: t(labelKey) }));
 
   const copyLabel = flash === "copied" ? t("about.copied") : flash === "failed" ? t("about.copyFailed") : t("about.copy");
 
@@ -206,6 +210,18 @@ export function SettingsTab({ notificationStatus, onRequestNotificationAccess }:
               </PillButton>
             </div>
           )}
+          <div dir="ltr" className="flex flex-col gap-1.5 px-3.5 py-2">
+            <span className="text-[13px] font-medium text-white/90" dir="auto">
+              {t("settings.islandDisplay")}
+            </span>
+            <Segmented
+              className="w-full"
+              options={displayOptions}
+              value={settings.islandDisplay}
+              onChange={(id) => change({ islandDisplay: id })}
+              ariaLabel={t("settings.islandDisplay")}
+            />
+          </div>
           {monitors.length > 1 && (
             <div dir="ltr" className="flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5">
               <span className="text-[13px] font-medium text-white/90 flex-shrink-0" dir="auto">
@@ -220,6 +236,18 @@ export function SettingsTab({ notificationStatus, onRequestNotificationAccess }:
             </div>
           )}
         </Group>
+      </section>
+
+      <section data-section="center">
+        <SectionLabel>{t("settings.center")}</SectionLabel>
+        <div dir="ltr" className="flex gap-2">
+          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onOpenCenter}>
+            {t("settings.openCenter")}
+          </PillButton>
+          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onOpenTour}>
+            {t("settings.tour")}
+          </PillButton>
+        </div>
       </section>
 
       <section data-section="diagnostics">
@@ -244,10 +272,10 @@ export function SettingsTab({ notificationStatus, onRequestNotificationAccess }:
           <Row label={t("about.recentErrors")}>{recentCodes.length > 0 ? recentCodes.join(", ") : NONE}</Row>
         </Group>
         <div dir="ltr" className="flex gap-2 mt-2.5">
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={copyDiagnostics}>
+          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onCopyDiagnostics}>
             <span aria-live="polite">{copyLabel}</span>
           </PillButton>
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={() => void ipc.openLogDir()}>
+          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onOpenLogs}>
             {t("about.openLogs")}
           </PillButton>
         </div>
@@ -257,5 +285,86 @@ export function SettingsTab({ notificationStatus, onRequestNotificationAccess }:
         {t("about.credit")}
       </p>
     </div>
+  );
+}
+
+interface SettingsTabProps {
+  notificationStatus: NotificationStatus | null;
+  onRequestNotificationAccess: () => void;
+}
+
+/** The app's settings, then the diagnostics IT asks for. (Both used to sit under About.) */
+export function SettingsTab({ notificationStatus, onRequestNotificationAccess }: SettingsTabProps) {
+  const { info, diagnostics } = useSystemInfo();
+  const snapshot = useCalendar();
+  const { settings, update } = useSettings();
+
+  // Transient button feedback; one timer, always cleared.
+  const [flash, setFlash] = useState<"copied" | "failed" | "saveFailed" | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showFlash = useCallback((kind: "copied" | "failed" | "saveFailed") => {
+    if (flashTimer.current !== null) clearTimeout(flashTimer.current);
+    setFlash(kind);
+    flashTimer.current = setTimeout(() => {
+      flashTimer.current = null;
+      setFlash(null);
+    }, FLASH_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      if (flashTimer.current !== null) clearTimeout(flashTimer.current);
+    },
+    []
+  );
+
+  const [monitors, setMonitors] = useState<MonitorInfo[]>([]);
+  useEffect(() => {
+    let disposed = false;
+    const load = () =>
+      void ipc.getMonitors().then((list) => {
+        if (!disposed && list) setMonitors(list);
+      });
+    load();
+    // A display plugged in or removed while Settings is open.
+    const off = onEvent("display-changed", load);
+    return () => {
+      disposed = true;
+      off();
+    };
+  }, []);
+
+  const copyDiagnostics = () => {
+    const text = buildDiagnosticsText({
+      info,
+      diagnostics,
+      snapshot,
+      notifications: notificationDiagnosticOf(settings, notificationStatus),
+      generatedAt: new Date(),
+    });
+    void ipc.copyTextToClipboard(text).then((ok) => showFlash(ok ? "copied" : "failed"));
+  };
+
+  const change = (patch: SettingsPatch) => {
+    void update(patch).then((ok) => {
+      if (!ok) showFlash("saveFailed");
+    });
+  };
+
+  return (
+    <SettingsView
+      settings={settings}
+      monitors={monitors}
+      info={info}
+      diagnostics={diagnostics}
+      snapshot={snapshot}
+      notificationStatus={notificationStatus}
+      flash={flash}
+      onChange={change}
+      onRequestNotificationAccess={onRequestNotificationAccess}
+      onCopyDiagnostics={copyDiagnostics}
+      onOpenLogs={() => void ipc.openLogDir()}
+      onOpenCenter={() => void ipc.openCenter("settings")}
+      onOpenTour={() => void ipc.openCenter("tour")}
+    />
   );
 }

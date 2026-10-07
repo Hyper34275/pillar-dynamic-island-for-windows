@@ -52,6 +52,9 @@ describe("t", () => {
       "settings.reminderMinutes", "settings.notifications", "settings.meetingInvites",
       "invite.label", "about.time",
       "notif.allow", "notif.dismiss",
+      "tab.notes", "notes.new", "notes.empty", "notes.emptyHint", "notes.saveFailed", "notes.pinned", "notes.pin", "notes.unpin",
+      "notes.copy", "notes.copied", "notes.delete", "notes.list",
+      "settings.center", "settings.openCenter", "settings.tour",
     ];
     for (const key of required) {
       for (const locale of ["en", "he"] as const) {
@@ -60,6 +63,17 @@ describe("t", () => {
         expect(value).not.toMatch(/\{\w+\}/);
       }
     }
+  });
+});
+
+describe("notes and Island Center strings", () => {
+  it("are in Hebrew where the contract fixes the wording", () => {
+    expect(t("tab.notes", undefined, "he")).toBe("פתקים");
+    expect(t("notes.new", undefined, "he")).toBe("פתק חדש");
+    expect(t("notes.copied", undefined, "he")).toBe("הועתק");
+    expect(t("settings.openCenter", undefined, "he")).toBe("פתח את מרכז האי");
+    expect(t("settings.tour", undefined, "he")).toBe("סיור במערכת");
+    expect(t("tab.notes", undefined, "en")).toBe("Notes");
   });
 });
 
@@ -88,5 +102,39 @@ describe("plurals", () => {
   it("has a separate 'starting now' message", () => {
     expect(t("reminder.startingNow", undefined, "en")).toBe("Meeting starting now");
     expect(t("reminder.startingNow", undefined, "he")).toBe("הפגישה מתחילה עכשיו");
+  });
+});
+
+describe("the collapsed island's display setting", () => {
+  it("is labelled in both languages, in the order full, clock, date", () => {
+    const keys = ["settings.display.full", "settings.display.clock", "settings.display.date"] as const;
+    expect(keys.map((key) => t(key, undefined, "he"))).toEqual(["שעה, תאריך ויום", "שעה בלבד", "תאריך ויום"]);
+    expect(keys.map((key) => t(key, undefined, "en"))).toEqual(["Time, date and day", "Time only", "Date and day"]);
+    expect(t("settings.islandDisplay", undefined, "he")).toBe("האי המכווץ");
+  });
+});
+
+describe("tour strings", () => {
+  const keys: MessageKey[] = [
+    "tour.pageTitle", "tour.step", "tour.prev", "tour.next", "tour.finish", "tour.dots", "tour.dot", "tour.autoplay", "tour.openNotes", "tour.openSettings",
+    ...Array.from({ length: 12 }, (_, i) => [`tour.s${i + 1}.title`, `tour.s${i + 1}.text`] as MessageKey[]).flat(),
+  ];
+
+  it("exist in both languages with no placeholder left open", () => {
+    for (const key of keys) {
+      for (const locale of ["en", "he"] as const) {
+        const value = t(key, { n: 3, total: 12, title: "x" }, locale);
+        expect(value, `${locale}:${key}`).toBeTruthy();
+        expect(value).not.toMatch(/\{\w+\}/);
+      }
+    }
+  });
+
+  it("are Hebrew in the Hebrew table, with the contract's wording for the title", () => {
+    expect(t("tour.pageTitle", undefined, "he")).toBe("סיור במערכת");
+    expect(t("tour.prev", undefined, "he")).toBe("הקודם");
+    expect(t("tour.next", undefined, "he")).toBe("הבא");
+    expect(t("tour.finish", undefined, "he")).toBe("סיום");
+    for (let n = 1; n <= 12; n++) expect(t(`tour.s${n}.text` as MessageKey, undefined, "he")).toMatch(/[֐-׿]/);
   });
 });

@@ -175,14 +175,66 @@ export function timeParts(date: Date, locale?: string): { digits: string; period
   return { digits, period };
 }
 
+type RelativeUnit = "minute" | "hour" | "day" | "week" | "month" | "year";
+
+/**
+ * Hebrew amounts by unit: 1 and 2 have their own words (the dual), the rest "N" plus the short
+ * plural. ICU's own Hebrew output appends the count, "לפני שעתיים (2)", so it is not used.
+ */
+const HEBREW_UNITS: Record<RelativeUnit, { one: string; two: string | null; many: string }> = {
+  minute: { one: "דקה", two: null, many: "דק׳" },
+  hour: { one: "שעה", two: "שעתיים", many: "שע׳" },
+  day: { one: "יום", two: null, many: "ימים" },
+  week: { one: "שבוע", two: "שבועיים", many: "שב׳" },
+  month: { one: "חודש", two: "חודשיים", many: "חודשים" },
+  year: { one: "שנה", two: "שנתיים", many: "שנים" },
+};
+
+/** A signed, non-zero count of a unit in Hebrew: "לפני דקה", "בעוד שעתיים", "אתמול", "לפני 3 שע׳". */
+function hebrewRelative(count: number, unit: RelativeUnit): string {
+  const abs = Math.abs(count);
+  const future = count > 0;
+  if (unit === "day" && abs <= 2) return abs === 1 ? (future ? "מחר" : "אתמול") : future ? "מחרתיים" : "שלשום";
+  const u = HEBREW_UNITS[unit];
+  const amount = abs === 1 ? u.one : abs === 2 && u.two ? u.two : `${abs} ${u.many}`;
+  return `${future ? "בעוד" : "לפני"} ${amount}`;
+}
+
+/** A signed count of a unit in the words locale; Hebrew from the table, the rest from Intl. */
+function relativeText(f: Formatters, count: number, unit: RelativeUnit): string {
+  return f.hebrew && count !== 0 ? hebrewRelative(count, unit) : f.relative.format(count, unit);
+}
+
 /** "in 25 min." / "בעוד 25 דק׳" — whole minutes from now, rolled up to hours/days. */
 export function relativeMinutes(minutes: number, locale?: string): string {
-  const rtf = formatters(locale).relative;
+  const f = formatters(locale);
   const rounded = Math.round(minutes);
   const abs = Math.abs(rounded);
-  if (abs >= 24 * 60) return rtf.format(Math.round(rounded / (24 * 60)), "day");
-  if (abs >= 60) return rtf.format(Math.round(rounded / 60), "hour");
-  return rtf.format(rounded, "minute");
+  if (abs >= 24 * 60) return relativeText(f, Math.round(rounded / (24 * 60)), "day");
+  if (abs >= 60) return relativeText(f, Math.round(rounded / 60), "hour");
+  return relativeText(f, rounded, "minute");
+}
+
+/**
+ * How long ago `thenMs` was, as one coarse unit: "now", "5 min. ago", "3 hr. ago", "yesterday",
+ * "2 days ago", "3 wk. ago", "last month", "last year" / "עכשיו", "לפני 5 דק׳", "לפני שעתיים",
+ * "אתמול". Minutes and hours count elapsed time; from a day on they count calendar days (a note
+ * from 47 hours ago is "the day before yesterday" when that was two midnights ago, not "yesterday").
+ * Hebrew comes from a table (see HEBREW_UNITS), other languages from Intl in the words locale. A
+ * time in the future counts as now.
+ */
+export function relativePast(thenMs: number, nowMs: number, locale?: string): string {
+  const f = formatters(locale);
+  const minutes = Math.floor(Math.max(0, nowMs - thenMs) / 60_000);
+  if (minutes < 1) return f.relative.format(0, "second");
+  if (minutes < 60) return relativeText(f, -minutes, "minute");
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return relativeText(f, -hours, "hour");
+  const days = Math.max(1, Math.round((startOfDay(nowMs) - startOfDay(thenMs)) / 86_400_000));
+  if (days < 7) return relativeText(f, -days, "day");
+  if (days < 30) return relativeText(f, -Math.floor(days / 7), "week");
+  if (days < 365) return relativeText(f, -Math.floor(days / 30), "month");
+  return relativeText(f, -Math.floor(days / 365), "year");
 }
 
 /** Milliseconds until the local wall clock next shows a new minute (always > 0). */

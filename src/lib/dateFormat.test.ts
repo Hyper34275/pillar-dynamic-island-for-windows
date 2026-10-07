@@ -7,6 +7,7 @@ import {
   msUntilNextDay,
   msUntilNextMinute,
   relativeMinutes,
+  relativePast,
   shortDate,
   startOfDay,
   stripYear,
@@ -113,6 +114,91 @@ describe("relativeMinutes", () => {
     expect(relativeMinutes(150, "en-GB")).toBe("in 3 hr");
     expect(relativeMinutes(60 * 24 * 3, "en-GB")).toBe("in 3 days");
     expect(relativeMinutes(25, "he-IL")).toBe("בעוד 25 דק׳");
+  });
+
+  it("says one and two of every unit in correct Hebrew, future and past", () => {
+    expect(relativeMinutes(1, "he-IL")).toBe("בעוד דקה");
+    expect(relativeMinutes(-1, "he-IL")).toBe("לפני דקה");
+    expect(relativeMinutes(60, "he-IL")).toBe("בעוד שעה");
+    expect(relativeMinutes(120, "he-IL")).toBe("בעוד שעתיים");
+    expect(relativeMinutes(-120, "he-IL")).toBe("לפני שעתיים");
+    expect(relativeMinutes(180, "he-IL")).toBe("בעוד 3 שע׳");
+    expect(relativeMinutes(24 * 60, "he-IL")).toBe("מחר");
+    expect(relativeMinutes(48 * 60, "he-IL")).toBe("מחרתיים");
+    expect(relativeMinutes(-24 * 60, "he-IL")).toBe("אתמול");
+    expect(relativeMinutes(72 * 60, "he-IL")).toBe("בעוד 3 ימים");
+    for (const m of [1, 60, 120, -60, -120]) expect(relativeMinutes(m, "he-IL")).not.toMatch(/\(\d+\)/);
+  });
+});
+
+describe("relativePast", () => {
+  const NOW = new Date(2026, 9, 6, 15, 30, 0).getTime();
+  const ago = (ms: number) => NOW - ms;
+  const MIN = 60_000;
+  const HOUR = 60 * MIN;
+  const DAY = 24 * HOUR;
+
+  it("says now for the first minute, and for a time in the future", () => {
+    expect(relativePast(ago(0), NOW, "en-GB")).toBe("now");
+    expect(relativePast(ago(59_000), NOW, "en-GB")).toBe("now");
+    expect(relativePast(NOW + 5 * MIN, NOW, "en-GB")).toBe("now");
+    expect(relativePast(ago(0), NOW, "he-IL")).toBe("עכשיו");
+  });
+
+  it("rolls up from minutes to hours, days, weeks, months and years", () => {
+    expect(relativePast(ago(MIN), NOW, "en-GB")).toBe("1 min ago");
+    expect(relativePast(ago(59 * MIN + 59_000), NOW, "en-GB")).toBe("59 min ago");
+    expect(relativePast(ago(HOUR), NOW, "en-GB")).toBe("1 hr ago");
+    expect(relativePast(ago(5 * HOUR + 40 * MIN), NOW, "en-GB")).toBe("5 hr ago");
+    expect(relativePast(ago(DAY), NOW, "en-GB")).toBe("yesterday");
+    expect(relativePast(ago(3 * DAY), NOW, "en-GB")).toBe("3 days ago");
+    expect(relativePast(ago(14 * DAY), NOW, "en-GB")).toMatch(/^2 wks? ago$/);
+    expect(relativePast(ago(65 * DAY), NOW, "en-GB")).toMatch(/^2 mo(?:nth)?s? ago$/);
+    expect(relativePast(ago(800 * DAY), NOW, "en-GB")).toMatch(/^2 yrs? ago$/);
+  });
+
+  it("says one and two of every unit in correct Hebrew, with no stray count in parentheses", () => {
+    const he = (ms: number) => relativePast(ago(ms), NOW, "he-IL");
+    expect(he(MIN)).toBe("לפני דקה");
+    expect(he(2 * MIN)).toBe("לפני 2 דק׳");
+    expect(he(HOUR)).toBe("לפני שעה");
+    expect(he(2 * HOUR)).toBe("לפני שעתיים");
+    expect(he(3 * HOUR)).toBe("לפני 3 שע׳");
+    expect(he(DAY)).toBe("אתמול");
+    expect(he(2 * DAY)).toBe("שלשום");
+    expect(he(3 * DAY)).toBe("לפני 3 ימים");
+    expect(he(7 * DAY)).toBe("לפני שבוע");
+    expect(he(14 * DAY)).toBe("לפני שבועיים");
+    expect(he(21 * DAY)).toBe("לפני 3 שב׳");
+    expect(he(30 * DAY)).toBe("לפני חודש");
+    expect(he(65 * DAY)).toBe("לפני חודשיים");
+    expect(he(100 * DAY)).toBe("לפני 3 חודשים");
+    expect(he(365 * DAY)).toBe("לפני שנה");
+    expect(he(800 * DAY)).toBe("לפני שנתיים");
+    expect(he(1200 * DAY)).toBe("לפני 3 שנים");
+    for (const ms of [MIN, HOUR, 2 * HOUR, 14 * DAY, 65 * DAY, 800 * DAY]) expect(he(ms)).not.toMatch(/\(\d+\)/);
+  });
+
+  it("counts calendar days from a day on, so 47 hours ago is the day before yesterday", () => {
+    const morning = new Date(2026, 9, 6, 9, 0, 0).getTime();
+    const evening = (daysBack: number) => new Date(2026, 9, 6 - daysBack, 21, 0, 0).getTime();
+    expect(relativePast(evening(2), morning, "he-IL")).toBe("שלשום"); // 36 hours, two midnights
+    expect(relativePast(evening(1), morning, "he-IL")).toBe("לפני 12 שע׳"); // under a day: hours
+    expect(relativePast(new Date(2026, 9, 4, 10, 0, 0).getTime(), morning, "he-IL")).toBe("שלשום"); // 47 hours
+    expect(relativePast(evening(2), morning, "en-GB")).toBe("2 days ago");
+    // 25 hours ago, but yesterday evening's neighbour: one midnight only
+    expect(relativePast(new Date(2026, 9, 5, 8, 0, 0).getTime(), morning, "he-IL")).toBe("אתמול");
+  });
+
+  it("uses Hebrew words with the UI pinned to Hebrew", () => {
+    expect(relativePast(ago(5 * MIN), NOW, "he-IL")).toBe("לפני 5 דק׳");
+    expect(relativePast(ago(DAY), NOW, "he-IL")).toBe("אתמול");
+    setFixedLocale("he");
+    try {
+      expect(relativePast(ago(5 * MIN), NOW)).toBe("לפני 5 דק׳");
+    } finally {
+      setFixedLocale(null);
+    }
   });
 });
 

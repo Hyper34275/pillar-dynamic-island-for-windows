@@ -44,6 +44,13 @@ body {
   overflow: hidden;
 }
 
+.line-clamp-3 {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
 /* =============================================================================
    Accessibility - Screen Reader Support
    These classes provide screen reader-only content and keyboard navigation support.
@@ -115,4 +122,19 @@ body {
    would empty the island in the first frame of every close). */
 [data-expanded="false"] > .island-expanded {
   pointer-events: none !important;
+}
+
+/* The tour's mock island (src/tour) keeps its morph and its cross-fades under reduced motion,
+   like the real island: the change of size and the fades are how it shows what it turned into.
+   The rule above zeroes every duration, hence these more specific selectors. */
+@media (prefers-reduced-motion: reduce) {
+  .tour-island {
+    transition-duration: 420ms !important;
+  }
+  .tour-island .tour-layer--in {
+    animation-duration: 260ms !important;
+  }
+  .tour-island .tour-layer--out {
+    animation-duration: 160ms !important;
+  }
 }

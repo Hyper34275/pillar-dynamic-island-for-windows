@@ -73,8 +73,7 @@ function AnalogClock({ now, size }: { now: Date; size: number }) {
   );
 }
 
-function Clock() {
-  const now = useSecond();
+function Clock({ now }: { now: Date }) {
   const { digits, period } = timeParts(now);
   const seconds = String(now.getSeconds()).padStart(2, "0");
   return (
@@ -99,7 +98,7 @@ function Clock() {
 const COPIED_MS = 1500;
 
 /** A big value IT reads out over the phone; a click copies it (the label says "Copied" for a moment). */
-function BigValue({ label, value, copyable }: { label: string; value: string; copyable: boolean }) {
+function BigValue({ label, value, copyable, onCopy }: { label: string; value: string; copyable: boolean; onCopy: (value: string) => Promise<boolean> }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -107,7 +106,7 @@ function BigValue({ label, value, copyable }: { label: string; value: string; co
     return () => clearTimeout(handle);
   }, [copied]);
   const copy = () => {
-    void ipc.copyTextToClipboard(value).then((ok) => {
+    void onCopy(value).then((ok) => {
       if (ok) setCopied(true);
     });
   };
@@ -140,14 +139,29 @@ function BigValue({ label, value, copyable }: { label: string; value: string; co
   );
 }
 
+export interface AboutViewProps {
+  computerName: string | null;
+  localIpv4: string | null;
+  /** The time the clock shows; the caller decides how often it changes. */
+  now: Date;
+  /** Copies a value; resolves true when it did (the label then says "Copied"). */
+  onCopy: (value: string) => Promise<boolean>;
+}
+
+/** Pure rendering of About (the tour renders it with mock data, no IPC). */
+export function AboutView({ computerName, localIpv4, now, onCopy }: AboutViewProps) {
+  return (
+    <div dir="ltr" className="flex-1 flex flex-col justify-center gap-4">
+      <BigValue label={t("about.computer")} value={computerName ?? NONE} copyable={!!computerName} onCopy={onCopy} />
+      <Clock now={now} />
+      <BigValue label={t("about.ip")} value={localIpv4 ?? NONE} copyable={!!localIpv4} onCopy={onCopy} />
+    </div>
+  );
+}
+
 /** What IT asks for first: this computer's name and IP, with the time between them. */
 export function AboutTab() {
   const { info } = useSystemInfo();
-  return (
-    <div dir="ltr" className="flex-1 flex flex-col justify-center gap-4">
-      <BigValue label={t("about.computer")} value={info?.computerName ?? NONE} copyable={!!info?.computerName} />
-      <Clock />
-      <BigValue label={t("about.ip")} value={info?.localIpv4 ?? NONE} copyable={!!info?.localIpv4} />
-    </div>
-  );
+  const now = useSecond();
+  return <AboutView computerName={info?.computerName ?? null} localIpv4={info?.localIpv4 ?? null} now={now} onCopy={ipc.copyTextToClipboard} />;
 }

@@ -119,14 +119,14 @@ export function InviteActions({
 }
 
 /** The tile in front of a meeting invitation: a calendar, tinted like the app's meeting accents. */
-export function InviteAvatar({ size = 40 }: { size?: number }) {
+export function InviteAvatar({ size = 40, radius }: { size?: number; radius?: number }) {
   return (
     <div
       className="flex items-center justify-center flex-shrink-0 text-white"
       style={{
         width: size,
         height: size,
-        borderRadius: Math.round(size * 0.3),
+        borderRadius: radius ?? Math.round(size * 0.3),
         background: `linear-gradient(160deg, ${SYSTEM_COLORS.blue}, color-mix(in srgb, ${SYSTEM_COLORS.blue} 70%, black))`,
         boxShadow: "inset 0 0.5px 0 rgba(255,255,255,0.25)",
       }}

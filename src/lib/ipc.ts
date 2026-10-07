@@ -54,7 +54,15 @@ export type Settings = {
   meetingSilencePrompt: boolean;
   /** Display the island lives on; null = primary. */
   monitorId: string | null;
+  /** False until the Island Center's welcome page has been shown once (set by the backend on first run). */
+  onboardingDone: boolean;
+  /** What the collapsed island shows: date + clock + weekday, the time only, or date + weekday. */
+  islandDisplay: IslandDisplay;
 };
+
+export type IslandDisplay = "full" | "clock" | "date";
+
+const ISLAND_DISPLAYS: readonly IslandDisplay[] = ["full", "clock", "date"];
 
 export type SettingsPatch = Partial<Settings>;
 
@@ -67,7 +75,21 @@ export const SETTINGS_DEFAULTS: Settings = {
   meetingInvitesEnabled: true,
   meetingSilencePrompt: true,
   monitorId: null,
+  onboardingDone: false,
+  islandDisplay: "full",
 };
+
+/** A note, kept only on this computer. Times are unix ms. */
+export type Note = {
+  id: string;
+  text: string;
+  createdAt: number;
+  updatedAt: number;
+  pinned: boolean;
+};
+
+/** Pages the Island Center can be opened on; `note:<id>` opens one note for editing. */
+export type CenterPage = "welcome" | "tour" | "settings" | "notes" | "notes-new" | `note:${string}`;
 
 /** How the user answers a meeting invitation from the island. */
 export type InviteResponse = "accept" | "tentative" | "decline";
@@ -125,7 +147,61 @@ export function normalizeSettings(raw: unknown): Settings {
     meetingInvitesEnabled: bool(r.meetingInvitesEnabled, SETTINGS_DEFAULTS.meetingInvitesEnabled),
     meetingSilencePrompt: bool(r.meetingSilencePrompt, SETTINGS_DEFAULTS.meetingSilencePrompt),
     monitorId: typeof r.monitorId === "string" ? r.monitorId : typeof r.monitorId === "number" ? String(r.monitorId) : null,
+    onboardingDone: bool(r.onboardingDone, SETTINGS_DEFAULTS.onboardingDone),
+    islandDisplay: ISLAND_DISPLAYS.includes(r.islandDisplay as IslandDisplay) ? (r.islandDisplay as IslandDisplay) : SETTINGS_DEFAULTS.islandDisplay,
   };
+}
+
+/** Rust is authoritative; these are the same limits, so the UI never sends what the backend would drop. */
+export const NOTE_MAX_CHARS = 10_000;
+export const NOTES_MAX = 500;
+const NOTE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Truncates at a Unicode scalar boundary (never inside a surrogate pair). */
+export function clipNoteText(text: string): string {
+  if (text.length <= NOTE_MAX_CHARS) return text;
+  const chars = Array.from(text);
+  return chars.length <= NOTE_MAX_CHARS ? text : chars.slice(0, NOTE_MAX_CHARS).join("");
+}
+
+/** One wire note, or null when it is unusable (bad id, empty text). Timestamps are repaired, not trusted. */
+export function normalizeNote(raw: unknown, nowMs: number = Date.now()): Note | null {
+  if (!isRecord(raw)) return null;
+  if (typeof raw.id !== "string" || !NOTE_ID.test(raw.id)) return null;
+  if (typeof raw.text !== "string" || raw.text.trim() === "") return null;
+  const time = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : nowMs);
+  const createdAt = time(raw.createdAt);
+  return {
+    id: raw.id,
+    text: clipNoteText(raw.text),
+    createdAt,
+    updatedAt: Math.max(time(raw.updatedAt), createdAt),
+    pinned: raw.pinned === true,
+  };
+}
+
+/** Canonical order, as Rust returns it: pinned first, then newest update, then id. */
+export function compareNotes(a: Note, b: Note): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** Valid notes only, duplicate ids resolved to the newest, at most 500, in canonical order. */
+export function normalizeNotes(raw: unknown): Note[] {
+  if (!Array.isArray(raw)) return [];
+  const now = Date.now();
+  const byId = new Map<string, Note>();
+  for (const item of raw) {
+    const note = normalizeNote(item, now);
+    if (!note) continue;
+    const existing = byId.get(note.id);
+    if (!existing || note.updatedAt > existing.updatedAt) byId.set(note.id, note);
+  }
+  let notes = [...byId.values()];
+  // Keep the 500 newest by update time, whatever their pin state, then present them canonically.
+  if (notes.length > NOTES_MAX) notes = notes.sort((x, y) => y.updatedAt - x.updatedAt || (x.id < y.id ? -1 : 1)).slice(0, NOTES_MAX);
+  return notes.sort(compareNotes);
 }
 
 function normalizeDiagnostics(raw: unknown): Diagnostics {
@@ -279,6 +355,21 @@ export const ipc = {
     const value = await call<unknown>("get_fullscreen_state");
     return typeof value === "boolean" ? value : null;
   },
+
+  /** Null when the backend is unavailable. */
+  async notesLoad(): Promise<Note[] | null> {
+    const raw = await call<unknown>("notes_load");
+    return raw === null ? null : normalizeNotes(raw);
+  },
+
+  /** Replaces the whole list; resolves to the sanitised list Rust stored, null when it could not be saved. */
+  async notesSave(notes: readonly Note[]): Promise<Note[] | null> {
+    const raw = await call<unknown>("notes_save", { notes });
+    return raw === null ? null : normalizeNotes(raw);
+  },
+
+  /** Only ever from an explicit user click: opens (or brings forward) the Island Center on a page. */
+  openCenter: (page: CenterPage) => callVoid("open_center", { page }, { timeoutMs: 10_000 }),
 
   async getMonitors(): Promise<MonitorInfo[] | null> {
     const raw = await call<unknown>("get_monitors");

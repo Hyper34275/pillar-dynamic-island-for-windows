@@ -6,8 +6,10 @@ import { CalendarServiceContext } from "../../../hooks/useCalendar";
 import type { CalendarService } from "../../../lib/calendar/service";
 import type { CalendarSnapshot } from "../../../lib/calendar/types";
 import { formatDateTime } from "../../../lib/dateFormat";
-import type { NotificationStatus } from "../../../lib/ipc";
-import { SettingsTab } from "./SettingsTab";
+import { SETTINGS_DEFAULTS, type NotificationStatus } from "../../../lib/ipc";
+import { SettingsTab, SettingsView, type SettingsViewProps } from "./SettingsTab";
+
+const openCenter = vi.hoisted(() => vi.fn(async (_page: string) => true));
 
 // The backend's view of the world: polling delivery and two recent codes. (useSystemInfo caches it.)
 vi.mock("../../../lib/ipc", async (importOriginal) => {
@@ -16,6 +18,7 @@ vi.mock("../../../lib/ipc", async (importOriginal) => {
     ...original,
     ipc: {
       ...original.ipc,
+      openCenter,
       getSystemInfo: async () => null,
       getDiagnostics: async () => ({
         outlookRunning: null,
@@ -160,5 +163,124 @@ describe("SettingsTab diagnostics follow the live calendar", () => {
     };
     await mount(service(snap({ events: [event] })));
     expect(container.textContent).not.toMatch(/Secret/);
+  });
+});
+
+const buttonNamed = (name: string) => [...container.querySelectorAll("button")].find((b) => b.textContent === name)!;
+
+describe("SettingsTab Island Center section", () => {
+  it("opens the Center on its settings page and the tour from two buttons", async () => {
+    openCenter.mockClear();
+    await mount(service(snap({})));
+    expect(container.querySelector("section[data-section=center]")).not.toBeNull();
+    await act(async () => buttonNamed("Open Island Center").click());
+    expect(openCenter).toHaveBeenLastCalledWith("settings");
+    await act(async () => buttonNamed("System tour").click());
+    expect(openCenter).toHaveBeenLastCalledWith("tour");
+    expect(openCenter).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps every existing setting", async () => {
+    await mount(service(snap({})));
+    const switches = [...container.querySelectorAll('button[role="switch"]')].map((b) => b.getAttribute("aria-label"));
+    expect(switches).toEqual([
+      "Launch with Windows",
+      "Hide in fullscreen apps",
+      "Meeting reminders",
+      "Meeting invitations",
+      "Offer silence when a meeting starts",
+      "Show notifications",
+    ]);
+    expect(container.textContent).toContain("Remind me before");
+  });
+});
+
+describe("SettingsView", () => {
+  function viewProps(over: Partial<SettingsViewProps> = {}): SettingsViewProps {
+    return {
+      settings: SETTINGS_DEFAULTS,
+      monitors: [],
+      info: null,
+      diagnostics: null,
+      snapshot: snap({}),
+      notificationStatus: "allowed",
+      flash: null,
+      onChange: vi.fn(),
+      onRequestNotificationAccess: vi.fn(),
+      onCopyDiagnostics: vi.fn(),
+      onOpenLogs: vi.fn(),
+      onOpenCenter: vi.fn(),
+      onOpenTour: vi.fn(),
+      ...over,
+    };
+  }
+  const render = (props: SettingsViewProps) => act(() => root.render(<SettingsView {...props} />));
+
+  it("renders from props alone, with no providers and no backend", () => {
+    render(viewProps());
+    expect(container.querySelector("section[data-section=settings]")).not.toBeNull();
+    expect(rows()["Outlook"]).toBe("Running");
+    expect(rows()["Notifications"]).toBe("Allowed");
+  });
+
+  it("reports changes as patches and button presses as callbacks", () => {
+    const props = viewProps();
+    render(props);
+    act(() => container.querySelector<HTMLElement>('button[role="switch"][aria-label="Launch with Windows"]')!.click());
+    expect(props.onChange).toHaveBeenCalledWith({ launchWithWindows: !SETTINGS_DEFAULTS.launchWithWindows });
+    act(() => buttonNamed("Open Island Center").click());
+    act(() => buttonNamed("System tour").click());
+    act(() => buttonNamed("Copy diagnostics").click());
+    act(() => buttonNamed("Open logs").click());
+    expect(props.onOpenCenter).toHaveBeenCalledTimes(1);
+    expect(props.onOpenTour).toHaveBeenCalledTimes(1);
+    expect(props.onCopyDiagnostics).toHaveBeenCalledTimes(1);
+    expect(props.onOpenLogs).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the flash on the copy button and the save error in the header", () => {
+    render(viewProps({ flash: "copied" }));
+    expect(buttonNamed("Copied")).toBeDefined();
+    render(viewProps({ flash: "failed" }));
+    expect(buttonNamed("Copy failed")).toBeDefined();
+    render(viewProps({ flash: "saveFailed" }));
+    expect(container.querySelector('[role="alert"]')!.textContent).toBe("Couldn't save settings");
+  });
+
+  it("reports notifications as off when the user turned them off", () => {
+    render(viewProps({ settings: { ...SETTINGS_DEFAULTS, notificationsEnabled: false } }));
+    expect(rows()["Notifications"]).toBe("Off");
+  });
+
+  it("offers the collapsed island's display in three options, marks the current one and writes the choice", () => {
+    const props = viewProps();
+    render(props);
+    const group = container.querySelector<HTMLElement>('[role="group"][aria-label="Collapsed island"]')!;
+    const options = [...group.querySelectorAll("button")];
+    expect(options.map((o) => o.textContent)).toEqual(["Time, date and day", "Time only", "Date and day"]);
+    expect(options.map((o) => o.getAttribute("aria-pressed"))).toEqual(["true", "false", "false"]); // the default is "full"
+    act(() => options[1].click());
+    expect(props.onChange).toHaveBeenCalledWith({ islandDisplay: "clock" });
+    act(() => options[2].click());
+    expect(props.onChange).toHaveBeenCalledWith({ islandDisplay: "date" });
+
+    render(viewProps({ settings: { ...SETTINGS_DEFAULTS, islandDisplay: "date" } }));
+    const pressed = [...container.querySelectorAll('[aria-label="Collapsed island"] button')].map((o) => o.getAttribute("aria-pressed"));
+    expect(pressed).toEqual(["false", "false", "true"]);
+  });
+
+  it("offers the display choice only with more than one display", () => {
+    render(viewProps());
+    expect(container.textContent).not.toContain("Display");
+    render(
+      viewProps({
+        monitors: [
+          { id: "1", name: "Main", isPrimary: true },
+          { id: "2", name: "Side", isPrimary: false },
+        ],
+      })
+    );
+    expect(container.textContent).toContain("Display");
+    expect(container.textContent).toContain("Side");
   });
 });

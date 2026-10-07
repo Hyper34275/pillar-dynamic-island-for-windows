@@ -21,6 +21,16 @@ export const SYSTEM_COLORS = {
   pink: "#FF375F",
 } as const;
 
+/**
+ * The collapsed island's unseen indicator: the island's own blue, never red (red is for the
+ * silenced bell). The capsule text is the blue mixed 70% with white, ~6.7:1 on the capsule.
+ */
+export const UNSEEN_COLORS = {
+  dot: SYSTEM_COLORS.blue,
+  fill: "rgba(10,132,255,0.24)",
+  text: "#54A9FF",
+} as const;
+
 const AVATAR_PALETTE = [
   SYSTEM_COLORS.blue,
   SYSTEM_COLORS.green,

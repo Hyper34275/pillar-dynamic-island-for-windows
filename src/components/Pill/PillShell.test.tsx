@@ -59,7 +59,7 @@ describe("PillShell", () => {
     expect(vi.getTimerCount()).toBe(1);
   });
 
-  it("expands on click into exactly four tabs and switches between them", async () => {
+  it("expands on click into exactly five tabs and switches between them", async () => {
     await mountBooted();
     await act(async () => {
       island().click();
@@ -67,8 +67,8 @@ describe("PillShell", () => {
     expect(island().getAttribute("role")).toBe("dialog");
 
     const tabs = [...container.querySelectorAll<HTMLElement>('[role="tab"]')];
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["Calendar", "Notifications", "About", "Settings"]);
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1]); // roving tabindex
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Calendar", "Notifications", "Notes", "About", "Settings"]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1, -1]); // roving tabindex
 
     // Calendar first.
     expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain("Waiting for Outlook");
@@ -76,7 +76,7 @@ describe("PillShell", () => {
 
     // About: the clock (with the full date) between the computer name and the IP.
     await act(async () => {
-      tabs[2].click();
+      tabs[3].click();
     });
     expect(container.querySelector('[role="tab"][aria-selected="true"]')!.id).toBe("tab-about");
     expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain("3:30");
