@@ -6,7 +6,7 @@
 //! `settings.json.corrupt` (APP-003) and defaults are used. If the data folder is
 //! unavailable the store works in memory only.
 
-use crate::{autostart, debug_log, fullscreen, notifications, paths, rt, window};
+use crate::{autostart, center_ipc, debug_log, fullscreen, notifications, paths, rt, window};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs::{self, File};
 use std::io::Write;
@@ -21,6 +21,8 @@ const MAX_REMINDER_MINUTES: u32 = 120;
 const MAX_MONITOR_INDEX: u32 = 15;
 const PRIMARY_MONITOR: &str = "primary";
 const RENAME_ATTEMPTS: u32 = 5;
+const DEFAULT_ISLAND_DISPLAY: &str = "full";
+const ISLAND_DISPLAYS: [&str; 3] = ["full", "clock", "date"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -48,6 +50,12 @@ pub struct Settings {
     pub meeting_invites_enabled: bool,
     /// Opt-in debug-level logging (`COMPANYISLAND_LOG=debug` does the same).
     pub debug_logging: bool,
+    /// The Welcome page of the Island Center was shown once (first run, or the first start after
+    /// an upgrade from a version without it).
+    pub onboarding_done: bool,
+    /// What the collapsed island shows: `"full"` (date, time, weekday), `"clock"` or `"date"`.
+    #[serde(deserialize_with = "de_island_display")]
+    pub island_display: String,
 }
 
 impl Default for Settings {
@@ -63,6 +71,8 @@ impl Default for Settings {
             meeting_invites_enabled: true,
             meeting_silence_prompt: true,
             debug_logging: false,
+            onboarding_done: false,
+            island_display: DEFAULT_ISLAND_DISPLAY.to_string(),
         }
     }
 }
@@ -83,6 +93,8 @@ pub struct SettingsPatch {
     meeting_invites_enabled: Option<bool>,
     meeting_silence_prompt: Option<bool>,
     debug_logging: Option<bool>,
+    onboarding_done: Option<bool>,
+    island_display: Option<String>,
 }
 
 fn clamp_minutes(value: f64) -> u32 {
@@ -134,6 +146,28 @@ fn de_monitor_patch<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D
     Option::<MonitorValue>::deserialize(d).map(|v| Some(monitor_from(v)))
 }
 
+/// An unknown value (or a wrong type, which must not make the file unreadable) means "full".
+fn normalize_island_display(value: &str) -> String {
+    if ISLAND_DISPLAYS.contains(&value) {
+        value.to_string()
+    } else {
+        DEFAULT_ISLAND_DISPLAY.to_string()
+    }
+}
+
+fn de_island_display<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Value {
+        Text(String),
+        Other(serde::de::IgnoredAny),
+    }
+    Option::<Value>::deserialize(d).map(|v| match v {
+        Some(Value::Text(s)) => normalize_island_display(&s),
+        _ => DEFAULT_ISLAND_DISPLAY.to_string(),
+    })
+}
+
 fn ser_monitor<S: Serializer>(value: &str, s: S) -> Result<S::Ok, S::Error> {
     if value == PRIMARY_MONITOR {
         s.serialize_none()
@@ -147,6 +181,7 @@ impl Settings {
         self.schema_version = SCHEMA_VERSION;
         self.reminder_minutes = self.reminder_minutes.min(MAX_REMINDER_MINUTES);
         self.monitor = normalize_monitor(&self.monitor);
+        self.island_display = normalize_island_display(&self.island_display);
         self
     }
 
@@ -178,6 +213,12 @@ impl Settings {
         }
         if let Some(v) = patch.debug_logging {
             next.debug_logging = v;
+        }
+        if let Some(v) = patch.onboarding_done {
+            next.onboarding_done = v;
+        }
+        if let Some(v) = patch.island_display {
+            next.island_display = v;
         }
         next.sanitized()
     }
@@ -308,6 +349,7 @@ pub fn apply_patch(app: &AppHandle, patch: SettingsPatch) -> Settings {
         if let Err(e) = app.emit("settings-changed", &new) {
             dlog!("WARN", "settings", "emit settings-changed failed: {}", e);
         }
+        center_ipc::broadcast("settings-changed", &new);
     }
     if old.monitor != new.monitor {
         window::reflow_on_main(app);
@@ -339,6 +381,11 @@ pub fn sync_autostart(app: &AppHandle) {
         }
         _ => {}
     }
+}
+
+/// The Welcome page of the Island Center has been shown: never open it by itself again.
+pub fn mark_onboarding_done(app: &AppHandle) {
+    apply_patch(app, SettingsPatch { onboarding_done: Some(true), ..Default::default() });
 }
 
 #[tauri::command(async)]
@@ -445,6 +492,58 @@ mod tests {
         assert_eq!(serde_json::to_value(&off).unwrap()["meetingInvitesEnabled"], false);
         let old: Settings = serde_json::from_str(r#"{"schemaVersion": 1, "notificationsEnabled": false}"#).unwrap();
         assert!(old.meeting_invites_enabled);
+    }
+
+    #[test]
+    fn center_settings_default_and_use_camel_case_names() {
+        let s = Settings::default();
+        assert!(!s.onboarding_done);
+        assert_eq!(s.island_display, "full");
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["onboardingDone"], false);
+        assert_eq!(json["islandDisplay"], "full");
+    }
+
+    #[test]
+    fn old_files_without_the_center_keys_get_the_defaults() {
+        let old: Settings =
+            serde_json::from_str(r#"{"schemaVersion": 1, "launchWithWindows": false, "debugLogging": true}"#).unwrap();
+        let old = old.sanitized();
+        assert!(!old.onboarding_done, "upgraders see the Welcome page once");
+        assert_eq!(old.island_display, "full");
+        assert!(!old.launch_with_windows && old.debug_logging);
+    }
+
+    #[test]
+    fn patch_sets_onboarding_and_island_display() {
+        let base = Settings::default();
+        let next = base.patched(patch(r#"{"onboardingDone": true, "islandDisplay": "clock"}"#));
+        assert!(next.onboarding_done);
+        assert_eq!(next.island_display, "clock");
+        // fields that are absent stay as they were
+        let again = next.patched(patch(r#"{"debugLogging": true}"#));
+        assert!(again.onboarding_done);
+        assert_eq!(again.island_display, "clock");
+        assert_eq!(again.patched(patch(r#"{"islandDisplay": "date"}"#)).island_display, "date");
+        assert!(!again.patched(patch(r#"{"onboardingDone": false}"#)).onboarding_done);
+    }
+
+    #[test]
+    fn island_display_is_sanitised_everywhere() {
+        let base = Settings::default();
+        assert_eq!(base.patched(patch(r#"{"islandDisplay": "huge"}"#)).island_display, "full");
+        assert_eq!(base.patched(patch(r#"{"islandDisplay": ""}"#)).island_display, "full");
+        assert_eq!(base.patched(patch(r#"{"islandDisplay": "CLOCK"}"#)).island_display, "full");
+        let unknown: Settings = serde_json::from_str(r#"{"islandDisplay": "weekday"}"#).unwrap();
+        assert_eq!(unknown.island_display, "full");
+        // a wrong type neither breaks the file nor loses the other values
+        let junk: Settings = serde_json::from_str(r#"{"islandDisplay": 7, "reminderMinutes": 15}"#).unwrap();
+        assert_eq!(junk.island_display, "full");
+        assert_eq!(junk.reminder_minutes, 15);
+        let kept: Settings = serde_json::from_str(r#"{"islandDisplay": "date"}"#).unwrap();
+        assert_eq!(kept.island_display, "date");
+        let direct = Settings { island_display: "nope".into(), ..Settings::default() }.sanitized();
+        assert_eq!(direct.island_display, "full");
     }
 
     #[test]

@@ -23,6 +23,8 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+# Named pipe server for the Island Center (same major as the copy tauri already pulls in).
+tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt", "rt-multi-thread", "macros"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The `implement` macro (IMessageFilter for the Outlook COM worker) expands to `windows_core::` paths.
 windows-core = "0.58"
@@ -45,6 +47,8 @@ features = [
   "Wdk_System_SystemServices",
   "Win32_Media_Audio",
   "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_System_Pipes",
   "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_LibraryLoader",

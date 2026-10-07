@@ -58,7 +58,16 @@ fn sanitize(map: &mut HashMap<String, i64>, now: i64) -> usize {
     before - map.len()
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Rename attempts before giving up on a file something else is briefly holding.
+const RENAME_ATTEMPTS: u32 = 5;
+
+/// Windows errors that clear up on their own: access denied / sharing / lock violation
+/// (antivirus, a search indexer or a backup agent briefly holding the file).
+pub(crate) fn is_transient(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33))
+}
+
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // The same user can run one instance per Windows session against this one file.
     let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
     {
@@ -66,14 +75,21 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
     }
-    let result = fs::rename(&tmp, path);
+    let mut result = Ok(());
+    for attempt in 0..RENAME_ATTEMPTS {
+        result = fs::rename(&tmp, path);
+        match &result {
+            Err(e) if is_transient(e) => std::thread::sleep(std::time::Duration::from_millis(40 * (attempt as u64 + 1))),
+            _ => break,
+        }
+    }
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
 }
 
-fn quarantine(path: &Path) {
+pub(crate) fn quarantine(path: &Path) {
     let backup = path.with_extension("json.corrupt");
     let _ = fs::remove_file(&backup);
     let _ = fs::rename(path, &backup);

@@ -2,6 +2,8 @@
 pub mod debug_log;
 mod calendar;
 mod calendar_diag;
+mod center;
+mod center_ipc;
 mod com;
 mod autostart;
 mod notifications;
@@ -12,6 +14,7 @@ mod clipboard;
 mod diagnostics;
 mod fullscreen;
 mod monitors;
+mod notes;
 mod system;
 mod rt;
 mod settings;
@@ -58,6 +61,26 @@ fn core_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+/// First start (or the first one after an upgrade from a version without onboarding): show the
+/// Center's Welcome page once. The flag is only set when the Center really opened, so a missing
+/// or failing Center is retried on the next start. A short wait lets the island settle first.
+fn first_run_welcome(app: &tauri::AppHandle) {
+    if app.state::<settings::SettingsStore>().get().onboarding_done {
+        return;
+    }
+    let app = app.clone();
+    let spawned = std::thread::Builder::new().name("companyisland-onboarding".into()).spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        debug_log::catch("onboarding", || match center::open(&app, "welcome") {
+            Ok(()) => settings::mark_onboarding_done(&app),
+            Err(e) => dlog!("WARN", "center", "welcome page not shown, will retry next start: {}", e),
+        });
+    });
+    if let Err(e) = spawned {
+        dlog!("WARN", "center", "APP-030 could not start the welcome thread: {}", e);
+    }
+}
+
 pub fn run() {
     let mut context = tauri::generate_context!();
     prepare(&mut context);
@@ -88,6 +111,9 @@ pub fn run() {
             calendar::calendar_get_range,
             reminder_state::reminder_state_load,
             reminder_state::reminder_state_save,
+            notes::notes_load,
+            notes::notes_save,
+            center::open_center,
             window::set_island_geometry,
             window::get_monitors,
             fullscreen::get_fullscreen_state,
@@ -113,6 +139,8 @@ pub fn run() {
             tray::init(&handle);
             notifications::start(handle.clone());
             calendar::start(handle.clone());
+            center_ipc::start(handle.clone());
+            first_run_welcome(&handle);
 
             // Registry read/write and the hook install handshake stay off the UI thread. Each step
             // is guarded on its own: a panic in one must not skip the other.
