@@ -125,6 +125,12 @@ export type IslandNotification = {
    * `id` answers it (accept / decline).
    */
   invite?: { id: string; startUtc: string | null };
+  /**
+   * Set on the island's own "You missed N notifications" toast, shown when Do not disturb is
+   * turned off (see lib/notifications/missed.ts). Never from the backend; activating it opens the
+   * Notifications tab.
+   */
+  missedSummary?: { count: number };
 };
 
 // -----------------------------------------------------------------------------

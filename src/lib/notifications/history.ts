@@ -12,10 +12,14 @@ export interface HistoryEntry {
   receivedAt: number;
   /** It arrived while notifications were silenced (a meeting, or Do not disturb), so it never popped up. */
   silenced: boolean;
+  /** It arrived during the latest Do not disturb: the Notifications tab lists it under "Missed while muted". */
+  missed?: boolean;
 }
 
 export interface NotificationHistory {
-  add(notification: IslandNotification, receivedAt: number, silenced: boolean): void;
+  add(notification: IslandNotification, receivedAt: number, silenced: boolean, missed?: boolean): void;
+  /** A new Do not disturb has started: what the previous one held is ordinary history now. */
+  clearMissed(): void;
   remove(id: number): void;
   clear(): void;
   /**
@@ -40,9 +44,12 @@ export function createNotificationHistory(max = HISTORY_MAX): NotificationHistor
     listeners.forEach((listener) => listener());
   };
   return {
-    add(notification, receivedAt, silenced) {
+    add(notification, receivedAt, silenced, missed = false) {
       const rest = entries.filter((entry) => entry.notification.id !== notification.id);
-      set([{ notification, receivedAt, silenced }, ...rest].slice(0, max));
+      set([{ notification, receivedAt, silenced, ...(missed ? { missed } : {}) }, ...rest].slice(0, max));
+    },
+    clearMissed() {
+      if (entries.some((entry) => entry.missed)) set(entries.map((entry) => (entry.missed ? { notification: entry.notification, receivedAt: entry.receivedAt, silenced: entry.silenced } : entry)));
     },
     remove(id) {
       if (entries.some((entry) => entry.notification.id === id)) set(entries.filter((entry) => entry.notification.id !== id));

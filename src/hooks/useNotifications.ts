@@ -3,6 +3,7 @@ import { ipc, normalizeNotification, normalizeNotificationStatus, onEvent, type 
 import { doNotDisturb, type DoNotDisturb } from "../lib/island/dnd";
 import { silence, type Silence } from "../lib/island/silence";
 import { notificationHistory, type NotificationHistory } from "../lib/notifications/history";
+import { missedQueue, type MissedQueue } from "../lib/notifications/missed";
 import { useMeetingInvites } from "./useMeetingInvites";
 import { useSettings } from "./useSettings";
 
@@ -11,7 +12,8 @@ const SEEN_IDS_MAX = 50;
 /**
  * Where an arriving notification goes: always to the history; it pops up (`show`) unless the
  * user silenced notifications for the meeting they are in or turned on Windows "Do not disturb"
- * (the bell). Returns whether it popped up.
+ * (the bell). What Do not disturb holds back is also kept for the replay when it ends (missed.ts).
+ * Returns whether it popped up.
  */
 export function deliverNotification(
   notification: IslandNotification,
@@ -19,11 +21,13 @@ export function deliverNotification(
   history: NotificationHistory,
   silenceStore: Silence,
   show: (notification: IslandNotification) => void,
-  dnd: Pick<DoNotDisturb, "isOn"> = doNotDisturb
+  dnd: Pick<DoNotDisturb, "isOn"> = doNotDisturb,
+  missed: Pick<MissedQueue, "hold"> = missedQueue
 ): boolean {
   const muted = dnd.isOn();
   const silenced = muted || silenceStore.isSilent(now);
-  history.add(notification, now, silenced);
+  history.add(notification, now, silenced, muted);
+  if (muted) missed.hold(notification);
   if (!silenced) show(notification);
   return !silenced;
 }

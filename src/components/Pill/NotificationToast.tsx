@@ -7,7 +7,7 @@ import { layerFade } from "./animations";
 import { IslandLayer } from "./IslandLayer";
 import { toastLayout, toastSource, toastTitle } from "./toastLayout";
 import { RoundButton } from "./ui/controls";
-import { XIcon } from "./ui/icons";
+import { BellSlashIcon, XIcon } from "./ui/icons";
 import { AppIcon, CalendarAppIcon } from "./ui/identity";
 import { InviteActions } from "./ui/meetingActions";
 import { NotificationContent, NotificationPrimary, notificationAccessibleLabel } from "./ui/notification";
@@ -97,7 +97,16 @@ export function NotificationToast({ notification, onDismiss, onActivate, onSwipe
       <NotificationContent
         dir={contentDirection(title, notification.body)}
         textHidden
-        icon={isInvite ? <CalendarAppIcon /> : <AppIcon name={cleanAppName(notification.appName) || notification.appName} />}
+        icon={
+          isInvite ? (
+            <CalendarAppIcon />
+          ) : notification.missedSummary ? (
+            // The island's own "You missed N" toast: the quiet slashed bell of the muted state.
+            <AppIcon glyph={<BellSlashIcon size={20} />} tint={color.muted} />
+          ) : (
+            <AppIcon name={cleanAppName(notification.appName) || notification.appName} />
+          )
+        }
         source={source}
         sourceTone={isInvite ? "accent" : "default"}
         title={title}

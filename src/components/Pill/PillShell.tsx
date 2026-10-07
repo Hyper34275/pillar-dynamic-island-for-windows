@@ -9,6 +9,7 @@ import { useIslandState } from "../../hooks/useIslandState";
 import { useCalendarEvents, useCalendarService } from "../../hooks/useCalendar";
 import { useReminders } from "../../hooks/useReminders";
 import { useMeetingSilence } from "../../hooks/useMeetingSilence";
+import { useMissedReplay } from "../../hooks/useMissedReplay";
 import { meetingStatus } from "../../lib/calendar/meetingStatus";
 import { silence, useSilenceUntil } from "../../lib/island/silence";
 import { useDoNotDisturb, useDoNotDisturbSync } from "../../lib/island/dnd";
@@ -17,7 +18,7 @@ import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
 import { color } from "../../design/tokens";
 import { NO_LIMITS, setIslandLimits, useIslandLimits, type IslandLimits } from "../../lib/island/limits";
-import { ipc } from "../../lib/ipc";
+import { ipc, type IslandNotification } from "../../lib/ipc";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
 import { bootAnimationDuration, expandedSize, ISLAND_TOP_INSET, islandSprings, limitSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
@@ -79,6 +80,18 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const notifications = useNotifications(settings.notificationsEnabled, islandState.showNotification);
   const { snooze } = useReminders(islandState.showAlert, reminderStore);
   useMeetingSilence(settingsLoaded ? settings.meetingSilencePrompt : null, islandState.showRinger);
+  // Do not disturb ended: "You missed N notifications", then each one it held.
+  useMissedReplay(state, islandState.showNotification);
+  const { activate: activateNotification } = notifications;
+  const { pin } = islandState;
+  const activateToast = useCallback(
+    (notification: IslandNotification) => {
+      // The missed summary leads to the list of what was missed (the Notifications tab).
+      if (notification.missedSummary) pin("notifications");
+      else activateNotification(notification);
+    },
+    [activateNotification, pin]
+  );
 
   // The collapsed island: the date, or a meeting about to start / in progress, plus the unseen count.
   const events = useCalendarEvents();
@@ -502,7 +515,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
                   notificationHistory.remove(view.notification.id);
                   islandState.dismissNotification();
                 }}
-                onActivate={notifications.activate}
+                onActivate={activateToast}
                 onSwipeAway={() => closeAll("toast swiped away")}
               />
             )}

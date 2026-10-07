@@ -143,6 +143,16 @@ function EmptyNotifications({ notificationsEnabled }: { notificationsEnabled: bo
   return <EmptyState icon={<BellIcon size={icon.state} />} title={t("notifs.empty")} hint={notificationsEnabled ? t("notifs.emptyHint") : t("notifs.off")} />;
 }
 
+/** A section heading in the list (meta role, tertiary), with an optional count. */
+function GroupHeading({ label, count }: { label: string; count?: number }) {
+  return (
+    <h3 className="text-meta flex-shrink-0 flex items-center truncate" style={{ color: color.fgTertiary, paddingBottom: card.listGap, gap: space[1] }}>
+      <span className="truncate">{label}</span>
+      {count !== undefined && <span className="tabular-nums">· {count}</span>}
+    </h3>
+  );
+}
+
 interface NotificationsViewProps {
   entries: readonly HistoryEntry[];
   nowMs: number;
@@ -158,6 +168,8 @@ interface NotificationsViewProps {
 /** Pure rendering of the session's notifications, newest first. */
 export function NotificationsView({ entries, nowMs, notificationsEnabled, onActivate, onRemove, lastViewedAt = Infinity }: NotificationsViewProps) {
   const empty = entries.length === 0;
+  const missed = entries.filter((entry) => entry.missed);
+  const rest = missed.length === 0 ? entries : entries.filter((entry) => !entry.missed);
   return (
     <div className="relative flex-1 flex flex-col">
       {!empty && !notificationsEnabled && (
@@ -165,10 +177,27 @@ export function NotificationsView({ entries, nowMs, notificationsEnabled, onActi
           {t("notifs.off")}
         </p>
       )}
+      {/* What the latest Do not disturb held back comes first, under its own heading. */}
+      {missed.length > 0 && <GroupHeading label={t("notifs.missedGroup")} count={missed.length} />}
       {/* Opening the panel never animates the cards that are already there (initial={false}). */}
       <ul className="flex flex-col">
         <AnimatePresence initial={false}>
-          {entries.map((entry) => (
+          {missed.map((entry) => (
+            <NotificationCard
+              key={entry.notification.id}
+              entry={entry}
+              nowMs={nowMs}
+              unread={isUnread(entry, lastViewedAt)}
+              onActivate={onActivate}
+              onRemove={onRemove}
+            />
+          ))}
+        </AnimatePresence>
+      </ul>
+      {missed.length > 0 && rest.length > 0 && <GroupHeading label={t("notifs.earlier")} />}
+      <ul className="flex flex-col">
+        <AnimatePresence initial={false}>
+          {rest.map((entry) => (
             <NotificationCard
               key={entry.notification.id}
               entry={entry}

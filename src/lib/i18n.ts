@@ -161,6 +161,10 @@ const en = {
   "notifs.silenced": "Arrived while notifications were silenced",
   "dnd.turnOn": "Mute Windows notifications (Do not disturb)",
   "dnd.turnOff": "Do not disturb is on. Turn Windows notifications back on",
+  "missed.source": "Do not disturb",
+  "missed.body": "Click to see them all",
+  "notifs.missedGroup": "Missed while muted",
+  "notifs.earlier": "Earlier",
   "notes.new": "New note",
   "notes.list": "Notes",
   "notes.empty": "No notes yet",
@@ -224,6 +228,10 @@ const en = {
   "notif.unread": {
     one: "{n} unread notification",
     other: "{n} unread notifications",
+  },
+  "missed.title": {
+    one: "You missed 1 notification",
+    other: "You missed {n} notifications",
   },
 } satisfies Record<string, Message>;
 
@@ -381,6 +389,10 @@ const he: Record<MessageKey, Message> = {
   "notifs.silenced": "הגיעה בזמן שההתראות היו מושתקות",
   "dnd.turnOn": "השתק את ההתראות של Windows (נא לא להפריע)",
   "dnd.turnOff": "נא לא להפריע פעיל. החזר את ההתראות של Windows",
+  "missed.source": "נא לא להפריע",
+  "missed.body": "לחץ כדי לראות את כולן",
+  "notifs.missedGroup": "פוספסו בזמן ההשתקה",
+  "notifs.earlier": "קודמות",
   "notes.new": "פתק חדש",
   "notes.list": "פתקים",
   "notes.empty": "אין פתקים עדיין",
@@ -446,6 +458,11 @@ const he: Record<MessageKey, Message> = {
     one: "התראה אחת שלא נקראה",
     two: "שתי התראות שלא נקראו",
     other: "{n} התראות שלא נקראו",
+  },
+  "missed.title": {
+    one: "פספסת התראה אחת",
+    two: "פספסת שתי התראות",
+    other: "פספסת {n} התראות",
   },
 };
 

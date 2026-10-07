@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { relativeMinutes } from "../../../lib/dateFormat";
 import { setFixedLocale, t } from "../../../lib/i18n";
 import type { IslandNotification } from "../../../lib/ipc";
-import { createNotificationHistory } from "../../../lib/notifications/history";
+import { createNotificationHistory, type HistoryEntry } from "../../../lib/notifications/history";
 import { NotificationsClearAction, NotificationsView } from "./NotificationsTab";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -26,7 +26,7 @@ afterEach(() => {
 const NOW = Date.UTC(2026, 9, 6, 12, 0);
 const teams: IslandNotification = { id: 1, appName: "Microsoft Teams", title: "Dana", body: "See the deck", timestamp: NOW, aumid: null };
 const hebrew: IslandNotification = { id: 2, appName: "Outlook", title: "תזכורת", body: "הגשת דוח", timestamp: NOW, aumid: null };
-const entry = (notification: IslandNotification, minutesAgo: number, silenced = false) => ({ notification, receivedAt: NOW - minutesAgo * 60_000, silenced });
+const entry = (notification: IslandNotification, minutesAgo: number, silenced = false): HistoryEntry => ({ notification, receivedAt: NOW - minutesAgo * 60_000, silenced });
 
 function render(entries: ReturnType<typeof entry>[], extra: Partial<Parameters<typeof NotificationsView>[0]> = {}) {
   const onActivate = vi.fn();
@@ -176,5 +176,28 @@ describe("NotificationsClearAction (the header action)", () => {
     act(() => button.click());
     expect(history.getSnapshot()).toHaveLength(0);
     expect(container.querySelector("button")).toBeNull();
+  });
+});
+
+describe("NotificationsView: missed while muted", () => {
+  it("lists what Do not disturb held back first, under its own heading with the count, then the rest under Earlier", () => {
+    setFixedLocale("he");
+    const third: IslandNotification = { id: 3, appName: "Slack", title: "Ping", body: "", timestamp: NOW, aumid: null };
+    render([
+      { ...entry(teams, 1, true), missed: true },
+      { ...entry(hebrew, 2, true), missed: true },
+      entry(third, 30),
+    ]);
+    const headings = [...container.querySelectorAll("h3")].map((h) => h.textContent);
+    expect(headings).toEqual(["פוספסו בזמן ההשתקה· 2", "קודמות"]);
+    const lists = [...container.querySelectorAll("ul")];
+    expect(lists[0].querySelectorAll("li")).toHaveLength(2);
+    expect(lists[1].querySelectorAll("li")).toHaveLength(1);
+  });
+
+  it("has no headings when nothing was missed", () => {
+    render([entry(teams, 1), entry(hebrew, 2)]);
+    expect(container.querySelectorAll("h3")).toHaveLength(0);
+    expect(cards()).toHaveLength(2);
   });
 });
