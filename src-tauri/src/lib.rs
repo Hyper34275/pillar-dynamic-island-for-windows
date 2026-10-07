@@ -22,6 +22,7 @@ mod rt;
 mod settings;
 mod tray;
 mod window;
+mod backdrop;
 
 use tauri::utils::config::AppDirectoriesOverride;
 use tauri::{Manager, RunEvent};
@@ -134,6 +135,8 @@ pub fn run() {
             outlook::outlook_open_calendar,
             outlook::outlook_respond_invite,
             outlook::open_meeting_url,
+            backdrop::get_island_backdrop,
+            backdrop::refresh_island_backdrop,
         ])
         .on_window_event(|window, event| window::on_window_event(window, event))
         .setup(|app| {
@@ -147,6 +150,7 @@ pub fn run() {
             dnd::start(handle.clone());
             calendar::start(handle.clone());
             center_ipc::start(handle.clone());
+            backdrop::start(handle.clone());
             first_run_welcome(&handle);
 
             // Registry read/write and the hook install handshake stay off the UI thread. Each step

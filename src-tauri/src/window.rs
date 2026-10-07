@@ -40,7 +40,7 @@ use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRg
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, KillTimer, RegisterWindowMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    GWL_EXSTYLE, HWND_TOPMOST, SPI_SETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
+    GWL_EXSTYLE, HWND_TOPMOST, SPI_SETDESKWALLPAPER, SPI_SETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
     SWP_NOSIZE, SWP_NOZORDER, STYLESTRUCT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY, WM_POWERBROADCAST,
     WA_INACTIVE, WM_ACTIVATE, WM_SETTINGCHANGE, WM_STYLECHANGING, WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
@@ -79,7 +79,36 @@ type AppliedRegion = (i32, i32, i32, i32, i32, Option<monitors::Bounds>);
 static APPLIED_REGION: Mutex<Option<AppliedRegion>> = Mutex::new(None);
 /// Window rectangle (physical px) last applied, so an unchanged stage is never moved again.
 static APPLIED_RECT: Mutex<Option<monitors::Bounds>> = Mutex::new(None);
+/// Whether the target monitor has a taskbar auto-hiding on its TOP edge, with the monitor bounds it
+/// was asked for. The question is a cross-process call into the shell, so it is asked once per
+/// monitor and again only after a display or settings change (`reflow` clears it).
+static TOP_AUTOHIDE: Mutex<Option<(monitors::Bounds, bool)>> = Mutex::new(None);
+/// The island's resting shape in screen px (what the window region currently is, margin included)
+/// and the monitor it is on: backdrop.rs samples the pixels just outside it.
+static ISLAND_SCREEN: Mutex<Option<(monitors::Bounds, monitors::Bounds)>> = Mutex::new(None);
 static APP: OnceLock<AppHandle> = OnceLock::new();
+
+/// The island's region on screen (physical px) and its monitor's bounds, or None before the first
+/// placement.
+pub fn island_screen() -> Option<(monitors::Bounds, monitors::Bounds)> {
+    *lock(&ISLAND_SCREEN)
+}
+
+/// Whether a taskbar auto-hides on the top edge of this monitor (cached, see `TOP_AUTOHIDE`).
+fn top_autohide(monitor: monitors::Bounds) -> bool {
+    let mut cache = lock(&TOP_AUTOHIDE);
+    if let Some((bounds, answer)) = *cache {
+        if bounds == monitor {
+            return answer;
+        }
+    }
+    let answer = monitors::top_autohide_bar(monitor);
+    if answer {
+        dlog!("INFO", "window", "a taskbar auto-hides on the top edge: no top bridge");
+    }
+    *cache = Some((monitor, answer));
+    answer
+}
 /// Registered "TaskbarCreated" message (explorer restarted); 0 until `init`.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 /// A note is being typed in the island: the window may be active and hold the keyboard.
@@ -113,7 +142,35 @@ pub fn main_hwnd(app: &AppHandle) -> Result<HWND, String> {
         .and_then(|w| hwnd_of(&w))
 }
 
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmSetWindowAttribute(hwnd: HWND, attribute: u32, value: *const core::ffi::c_void, size: u32) -> i32;
+}
+const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+const DWMWA_BORDER_COLOR: u32 = 34;
+const DWMWCP_DONOTROUND: u32 = 1;
+/// `DWMWA_COLOR_NONE`: no border at all.
+const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+
+/// The island is a shape of its own: ask DWM for no frame treatment at all. tao keeps WS_CAPTION |
+/// WS_SYSMENU on the HWND of an "undecorated" window (it only makes the non-client area zero-sized
+/// in WM_NCCALCSIZE; measured on the live window: style 0x14CB0000), and on Windows 11 DWM applies
+/// its frame look to such a window: a 1 px border in the system border colour and rounded-corner
+/// clipping. Neither belongs to a black silhouette (the border reads as a bright outline on a
+/// dark wallpaper, the rounding as a second, different, corner under the island's own). Border
+/// colour NONE and corner preference DO-NOT-ROUND remove both; on Windows 10 the attributes do
+/// not exist and the call just fails, which is the right answer there too.
+fn remove_dwm_frame(hwnd: HWND) {
+    unsafe {
+        let corner = DWMWCP_DONOTROUND;
+        let border = DWMWA_COLOR_NONE;
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const u32 as *const _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &border as *const u32 as *const _, 4);
+    }
+}
+
 fn apply_non_activating(hwnd: HWND) -> Result<(), String> {
+    remove_dwm_frame(hwnd);
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let wanted = style | forced_ex_style() as isize;
@@ -241,9 +298,21 @@ fn place(app: &AppHandle) -> Result<(), String> {
     }
     drop(applied_rect);
 
-    // The bridge over the top gap exists only where nothing (a top-docked taskbar) is above the
-    // island: there it would sit on the taskbar and swallow its clicks.
-    let shape = monitors::region_shape(rect.width(), rect.height(), target.dpi, geometry.width, geometry.height, target.top_is_free());
+    // The bridge over the top gap exists only where nothing of the shell is on the top edge: not a
+    // top-docked taskbar (the bridge would sit on it and swallow its clicks) and not an AUTO-HIDE
+    // one either (its work area reaches the edge, but it is revealed by touching the edge, which a
+    // window covering it would steal). See `monitors::bridge_wanted`.
+    let bridge = monitors::bridge_wanted(target.top_is_free(), top_autohide(target.bounds));
+    let shape = monitors::region_shape(rect.width(), rect.height(), target.dpi, geometry.width, geometry.height, bridge);
+    *lock(&ISLAND_SCREEN) = Some((
+        monitors::Bounds {
+            left: rect.left + shape.island.left,
+            top: rect.top + shape.island.top,
+            right: rect.left + shape.island.right,
+            bottom: rect.top + shape.island.bottom,
+        },
+        target.bounds,
+    ));
     apply_region(
         hwnd,
         shape,
@@ -263,6 +332,8 @@ fn reflow(app: &AppHandle) {
     }
     *lock(&APPLIED_REGION) = None;
     *lock(&APPLIED_RECT) = None;
+    // The taskbar may have been docked, undocked or switched to auto-hide: ask the shell again.
+    *lock(&TOP_AUTOHIDE) = None;
     if let Err(e) = place(app) {
         dlog!("WARN", "window", "{}", e);
     }
@@ -272,6 +343,8 @@ fn reflow(app: &AppHandle) {
         dlog!("WARN", "window", "emit display-changed failed: {}", e);
     }
     fullscreen::reevaluate();
+    // Another monitor, scale or wallpaper: what is behind the island may have changed.
+    crate::backdrop::request_sample();
 }
 
 /// Re-place the island from any thread (e.g. after the monitor setting changed).
@@ -282,12 +355,24 @@ pub fn reflow_on_main(app: &AppHandle) {
     }
 }
 
+/// `WM_SETTINGCHANGE` with `wParam` 0 and the string "TraySettings" in `lParam`: Explorer's taskbar
+/// settings (auto-hide on/off, which edge) changed.
+unsafe fn is_tray_settings(msg: u32, wparam: usize, lparam: LPARAM) -> bool {
+    if msg != WM_SETTINGCHANGE || wparam != 0 || lparam.0 == 0 {
+        return false;
+    }
+    windows::core::PCWSTR(lparam.0 as *const u16).to_string().is_ok_and(|name| name == "TraySettings")
+}
+
 /// How long to wait before re-flowing for a window message, if it is a display event.
-fn reflow_delay_ms(msg: u32, wparam: usize, taskbar_created: u32) -> Option<(usize, u32)> {
+fn reflow_delay_ms(msg: u32, wparam: usize, taskbar_created: u32, tray_settings: bool) -> Option<(usize, u32)> {
     match msg {
         WM_DPICHANGED => Some((TIMER_FAST, DELAY_DPI_MS)),
         WM_DISPLAYCHANGE => Some((TIMER_FAST, DELAY_DISPLAY_MS)),
         WM_SETTINGCHANGE if wparam == SPI_SETWORKAREA.0 as usize => Some((TIMER_FAST, DELAY_DISPLAY_MS)),
+        // The taskbar's own settings (auto-hide, position) changed: its work area may not move at all
+        // (auto-hide), but whether the top bridge may exist does.
+        WM_SETTINGCHANGE if tray_settings => Some((TIMER_FAST, DELAY_DISPLAY_MS)),
         WM_POWERBROADCAST if wparam == PBT_APMRESUMEAUTOMATIC => Some((TIMER_SLOW, DELAY_SLOW_MS)),
         m if taskbar_created != 0 && m == taskbar_created => Some((TIMER_SLOW, DELAY_SLOW_MS)),
         _ => None,
@@ -339,7 +424,12 @@ unsafe extern "system" fn subclass_proc(
         _ => {}
     }
     let result = DefSubclassProc(hwnd, msg, wparam, lparam);
-    if let Some((timer, delay)) = reflow_delay_ms(msg, wparam.0, TASKBAR_CREATED.load(Ordering::Relaxed)) {
+    // The wallpaper changed: what is behind the island changed with it.
+    if msg == WM_SETTINGCHANGE && wparam.0 == SPI_SETDESKWALLPAPER.0 as usize {
+        crate::backdrop::request_sample();
+    }
+    let tray_settings = is_tray_settings(msg, wparam.0, lparam);
+    if let Some((timer, delay)) = reflow_delay_ms(msg, wparam.0, TASKBAR_CREATED.load(Ordering::Relaxed), tray_settings) {
         SetTimer(hwnd, timer, delay, None);
     }
     result
@@ -511,25 +601,46 @@ mod tests {
 
     #[test]
     fn display_messages_schedule_a_reflow() {
-        assert_eq!(reflow_delay_ms(WM_DISPLAYCHANGE, 0, TASKBAR), Some((TIMER_FAST, DELAY_DISPLAY_MS)));
-        assert_eq!(reflow_delay_ms(WM_DPICHANGED, 0, TASKBAR), Some((TIMER_FAST, DELAY_DPI_MS)));
+        assert_eq!(reflow_delay_ms(WM_DISPLAYCHANGE, 0, TASKBAR, false), Some((TIMER_FAST, DELAY_DISPLAY_MS)));
+        assert_eq!(reflow_delay_ms(WM_DPICHANGED, 0, TASKBAR, false), Some((TIMER_FAST, DELAY_DPI_MS)));
         assert_eq!(
-            reflow_delay_ms(WM_SETTINGCHANGE, SPI_SETWORKAREA.0 as usize, TASKBAR),
+            reflow_delay_ms(WM_SETTINGCHANGE, SPI_SETWORKAREA.0 as usize, TASKBAR, false),
             Some((TIMER_FAST, DELAY_DISPLAY_MS))
         );
         assert_eq!(
-            reflow_delay_ms(WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC, TASKBAR),
+            reflow_delay_ms(WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC, TASKBAR, false),
             Some((TIMER_SLOW, DELAY_SLOW_MS))
         );
-        assert_eq!(reflow_delay_ms(TASKBAR, 0, TASKBAR), Some((TIMER_SLOW, DELAY_SLOW_MS)));
+        assert_eq!(reflow_delay_ms(TASKBAR, 0, TASKBAR, false), Some((TIMER_SLOW, DELAY_SLOW_MS)));
+    }
+
+    #[test]
+    fn taskbar_settings_changes_schedule_a_reflow() {
+        // Auto-hide toggled: the work area may not change, but the top bridge decision does.
+        assert_eq!(reflow_delay_ms(WM_SETTINGCHANGE, 0, TASKBAR, true), Some((TIMER_FAST, DELAY_DISPLAY_MS)));
+        assert_eq!(reflow_delay_ms(WM_SETTINGCHANGE, 0, TASKBAR, false), None);
+    }
+
+    #[test]
+    fn tray_settings_string_is_recognised_only_on_a_setting_change() {
+        let name: Vec<u16> = "TraySettings\0".encode_utf16().collect();
+        let other: Vec<u16> = "Environment\0".encode_utf16().collect();
+        let lp = |v: &Vec<u16>| LPARAM(v.as_ptr() as isize);
+        unsafe {
+            assert!(is_tray_settings(WM_SETTINGCHANGE, 0, lp(&name)));
+            assert!(!is_tray_settings(WM_SETTINGCHANGE, 0, lp(&other)));
+            assert!(!is_tray_settings(WM_SETTINGCHANGE, 0, LPARAM(0)));
+            assert!(!is_tray_settings(WM_SETTINGCHANGE, 0x13, lp(&name)));
+            assert!(!is_tray_settings(WM_DISPLAYCHANGE, 0, lp(&name)));
+        }
     }
 
     #[test]
     fn unrelated_messages_are_ignored() {
-        assert_eq!(reflow_delay_ms(WM_SETTINGCHANGE, 0x13, TASKBAR), None);
-        assert_eq!(reflow_delay_ms(WM_POWERBROADCAST, 0x4, TASKBAR), None);
-        assert_eq!(reflow_delay_ms(WM_TIMER, 1, TASKBAR), None);
+        assert_eq!(reflow_delay_ms(WM_SETTINGCHANGE, 0x13, TASKBAR, false), None);
+        assert_eq!(reflow_delay_ms(WM_POWERBROADCAST, 0x4, TASKBAR, false), None);
+        assert_eq!(reflow_delay_ms(WM_TIMER, 1, TASKBAR, false), None);
         // before RegisterWindowMessage ran the id is 0, which must not match message 0
-        assert_eq!(reflow_delay_ms(0, 0, 0), None);
+        assert_eq!(reflow_delay_ms(0, 0, 0, false), None);
     }
 }

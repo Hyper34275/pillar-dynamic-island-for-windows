@@ -20,6 +20,7 @@ use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO, MONITORINFOEXW,
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+use windows::Win32::UI::Shell::{SHAppBarMessage, ABE_TOP, ABM_GETAUTOHIDEBAREX, APPBARDATA};
 
 const BASE_DPI: f64 = 96.0;
 const MONITORINFOF_PRIMARY: u32 = 1;
@@ -283,6 +284,34 @@ pub fn region_shape(window_width: i32, window_height: i32, dpi: u32, width: f64,
     RegionShape { island, bridge }
 }
 
+/// Whether the invisible top bridge (the region strip over the 8 DIP gap) may exist on a monitor.
+/// It must not when anything of the shell lives on that top edge:
+///   - `work_reaches_top` false: a top-docked taskbar (or other app bar) owns the strip; the bridge
+///     would sit on it and swallow its clicks;
+///   - `top_autohide_bar` true: a taskbar docked at the TOP with auto-hide. Its work area still
+///     reaches the monitor's top (the bar is hidden), so `work_reaches_top` alone says "free", but
+///     the hidden bar is revealed by the pointer touching the screen's top edge and a topmost window
+///     covering that edge would steal the touch. The island starts ISLAND_TOP_INSET below the edge,
+///     so without the bridge the strip above it is not part of the window at all.
+pub fn bridge_wanted(work_reaches_top: bool, top_autohide_bar: bool) -> bool {
+    work_reaches_top && !top_autohide_bar
+}
+
+/// Whether an auto-hide app bar (the Windows taskbar) is registered on the TOP edge of the monitor
+/// with these bounds: `ABM_GETAUTOHIDEBAREX` with the monitor's rectangle answers per monitor, so a
+/// taskbar auto-hiding on the top of another monitor does not count. A cross-process call into the
+/// shell: the caller caches the answer and asks again only on a display or settings change.
+pub fn top_autohide_bar(monitor: Bounds) -> bool {
+    let mut data = APPBARDATA {
+        cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+        uEdge: ABE_TOP,
+        rc: RECT { left: monitor.left, top: monitor.top, right: monitor.right, bottom: monitor.bottom },
+        ..Default::default()
+    };
+    // The answer is the bar's window handle, 0 when there is none.
+    unsafe { SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &mut data) != 0 }
+}
+
 /// Corner radius in physical px for the window region, or 0 for "no region".
 pub fn region_radius(radius: f64, dpi: u32, width_px: i32, height_px: i32) -> i32 {
     let max = (width_px.min(height_px) / 2).max(0);
@@ -440,6 +469,30 @@ mod tests {
         let mut bottom = monitor(0, 0, true);
         bottom.work.bottom = 1040;
         assert!(bottom.top_is_free());
+    }
+
+    #[test]
+    fn bridge_decision_covers_every_taskbar_arrangement() {
+        // (work area reaches the top, a top auto-hide bar is registered, bridge)
+        let cases = [
+            (true, false, true),   // no taskbar on top (bottom/left/right, or none): bridge
+            (false, false, false), // taskbar docked at the top, always visible: it owns the strip
+            (true, true, false),   // taskbar docked at the top with auto-hide: it reveals on the edge
+            (false, true, false),  // another app bar on top plus an auto-hide bar: still none
+        ];
+        for (reaches_top, autohide, expected) in cases {
+            assert_eq!(bridge_wanted(reaches_top, autohide), expected, "reaches {reaches_top} autohide {autohide}");
+        }
+    }
+
+    #[test]
+    fn auto_hide_taskbar_on_top_drops_the_bridge_from_the_region() {
+        let wanted = bridge_wanted(monitor(0, 0, true).top_is_free(), true);
+        let shape = region_shape(400, 448, 96, 200.0, 36.0, wanted);
+        assert_eq!(shape.bridge, None);
+        // The island itself is untouched and still 8 DIP below the edge, so the strip is free.
+        assert_eq!(shape.island, island_region(400, 448, 96, 200.0, 36.0));
+        assert!(shape.island.top > 0);
     }
 
     fn limits_of(width: i32, height: i32, taskbar: i32, dpi: u32) -> IslandLimits {

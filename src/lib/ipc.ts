@@ -410,6 +410,10 @@ export const ipc = {
     const raw = await call<unknown>("get_monitors");
     return raw === null ? null : normalizeMonitors(raw);
   },
+  /** Brightness behind the island, 0..1 (src-tauri/src/backdrop.rs), or null when it cannot be read. */
+  getIslandBackdrop: () => call<number | null>("get_island_backdrop", undefined, { timeoutMs: 3000 }),
+  /** Sample the backdrop now (the island has settled); the answer arrives as the `island-backdrop` event. */
+  refreshIslandBackdrop: () => call<void>("refresh_island_backdrop", undefined, { timeoutMs: 3000 }),
 };
 
 // -----------------------------------------------------------------------------
