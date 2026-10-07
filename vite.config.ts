@@ -1,10 +1,27 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import type { Plugin } from "vite";
 import pkg from "./package.json";
+
+/**
+ * tour.html carries a strict meta CSP (script-src 'self') for the built page. The dev server
+ * (plugin-react) injects an inline React-refresh script into every page, which that CSP blocks and
+ * leaves the page blank, so under `npm run dev` the meta is dropped. A build keeps it.
+ */
+function tourDevCsp(): Plugin {
+  return {
+    name: "tour-dev-csp",
+    apply: "serve",
+    transformIndexHtml: {
+      order: "pre",
+      handler: (html) => html.replace(/<meta\s+http-equiv="Content-Security-Policy"[^>]*>\s*/i, ""),
+    },
+  };
+}
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tourDevCsp()],
 
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
@@ -14,6 +31,13 @@ export default defineConfig({
   // color-mix() can ship untranspiled.
   build: {
     target: "chrome111",
+    // Two pages: the island itself and the tour (tour.html, shown by the Island Center).
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        tour: "tour.html",
+      },
+    },
   },
 
   // Vite options tailored for Tauri development
@@ -22,7 +46,7 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     watch: {
-      ignored: ["**/src-tauri/**"],
+      ignored: ["**/src-tauri/**", "**/center/**"],
     },
   },
 
