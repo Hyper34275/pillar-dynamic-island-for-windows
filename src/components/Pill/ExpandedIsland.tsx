@@ -5,6 +5,7 @@ import { t } from "../../lib/i18n";
 import type { NotificationStatus } from "../../lib/ipc";
 import { layerFade, TAB_SHIFT_PX, tabSprings } from "./animations";
 import { TransitionContext, useDrivenTransition, useTransitionLayer } from "./drivenTransition";
+import { DoNotDisturbButton } from "./HeaderAction";
 import { PANEL_TITLE_CLASS, PanelFrame, panelBodyClass } from "./PanelFrame";
 import { useSpringValue } from "./useIslandMotion";
 import { AboutTab } from "./panels/AboutTab";
@@ -132,15 +133,24 @@ export function ExpandedIsland({ activeTab, reducedMotion, notificationStatus, o
           <TabTitle key={config.id}>{t(config.labelKey)}</TabTitle>
         </AnimatePresence>
       )}
-      action={inTab(
-        <AnimatePresence>
-          {HeaderAction && (
-            <TabAction key={config.id}>
-              <HeaderAction />
-            </TabAction>
-          )}
-        </AnimatePresence>
-      )}
+      action={
+        // The tab's own action cross-fades with the title; the Do not disturb bell stays put at the
+        // trailing corner on every tab.
+        <div className="flex items-center gap-3">
+          <div className="grid justify-items-end">
+            {inTab(
+              <AnimatePresence>
+                {HeaderAction && (
+                  <TabAction key={config.id}>
+                    <HeaderAction />
+                  </TabAction>
+                )}
+              </AnimatePresence>
+            )}
+          </div>
+          <DoNotDisturbButton />
+        </div>
+      }
       dock={<TabDock active={activeTab} indicator={capsule} onSelect={onSelectTab} />}
     >
       {inTab(

@@ -103,3 +103,14 @@ describe("timeSlotWidth", () => {
     }
   });
 });
+
+describe("compactContentSize: silent outside a meeting (Do not disturb)", () => {
+  it("makes room for the slashed bell after the date / clock (8 gap + 14 icon), under the same maximum plus that room", () => {
+    for (const display of ["full", "clock"] as const) {
+      const labels: CompactLabels = { date: "6.10", weekday: display === "clock" ? "" : "Tuesday", contentWidth: 150, display, timeWidth: 40 };
+      const ringing = compactContentSize(labels, null, 0, false).width;
+      const muted = compactContentSize(labels, null, 0, true).width;
+      expect(muted - ringing).toBe(8 + 14);
+    }
+  });
+});

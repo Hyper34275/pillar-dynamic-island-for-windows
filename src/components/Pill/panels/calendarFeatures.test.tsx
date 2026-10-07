@@ -169,7 +169,7 @@ describe("NotificationsView", () => {
     expect(html.indexOf("Title 2")).toBeLessThan(html.indexOf("Title 1"));
     expect(html).toContain("Body 1");
     expect(html).toMatch(/10 min/);
-    expect(html).toContain("Arrived during a silenced meeting");
+    expect(html).toContain("Arrived while notifications were silenced");
   });
 
   it("shows answer buttons for a meeting invitation", () => {

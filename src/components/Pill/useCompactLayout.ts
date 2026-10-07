@@ -282,7 +282,9 @@ export function compactContentSize(labels: CompactLabels, statusTextWidth: numbe
     return compactSize(content + extra, pillDimensions.compactMeeting.maxWidth);
   }
   const minWidth = labels.display === "clock" ? pillDimensions.compact.clockMinWidth : pillDimensions.compact.minWidth;
-  return compactSize(labels.contentWidth + extra, pillDimensions.compact.maxWidth + extra, minWidth);
+  // Do not disturb outside a meeting: the slashed bell sits after the date / clock, before the badge.
+  const muted = silent ? compactTokens.gap + iconTokens.small : 0;
+  return compactSize(labels.contentWidth + extra + muted, pillDimensions.compact.maxWidth + extra + muted, minWidth);
 }
 
 export function useCompactContent(labels: CompactLabels, status: MeetingStatus | null, unseen: number, silent: boolean): CompactContent {

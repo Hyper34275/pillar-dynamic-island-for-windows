@@ -10,7 +10,7 @@ export const HISTORY_MAX = 50;
 export interface HistoryEntry {
   notification: IslandNotification;
   receivedAt: number;
-  /** It arrived while notifications were silenced for a meeting, so it never popped up. */
+  /** It arrived while notifications were silenced (a meeting, or Do not disturb), so it never popped up. */
   silenced: boolean;
 }
 

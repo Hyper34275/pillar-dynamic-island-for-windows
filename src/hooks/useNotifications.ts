@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc, normalizeNotification, normalizeNotificationStatus, onEvent, type IslandNotification, type NotificationStatus } from "../lib/ipc";
+import { doNotDisturb, type DoNotDisturb } from "../lib/island/dnd";
 import { silence, type Silence } from "../lib/island/silence";
 import { notificationHistory, type NotificationHistory } from "../lib/notifications/history";
 import { useMeetingInvites } from "./useMeetingInvites";
@@ -9,16 +10,19 @@ const SEEN_IDS_MAX = 50;
 
 /**
  * Where an arriving notification goes: always to the history; it pops up (`show`) unless the
- * user silenced notifications for the meeting they are in. Returns whether it popped up.
+ * user silenced notifications for the meeting they are in or turned on Windows "Do not disturb"
+ * (the bell). Returns whether it popped up.
  */
 export function deliverNotification(
   notification: IslandNotification,
   now: number,
   history: NotificationHistory,
   silenceStore: Silence,
-  show: (notification: IslandNotification) => void
+  show: (notification: IslandNotification) => void,
+  dnd: Pick<DoNotDisturb, "isOn"> = doNotDisturb
 ): boolean {
-  const silenced = silenceStore.isSilent(now);
+  const muted = dnd.isOn();
+  const silenced = muted || silenceStore.isSilent(now);
   history.add(notification, now, silenced);
   if (!silenced) show(notification);
   return !silenced;
@@ -50,7 +54,7 @@ export interface UseNotificationsResult {
  * notification (show it, queue it behind a meeting alert) is the island state's business:
  * it is handed to `onReceived`. New Outlook meeting requests (useMeetingInvites, their own
  * setting) arrive the same way and count as unseen too. Everything also goes to the in-memory
- * history the Notifications tab shows; while a meeting is silenced nothing pops up.
+ * history the Notifications tab shows; while a meeting is silenced or Do not disturb is on nothing pops up.
  */
 export function useNotifications(
   enabled: boolean,

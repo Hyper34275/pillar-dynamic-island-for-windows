@@ -11,6 +11,7 @@ import { useReminders } from "../../hooks/useReminders";
 import { useMeetingSilence } from "../../hooks/useMeetingSilence";
 import { meetingStatus } from "../../lib/calendar/meetingStatus";
 import { silence, useSilenceUntil } from "../../lib/island/silence";
+import { useDoNotDisturb, useDoNotDisturbSync } from "../../lib/island/dnd";
 import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenReader";
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
@@ -84,11 +85,15 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const minute = useMinute().getTime();
   const status = useMemo(() => meetingStatus(events, minute), [events, minute]);
   const silenceUntil = useSilenceUntil();
+  // Windows "Do not disturb" (the bell in the open island): followed here so pop-ups respect it
+  // from the start, and shown in the closed island like a silenced meeting.
+  useDoNotDisturbSync();
+  const doNotDisturb = useDoNotDisturb() === true;
   const compact = useCompactContent(
     labels,
     status,
     settings.notificationsEnabled ? notifications.unseen : 0,
-    silenceUntil !== null && silenceUntil > minute
+    (silenceUntil !== null && silenceUntil > minute) || doNotDisturb
   );
 
   const { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed, foregroundChanged } = usePillState({

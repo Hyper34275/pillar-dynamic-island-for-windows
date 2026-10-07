@@ -83,6 +83,12 @@ export function CompactIsland({ content }: CompactIslandProps) {
   } as const;
   // The unseen badge: always the last child, so the trailing slot whatever the direction.
   const unseenBadge = unseen > 0 ? <CountBadge count={unseen} /> : null;
+  // Silent (a meeting's, or Do not disturb): the quiet slashed bell.
+  const silentMark = silent ? (
+    <span className="flex-shrink-0 flex" style={{ color: color.muted }} aria-hidden="true">
+      <BellSlashIcon size={icon.small} />
+    </span>
+  ) : null;
 
   if (meeting) {
     const eventColor = colorOf(status.event);
@@ -94,11 +100,7 @@ export function CompactIsland({ content }: CompactIslandProps) {
           <span className="bidi min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-label tabular-nums" style={{ color: color.fg }}>
             {statusText}
           </span>
-          {silent && (
-            <span className="flex-shrink-0 flex" style={{ color: color.muted }} aria-hidden="true">
-              <BellSlashIcon size={icon.small} />
-            </span>
-          )}
+          {silentMark}
         </span>
         {unseenBadge}
       </IslandLayer>
@@ -111,6 +113,7 @@ export function CompactIsland({ content }: CompactIslandProps) {
         <span className="flex flex-1 min-w-0 items-center justify-center">
           <TimeLabel time={time} width={labels.timeWidth} />
         </span>
+        {silentMark}
         {unseenBadge}
       </IslandLayer>
     );
@@ -136,6 +139,7 @@ export function CompactIsland({ content }: CompactIslandProps) {
         {full && <TimeLabel time={time} width={labels.timeWidth} />}
         {weekday}
       </span>
+      {silentMark}
       {unseenBadge}
     </IslandLayer>
   );
