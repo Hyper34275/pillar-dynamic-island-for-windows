@@ -46,6 +46,21 @@ body {
   outline-offset: 2px;
 }
 
+/* The island's own keyboard focus ring lives INSIDE the black shape. The generic ring above sits
+   2px outside its element: around the island that was THE "strange bright border" (measured Oct 2026,
+   frame strips: black fill → a 2px rgba(255,255,255,0.75) ring → desktop, in compact, open and
+   mid-morph). The cause: a click focuses the island root (tabIndex 0 while collapsed); any later key
+   (Escape, typing a note, the arrows) switches Chromium to keyboard modality and :focus-visible
+   then matches the root that the MOUSE focused, for as long as it keeps focus.
+   So: inside the shape, and never for a focus the pointer gave (PillShell sets
+   data-pointer-focus on pointerdown and clears it on Tab, the one key that moves focus to it). */
+[data-expanded]:focus-visible {
+  outline-offset: -4px;
+}
+[data-expanded][data-pointer-focus]:focus-visible {
+  outline: none;
+}
+
 /* A scrolling panel: its bottom edge dissolves into the island, and its scrollbar is a thin,
    quiet thumb living in the panel's side inset (tokens.ts scrollbar): the gutter is reserved on
    both sides, so the cards keep exactly the same bounds whether the list scrolls or not. In RTL

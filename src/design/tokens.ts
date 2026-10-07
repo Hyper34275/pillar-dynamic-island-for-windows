@@ -112,6 +112,9 @@ export const palette = {
   outline: "transparent",
   /** The island's own edge against bright wallpapers. */
   islandEdge: "rgba(255,255,255,0.10)",
+  /** The island's adaptive keyline (lib/island/keyline.ts): ONE physical pixel, drawn only while the
+   *  backdrop behind the island is very dark; never a permanent border. */
+  islandKeyline: "rgba(255,255,255,0.14)",
 } as const;
 
 export type ColorName = keyof typeof palette;
@@ -126,6 +129,8 @@ export const paletteHighContrast: Partial<Record<ColorName, string>> = {
   fill: "rgba(255,255,255,0.2)",
   outline: "rgba(255,255,255,0.6)",
   islandEdge: "rgba(255,255,255,0.6)",
+  /** prefers-contrast: more asks for a visible edge: the keyline is then always drawn. */
+  islandKeyline: "rgba(255,255,255,0.6)",
   focus: "#FFFFFF",
 };
 
