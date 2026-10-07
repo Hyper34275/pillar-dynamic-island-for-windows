@@ -8,6 +8,7 @@ import {
   FOREGROUND_GRACE_MS,
   HOVER_INTENT_MS,
   LEAVE_COLLAPSE_MS,
+  NOTIFICATION_GRACE_MS,
   NOTIFICATION_MS,
   UNATTENDED_COLLAPSE_MS,
 } from "../lib/island/timing";
@@ -248,7 +249,10 @@ describe("temporary states", () => {
     await mountReady();
     await call(() => api.island.showNotification(toast()));
     expect(view()).toBe("notification");
-    await ms(NOTIFICATION_MS);
+    // Its dwell, then the session's grace (a second timer, armed when the dwell ends).
+    await ms(NOTIFICATION_MS - NOTIFICATION_GRACE_MS);
+    expect(view()).toBe("notification");
+    await ms(NOTIFICATION_GRACE_MS);
     expect(view()).toBe("idle");
   });
 

@@ -2,17 +2,20 @@
 //
 // Three springs drive everything that moves, all solved in closed form every frame of motion's
 // frame loop (lib/island/spring.ts, useIslandMotion.ts): the island's shape (open, close,
-// alerts, toasts: islandSprings), the tab capsule and the tab content's progress (tabSprings).
+// alerts, toasts: islandSprings), the tab capsule and the tab content's progress (tabLayers.ts),
+// and a toast's payload handoff (toastHandoff.ts).
 // Each retargets from its current position and velocity, so any interruption bends the motion
 // instead of restarting it. Content has no clock of its own: it fades by how far its driver has
 // travelled, on the windows in `layerFade` / `partFade` (lib/island/morph.ts). Every spring
 // settles on its own and stops its frame loop; nothing here animates forever, and no timer or
 // delay takes part in any of it.
 //
-// REDUCED_MOTION (OS "show animations" off): like motion's own reducedMotion="user" policy,
-// movement that only decorates (the tab content's sideways shift, the press scale, the launch
-// pop) is dropped, while the island's change of shape and the cross-fades stay, since they are
-// how the island shows what it turned into. Correctness never depends on any of it.
+// REDUCED_MOTION (OS "show animations" off): a profile of its own, not "the same with a few
+// decorations off": the shape morphs on tighter critically damped springs (islandSpringsReduced),
+// the tab content and toast payloads hand over on faster clocks with no sideways / vertical drift,
+// the panel body does not scale, and the press scale and the launch pop are dropped. What stays:
+// the change of shape and the hand-overs, with the same ownership rules (one owner at a time, at
+// most two layers, the latest target wins). Correctness never depends on any of it.
 
 import type { Fade } from "../../lib/island/morph";
 import { getIslandLimits, type IslandLimits } from "../../lib/island/limits";
@@ -42,53 +45,106 @@ export const islandSprings: { width: SpringParams; height: SpringParams } = {
 };
 
 /**
- * Tab changes. The capsule (the one selection highlight) is the primary feedback: it starts on
- * the next frame and is ~80 % of the way within 0.1 s, never swinging into the next tab. The
- * content's cross-fade runs on its own, slightly slower progress spring that starts in the same
- * frame, so the new content is never ahead of the capsule, and its duration does not depend on
- * how many tabs the capsule travels.
+ * The shape under reduced motion: still a continuous change of shape (it is how the island says
+ * what it turned into), but critically damped, tighter and with no width-before-height lag: less
+ * travel time, no settle at all. Content keeps the same ownership rules (it reads off the same
+ * progress), without drift or scale.
  */
-export const tabSprings: { capsule: SpringParams; content: SpringParams } = {
-  capsule: { response: 0.22, dampingFraction: 1 },
-  content: { response: 0.36, dampingFraction: 1 },
+export const islandSpringsReduced: { width: SpringParams; height: SpringParams } = {
+  width: { response: 0.24, dampingFraction: 1 },
+  height: { response: 0.24, dampingFraction: 1 },
 };
 
+
 /**
- * When each layer of island content fades, as fractions of the island's progress (0: the
- * shape starts moving, 1: it has arrived). Every layer rides the vertical centre of the shape
- * (see IslandLayer), so content never floats in a corner of a large empty shape. What leaves
- * and what arrives overlap, so no frame is an empty black shape:
- *  - opening, the compact content is gone by 0.3 while the expanded header is already coming in;
- *  - closing, the expanded body holds (fading) until 0.9 and the compact content arrives from 0.72,
- *    once the shape is small enough to be read as the pill it is becoming. Measured in the real
- *    WebView2 (Oct 2026): with the earlier 0.42 the date showed at 50 % in a 260x217 shape; now it
- *    starts at ~220x140 and is at two thirds by ~200x115, and no frame drops below ~29 % content.
+ * When each layer of island content fades, as fractions of the island's progress (0: the shape
+ * starts moving, 1: it has arrived). Read off ONE driver (the island's animated size), so the
+ * shell and every layer agree in every frame, an interrupted morph simply continues from what is
+ * on screen, and there is no timer to race. The rules (the "ownership" of the island's content):
+ *  - one owner at a time: what leaves is faint before what arrives becomes readable, so the
+ *    compact content and the open panel (or a toast) are never both readable;
+ *  - no near-empty shape: the gap between the last owner fading and the next arriving is a few
+ *    hundredths of progress (one frame at most);
+ *  - no tiny compact content inside a large shape: closing, the compact content only arrives in
+ *    the last ~20 % of the morph (the shape is then within a few dozen px of the pill), while the
+ *    panel's body holds until then (masked between the header and dock rows, see IslandPart);
+ *  - opening, the compact content is gone by a quarter of the way, the header takes the top row
+ *    (from the leading edge), the body establishes itself once there is room, the dock settles last.
+ * Which window a layer ARRIVES on depends on what it replaces (entryFade): the compact content
+ * coming back from a toast can arrive much earlier than from the 400x440 panel, because the
+ * toast's shape is already almost a pill.
  */
 export const layerFade = {
-  compact: { in: [0.72, 0.97], out: 0.3 },
-  /** The expanded layer only times its own removal; its parts fade on `partFade`. */
-  expanded: { in: [0, 0], out: 0.9 },
+  /** Compact content: after the open panel (the default), arriving late; leaving early when anything opens. */
+  compact: { in: [0.78, 0.98], out: 0.25 },
+  /** The expanded layer only times its own removal (the slowest part's `out`); its parts fade on `partFade`. */
+  expanded: { in: [0, 0], out: 0.86 },
   /**
-   * Meeting alert, notification toast, ring/silent pill: the shape opens first, then the content.
-   * A toast replacing a toast changes only the width, so the two overlap (in from 0.35, out by
-   * 0.55): measured in the real WebView2, the earlier 0.45/0.45 left one near-empty frame.
+   * Meeting alert, notification toast, ring/silent pill: the shape opens first, then the content;
+   * they leave by half way, as the compact content arrives (entryFade.compact.fromTemporary).
    */
-  temporary: { in: [0.35, 0.9], out: 0.55 },
-  /** Tab title and panel, on the tab content's progress. */
-  tab: { in: [0.2, 0.9], out: 0.5 },
+  temporary: { in: [0.35, 0.9], out: 0.5 },
 } as const satisfies Record<string, Fade>;
+
+/**
+ * The window a layer arrives on, by what the island showed before. Leaving always uses the
+ * layer's own `out` (layerFade): this only shifts arrivals so that the hand-over is strict for
+ * every pair (panel ↔ compact, toast ↔ compact, panel → alert).
+ */
+export const entryFade = {
+  compact: {
+    fromExpanded: layerFade.compact,
+    fromTemporary: { in: [0.42, 0.9], out: layerFade.compact.out },
+  },
+  temporary: {
+    /** Toast / alert / ring pill opening from the pill: the compact content is gone by 0.25, the toast takes over from 0.2. */
+    fromCompact: { in: [0.2, 0.8], out: layerFade.temporary.out },
+    /** A meeting alert over the open panel: the panel's body holds until 0.84, so the alert waits for it. */
+    fromExpanded: { in: [0.76, 0.98], out: layerFade.temporary.out },
+  },
+} as const satisfies Record<string, Record<string, Fade>>;
+
+/** What the island showed before the transition now running: picks entryFade. */
+export type IslandOrigin = "boot" | "compact" | "expanded" | "temporary";
+
+/** The arrival window of a layer `kind` after `origin`. */
+export function arrivalFade(kind: "compact" | "temporary", origin: IslandOrigin): Fade {
+  if (kind === "compact") return origin === "temporary" ? entryFade.compact.fromTemporary : entryFade.compact.fromExpanded;
+  return origin === "expanded" ? entryFade.temporary.fromExpanded : entryFade.temporary.fromCompact;
+}
 
 /**
  * The expanded island's parts, each riding its own edge of the shape (see IslandPart): the
- * header with the top-left corner, the dock with the bottom edge, the body in the middle.
- * Opening, space comes first, then the header, the body, and the dock last; closing, the dock
- * goes first and the body last, so the shape always has content until the compact one arrives.
+ * header with the top / leading corner, the body right under it (masked above the dock, with a
+ * slight scale from its top that supports its fade), the dock with the bottom edge. Opening: the
+ * header takes the top row first (0.2); once there is room the body and the dock arrive together
+ * (the dock covers the body's only cut line, at its bottom). Closing: the header leaves the top
+ * row first, the dock holds a little longer (covering the body's cut while the body is still
+ * readable), and the body goes last, handing over to the compact content at ~0.8.
  */
 export const partFade = {
-  header: { in: [0.15, 0.6], out: 0.6 },
-  body: { in: [0.35, 0.85], out: 0.9 },
-  dock: { in: [0.4, 0.9], out: 0.5 },
+  header: { in: [0.2, 0.6], out: 0.5 },
+  body: { in: [0.4, 0.85], out: 0.84 },
+  dock: { in: [0.4, 0.85], out: 0.6 },
 } as const satisfies Record<string, Fade>;
+
+/** The body's scale at the start of its fade in / end of its fade out (supports the fade; 1 at rest). */
+export const BODY_ENTRY_SCALE = 0.965;
+
+/**
+ * Content is laid out once at its final size and never reflows; while the shape is narrower than
+ * it (opening, or a toast growing to a wider one) it is scaled uniformly to the shape's width,
+ * never below this, so its own padding absorbs the difference: an app icon at a toast's edge, the
+ * outer dock tabs, the panel's cards are never cut by the shape's sides (no crop reveal). Uniform
+ * and at most 15 %: never a squash, and 1 at rest.
+ */
+export const FIT_MIN_SCALE = 0.85;
+
+/** The fit scale for content `contentWidth` wide in a shape `shapeWidth` wide. */
+export function fitScale(shapeWidth: number, contentWidth: number): number {
+  if (!(contentWidth > 0)) return 1;
+  return Math.min(1, Math.max(FIT_MIN_SCALE, shapeWidth / contentWidth));
+}
 
 /** How far (px) tab content shifts with the direction of the tab change: a hint, not a slide. */
 export const TAB_SHIFT_PX = 6;

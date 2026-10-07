@@ -2,7 +2,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { TabId } from "../components/Pill/tabs";
 import type { IslandNotification } from "../lib/ipc";
 import { initialIslandState, islandReducer, selectView, type IslandState, type IslandView, type Ringer } from "../lib/island/state";
-import { ALERT_MS, NOTIFICATION_MS } from "../lib/island/timing";
+import { ALERT_MS, INVITE_TOAST_MS, NOTIFICATION_GRACE_MS, notificationDwellMs } from "../lib/island/timing";
 import type { ReminderAlert } from "../lib/reminders/types";
 
 /**
@@ -40,7 +40,10 @@ export interface IslandController {
   showAlert: (alert: ReminderAlert) => void;
   showNotification: (notification: IslandNotification) => void;
   dismissAlert: () => void;
+  /** The user dismissed the current toast: the next one shows at once, or the session ends. */
   dismissNotification: () => void;
+  /** The user left the notifications altogether (swipe, Escape, opening the source app): the queue is dropped too. */
+  endNotificationSession: () => void;
   /** Expand (to `tab`, or the last used one). */
   expand: (tab?: TabId) => void;
   /** Expand and keep it open until toggled, or the pointer has left for a while. */
@@ -57,8 +60,7 @@ export interface IslandController {
 /** The ring / silent pill stays this long, and this long after each tap. */
 export const RINGER_MS = 6_000;
 export const RINGER_AFTER_TOGGLE_MS = 1_800;
-/** An invitation stays longer than a toast: it has buttons to press. */
-export const INVITE_TOAST_MS = 9_000;
+export { INVITE_TOAST_MS };
 
 interface UseIslandStateOptions {
   /** The window is hidden (fullscreen app in front): temporary states wait until it is back. */
@@ -78,10 +80,13 @@ export function useIslandState({ suppressed = false }: UseIslandStateOptions = {
       showAlert: (alert: ReminderAlert) => dispatch({ type: "ALERT_SHOW", alert }),
       showNotification: (notification: IslandNotification) => dispatch({ type: "NOTIFICATION_SHOW", notification, at: Date.now() }),
       dismissAlert: () => dispatch({ type: "ALERT_DONE", at: Date.now() }),
-      dismissNotification: () => dispatch({ type: "NOTIFICATION_DONE" }),
+      dismissNotification: () => dispatch({ type: "NOTIFICATION_DONE", at: Date.now() }),
+      endNotificationSession: () => dispatch({ type: "NOTIFICATION_SESSION_END" }),
+      endNotificationDwell: () => dispatch({ type: "NOTIFICATION_DWELL_DONE", at: Date.now() }),
+      endNotificationGrace: () => dispatch({ type: "NOTIFICATION_GRACE_DONE" }),
       expand: (tab?: TabId) => dispatch({ type: "USER_EXPAND", tab }),
       pin: (tab?: TabId) => dispatch({ type: "PIN", tab }),
-      collapse: () => dispatch({ type: "USER_COLLAPSE" }),
+      collapse: () => dispatch({ type: "USER_COLLAPSE", at: Date.now() }),
       setHovering,
       showRinger: (ringer: Omit<Ringer, "toggles">) => dispatch({ type: "RINGER_SHOW", ringer }),
       toggleRinger: () => dispatch({ type: "RINGER_TOGGLE" }),
@@ -92,12 +97,21 @@ export function useIslandState({ suppressed = false }: UseIslandStateOptions = {
 
   useCountdown(state.alert?.key ?? null, ALERT_MS, paused, actions.dismissAlert);
   // Behind a higher state a temporary one keeps its time: it has not been seen yet.
+  // The current toast's dwell is keyed by its id and the generation in which it became current
+  // (it changes when it comes back after an alert), so a growing queue never restarts it. The
+  // dwell length is taken from the queue as it was when the toast became current, and kept: the
+  // countdown only starts over on a new key, so later arrivals do not shorten or stretch it.
+  const current = state.notification;
+  const notificationKey = current ? `${current.notification.id}:${state.shownGeneration}` : null;
+  const notificationPaused = paused || view.kind !== "notification";
   useCountdown(
-    state.notification ? String(state.notification.notification.id) : null,
-    state.notification?.notification.invite ? INVITE_TOAST_MS : NOTIFICATION_MS,
-    paused || view.kind !== "notification",
-    actions.dismissNotification
+    current?.phase === "showing" ? notificationKey : null,
+    current ? notificationDwellMs(current.notification, state.notificationQueue.length) : 0,
+    notificationPaused,
+    actions.endNotificationDwell
   );
+  // The grace after the last toast: it stays on screen, a new arrival takes over, else it ends.
+  useCountdown(current?.phase === "lingering" ? `grace:${notificationKey}` : null, NOTIFICATION_GRACE_MS, notificationPaused, actions.endNotificationGrace);
   useCountdown(
     state.ringer ? `${state.ringer.key}:${state.ringer.toggles}` : null,
     state.ringer && state.ringer.toggles > 0 ? RINGER_AFTER_TOGGLE_MS : RINGER_MS,

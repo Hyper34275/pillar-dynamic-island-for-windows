@@ -7,20 +7,18 @@ import { setFixedLocale } from "../lib/i18n";
 import type { IslandNotification } from "../lib/ipc";
 import { createDoNotDisturb, type DoNotDisturb } from "../lib/island/dnd";
 import { createSilence } from "../lib/island/silence";
-import { initialIslandState, type IslandState } from "../lib/island/state";
+import { initialIslandState, islandReducer, selectView, MAX_QUEUED_NOTIFICATIONS, type IslandState } from "../lib/island/state";
 import { createNotificationHistory, type NotificationHistory } from "../lib/notifications/history";
 import { createMissedQueue, type MissedQueue } from "../lib/notifications/missed";
 import { deliverNotification } from "./useNotifications";
-import { REPLAY_GAP_MS, useMissedReplay } from "./useMissedReplay";
+import { useMissedReplay } from "./useMissedReplay";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const note = (id: number, title = `n${id}`): IslandNotification => ({ id, appName: "Teams", title, body: "", timestamp: 0, aumid: null });
 
-type Island = Pick<IslandState, "notification" | "alert" | "ringer" | "expanded" | "tab">;
-
-function Harness({ island, show, dnd, queue, history }: { island: Island; show: (n: IslandNotification) => void; dnd: DoNotDisturb; queue: MissedQueue; history: NotificationHistory }) {
-  useMissedReplay(island, show, { dnd, queue, history });
+function Harness({ show, dnd, queue, history }: { show: (n: IslandNotification) => void; dnd: DoNotDisturb; queue: MissedQueue; history: NotificationHistory }) {
+  useMissedReplay(show, { dnd, queue, history });
   return null;
 }
 
@@ -31,26 +29,14 @@ let dnd: DoNotDisturb;
 let queue: MissedQueue;
 let history: NotificationHistory;
 let shown: IslandNotification[];
-let island: Island;
-const last = () => shown[shown.length - 1];
 
-const render = () => act(() => root.render(<Harness island={island} show={(n) => shown.push(n)} dnd={dnd} queue={queue} history={history} />));
+const render = () => act(() => root.render(<Harness show={(n) => shown.push(n)} dnd={dnd} queue={queue} history={history} />));
 const arrive = (n: IslandNotification) => deliverNotification(n, Date.now(), history, createSilence(), (x) => shown.push(x), dnd, queue);
 const setWindows = async (on: boolean) => {
   windowsOn = on;
   await act(async () => {
     await dnd.refresh();
   });
-};
-/** The toast on screen runs out (NOTIFICATION_DONE), and the gap passes. */
-const toastDone = () => {
-  island = { ...island, notification: null };
-  render();
-  act(() => vi.advanceTimersByTime(REPLAY_GAP_MS));
-};
-const toastShown = (n: IslandNotification) => {
-  island = { ...island, notification: { notification: n, receivedAt: Date.now() } };
-  render();
 };
 
 beforeEach(async () => {
@@ -64,7 +50,6 @@ beforeEach(async () => {
   queue = createMissedQueue();
   history = createNotificationHistory();
   shown = [];
-  island = { ...initialIslandState };
   render();
   await setWindows(false);
 });
@@ -76,8 +61,12 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** What the island does with what the replay hands it: the real reducer, all at one instant. */
+const intoIsland = (notifications: IslandNotification[], from: IslandState = initialIslandState) =>
+  notifications.reduce((state, notification) => islandReducer(state, { type: "NOTIFICATION_SHOW", notification, at: 0 }), from);
+
 describe("missed notifications", () => {
-  it("are held while Do not disturb is on, then replayed after a 'You missed N' summary, one at a time", async () => {
+  it("are held while Do not disturb is on, then handed over at once, after a 'You missed N' summary", async () => {
     await setWindows(true);
     expect(arrive(note(1))).toBe(false);
     expect(arrive(note(2))).toBe(false);
@@ -86,60 +75,40 @@ describe("missed notifications", () => {
     expect(history.getSnapshot().every((e) => e.missed && e.silenced)).toBe(true);
 
     await setWindows(false);
-    act(() => vi.advanceTimersByTime(REPLAY_GAP_MS));
-    expect(shown).toHaveLength(1);
+    expect(shown).toHaveLength(4);
     expect(shown[0].missedSummary).toEqual({ count: 3 });
     expect(shown[0].title).toBe("פספסת 3 התראות");
+    expect(shown.slice(1).map((n) => n.id)).toEqual([1, 2, 3]);
 
-    // Nothing more while a toast is on screen.
-    toastShown(shown[0]);
-    act(() => vi.advanceTimersByTime(10_000));
-    expect(shown).toHaveLength(1);
-
-    for (const id of [1, 2, 3]) {
-      toastDone();
-      expect(last().id).toBe(id);
-      toastShown(last());
-    }
-    toastDone();
-    expect(shown.map((n) => n.id)).toEqual([shown[0].id, 1, 2, 3]);
+    // The session plays them in order: the summary first, the island free.
+    const state = intoIsland(shown);
+    expect(state.notification?.notification.missedSummary).toBeDefined();
+    expect(state.notificationQueue.map((q) => q.notification.id)).toEqual([1, 2, 3]);
   });
 
-  it("all of them, even many, and the summary counts every one", async () => {
+  it("with many, the summary counts every one and the session never drops the summary", async () => {
     await setWindows(true);
-    for (let id = 1; id <= 15; id++) arrive(note(id));
+    for (let id = 1; id <= 50; id++) arrive(note(id));
     await setWindows(false);
-    act(() => vi.advanceTimersByTime(REPLAY_GAP_MS));
-    expect(shown[0].missedSummary).toEqual({ count: 15 });
-    for (let i = 0; i < 15; i++) {
-      toastShown(last());
-      toastDone();
-    }
-    expect(shown.slice(1).map((n) => n.id)).toEqual(Array.from({ length: 15 }, (_, i) => i + 1));
+    expect(shown[0].missedSummary).toEqual({ count: 50 });
+    expect(shown).toHaveLength(51);
+
+    const free = intoIsland(shown);
+    expect(free.notification?.notification.missedSummary).toBeDefined();
+    expect(free.notificationQueue).toHaveLength(MAX_QUEUED_NOTIFICATIONS);
+
+    // Island busy with another toast: the summary waits in line and is still not the one dropped.
+    const busy = intoIsland(shown, intoIsland([note(900)]));
+    expect(busy.notificationQueue).toHaveLength(MAX_QUEUED_NOTIFICATIONS);
+    expect(busy.notificationQueue.some((q) => q.notification.missedSummary)).toBe(true);
   });
 
-  it("wait while the panel is open on another tab, and stop once the Notifications tab is shown", async () => {
+  it("an open panel is not covered by the replay", async () => {
     await setWindows(true);
     arrive(note(1));
-    arrive(note(2));
-    island = { ...island, expanded: true, tab: "calendar" };
-    render();
-    // Turned off from the bell in the open panel: nothing covers the panel.
     await setWindows(false);
-    act(() => vi.advanceTimersByTime(5_000));
-    expect(shown).toHaveLength(0);
-    // Closed: the replay starts.
-    island = { ...island, expanded: false };
-    render();
-    act(() => vi.advanceTimersByTime(REPLAY_GAP_MS));
-    expect(shown[0].missedSummary).toEqual({ count: 2 });
-    // The summary was clicked: the Notifications tab lists them, so the replay ends.
-    island = { ...island, notification: null, expanded: true, tab: "notifications" };
-    render();
-    island = { ...island, expanded: false };
-    render();
-    act(() => vi.advanceTimersByTime(5_000));
-    expect(shown).toHaveLength(1);
+    const open = islandReducer(initialIslandState, { type: "USER_EXPAND", tab: "notifications" });
+    expect(selectView(intoIsland(shown, open)).kind).toBe("userExpanded");
   });
 
   it("nothing is replayed when nothing was missed, and a new Do not disturb starts a new batch", async () => {
@@ -153,11 +122,11 @@ describe("missed notifications", () => {
     expect(history.getSnapshot()[0].missed).toBe(true);
     // Turned on again before the user came back: the first batch is ordinary history now.
     await setWindows(false);
+    shown.length = 0;
     await setWindows(true);
     expect(history.getSnapshot()[0].missed).toBeUndefined();
     arrive(note(2));
     await setWindows(false);
-    act(() => vi.advanceTimersByTime(REPLAY_GAP_MS));
     expect(shown[0].missedSummary).toEqual({ count: 1 });
   });
 

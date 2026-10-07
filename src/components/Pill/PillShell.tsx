@@ -13,21 +13,25 @@ import { useMissedReplay } from "../../hooks/useMissedReplay";
 import { meetingStatus } from "../../lib/calendar/meetingStatus";
 import { silence, useSilenceUntil } from "../../lib/island/silence";
 import { useDoNotDisturb, useDoNotDisturbSync } from "../../lib/island/dnd";
+import { useIslandKeyline } from "../../lib/island/keyline";
+import { islandEdgeStyle } from "./islandEdge";
+import { useIslandFrameTrace } from "./frameTrace";
+import { transitionProgress } from "../../lib/island/morph";
 import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenReader";
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
-import { color } from "../../design/tokens";
 import { NO_LIMITS, setIslandLimits, useIslandLimits, type IslandLimits } from "../../lib/island/limits";
 import { ipc, type IslandNotification } from "../../lib/ipc";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
-import { bootAnimationDuration, expandedSize, ISLAND_TOP_INSET, islandSprings, limitSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
+import { bootAnimationDuration, expandedSize, islandSpringsReduced, type IslandOrigin, ISLAND_TOP_INSET, islandSprings, limitSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
 import { toastLayout } from "./toastLayout";
 import { ShellContext, TransitionContext, useDrivenTransition } from "./drivenTransition";
 import { useIslandMotion } from "./useIslandMotion";
 import type { ReminderStore } from "../../lib/reminders/types";
 import { alertIslandSize } from "./alertLayout";
 import { CompactIsland } from "./CompactIsland";
+import { IslandOriginContext } from "./IslandLayer";
 import { ContextMenu } from "./ContextMenu";
 import { ExpandedIsland } from "./ExpandedIsland";
 import { MeetingAlert, meetingAlertAnnouncement, meetingAlertLabel, meetingAlertSubject } from "./MeetingAlert";
@@ -39,9 +43,6 @@ import { TABS, type TabId } from "./tabs";
 import { useCompactContent, useCompactLabels } from "./useCompactLayout";
 import { maxShapeSize, usePillGeometry } from "./usePillGeometry";
 
-// Constant on purpose: an animated shadow would repaint every frame of every morph. Inset,
-// because the window region is cut to the island's shape and would clip anything outside it.
-const ISLAND_EDGE = `inset 0 0 0 0.5px ${color.islandEdge}`;
 
 // The island's shape never leaves these: the launch dot below, the largest preferred shape above.
 // The monitor's limits (lib/island/limits.ts) only ever lower every target, so a limited island
@@ -80,17 +81,22 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const notifications = useNotifications(settings.notificationsEnabled, islandState.showNotification);
   const { snooze } = useReminders(islandState.showAlert, reminderStore);
   useMeetingSilence(settingsLoaded ? settings.meetingSilencePrompt : null, islandState.showRinger);
-  // Do not disturb ended: "You missed N notifications", then each one it held.
-  useMissedReplay(state, islandState.showNotification);
+  // Do not disturb ended: "You missed N notifications", then each one it held, as one
+  // notification session (open once, one after another, close once).
+  useMissedReplay(islandState.showNotification);
   const { activate: activateNotification } = notifications;
-  const { pin } = islandState;
+  const { pin, endNotificationSession } = islandState;
   const activateToast = useCallback(
     (notification: IslandNotification) => {
       // The missed summary leads to the list of what was missed (the Notifications tab).
       if (notification.missedSummary) pin("notifications");
-      else activateNotification(notification);
+      else {
+        activateNotification(notification);
+        // The user went to the app: the rest of the burst is in the Notification Center.
+        endNotificationSession();
+      }
     },
-    [activateNotification, pin]
+    [activateNotification, pin, endNotificationSession]
   );
 
   // The collapsed island: the date, or a meeting about to start / in progress, plus the unseen count.
@@ -184,6 +190,9 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   }, [isBooting, reducedMotion, completeBootAnimation]);
 
   // What the island shows (also the AnimatePresence key of that layer) and the size it morphs to.
+  // Every notification of a session shares ONE key: the toast layer (the black shape's content
+  // stage) stays mounted from the first notification to the last, and only its payload changes
+  // hands inside it (toastHandoff.ts); the island transition only follows the change of size.
   const shownKey = isDot
     ? "boot"
     : view.kind === "meetingAlert"
@@ -191,11 +200,22 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       : view.kind === "ringer"
         ? `ringer-${view.ringer.key}`
         : view.kind === "notification"
-        ? `notification-${view.notification.id}`
+        ? "toast"
         : view.kind === "userExpanded"
           ? "expanded"
           : "compact";
   const shownSize: IslandSize = isDot ? pillDimensions.boot : target;
+
+  // What the island showed before the transition now running: an arriving layer takes its fade-in
+  // window from it (animations.ts entryFade), so every hand-over has one owner at a time. Decided
+  // during render, like the transition itself, so the arriving layer's first frame already uses it.
+  const shownKind: IslandOrigin = isDot ? "boot" : view.kind === "idle" ? "compact" : view.kind === "userExpanded" ? "expanded" : "temporary";
+  const [originState, setOriginState] = useState<{ kind: IslandOrigin; origin: IslandOrigin }>({ kind: shownKind, origin: shownKind });
+  let origin = originState.origin;
+  if (originState.kind !== shownKind) {
+    origin = originState.kind;
+    setOriginState({ kind: shownKind, origin });
+  }
 
   // Follow the shown size (boot, expand, alert, toast, collapse, new date text). The engine
   // continues from the current size and velocity, so a reversed or interrupted morph never
@@ -204,10 +224,17 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const { width, height, radius, settled } = useIslandMotion(shownSize, {
     initial: pillDimensions.boot,
     bounds: SHAPE_BOUNDS,
-    springs: islandSprings,
+    springs: reducedMotion ? islandSpringsReduced : islandSprings,
   });
 
   const { invalidate: invalidateGeometry } = usePillGeometry(target, { width, height });
+
+  // The island's edge: no permanent hairline (it read as a bordered panel); a one-physical-pixel
+  // keyline only while what is behind the island is almost black (lib/island/keyline.ts), and it
+  // only ever changes while the island is at rest, never in the middle of a morph.
+  const [atRest, setAtRest] = useState(() => settled.get());
+  useEffect(() => settled.on("change", setAtRest), [settled]);
+  const keyline = useIslandKeyline(atRest);
 
   // Interactive as soon as the morph has landed (the boot effect above holds the deadline).
   useEffect(() => {
@@ -225,6 +252,19 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const islandTransition = useDrivenTransition(islandDrivers, [shownSize.width, shownSize.height], shownKey);
   const shell = useMemo(() => ({ transition: islandTransition, width, height }), [islandTransition, width, height]);
 
+  // Per-frame instrumentation for the motion harness (off, and costing nothing, until started).
+  useIslandFrameTrace(() => ({
+    view: view.kind,
+    shownKey,
+    origin,
+    progress: transitionProgress(islandTransition.transition, [width.get(), height.get()]),
+    activeTab,
+    queueLength: view.kind === "notification" ? view.queueLength : state.notificationQueue.length,
+    sessionPhase: view.kind === "notification" ? view.phase : "idle",
+    sessionId: state.sessionId,
+    currentToastId: view.kind === "notification" ? view.notification.id : null,
+  }));
+
   useEffect(() => {
     dlog("info", "pill", `view -> ${view.kind}${isBooting ? " (booting)" : ""}`);
   }, [view.kind, isBooting]);
@@ -232,10 +272,11 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     dlog("info", "pill", `activeTab -> ${activeTab}`);
   }, [activeTab]);
 
-  // A meeting alert is announced once, politely, by the shell's live region.
+  // A meeting alert is announced once, politely, by the shell's live region, with the minutes the
+  // closed island would say now (the clock store's minute: the start of the current minute).
   const shownAlert = view.kind === "meetingAlert" ? view.alert : null;
   useEffect(() => {
-    if (shownAlert) announce(meetingAlertAnnouncement(shownAlert));
+    if (shownAlert) announce(meetingAlertAnnouncement(shownAlert, Math.floor(Date.now() / 60_000) * 60_000));
   }, [shownAlert, announce]);
 
   // The ring / silent pill says what it switched to.
@@ -307,7 +348,9 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       holdCollapsed();
       if (view.kind === "meetingAlert") islandState.dismissAlert();
       else if (view.kind === "ringer") islandState.dismissRinger();
-      else if (view.kind === "notification") islandState.dismissNotification();
+      // Swipe, Escape, a click elsewhere: the whole notification session goes (the Notification
+      // Center keeps every one of them), not just the toast on screen.
+      else if (view.kind === "notification") islandState.endNotificationSession();
       else islandState.collapse();
     },
     [holdCollapsed, view.kind, islandState]
@@ -323,7 +366,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       }
       if (view.kind === "meetingAlert") islandState.dismissAlert();
       else if (view.kind === "ringer") islandState.dismissRinger();
-      else if (view.kind === "notification") islandState.dismissNotification();
+      else if (view.kind === "notification") islandState.endNotificationSession();
       islandState.pin(tab);
     },
     [view.kind, activeTab, islandState, closeAll]
@@ -379,6 +422,9 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Tab is how a keyboard user reaches the island root: from then on its focus is theirs and
+      // shows its ring (index.css). Any other key keeps a pointer-given focus ringless.
+      if (e.key === "Tab") document.querySelector<HTMLElement>("[data-expanded]")?.removeAttribute("data-pointer-focus");
       // Escape closes whatever is presented (the panel, an alert, a toast, the ringer pill); it
       // never deletes anything. A control that already used the key (the note box leaving
       // itself, a confirmation cancelling) has called preventDefault or stopped the event: not ours.
@@ -408,7 +454,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const ariaLabel = isExpanded
     ? t("island.expandedLabel", { app: APP_NAME })
     : view.kind === "meetingAlert"
-      ? `${meetingAlertLabel(view.alert)}. ${meetingAlertSubject(view.alert)}`
+      ? `${meetingAlertLabel(view.alert, minute)}. ${meetingAlertSubject(view.alert)}`
       : view.kind === "ringer"
         ? `${ringerLabel(view.ringer)}. ${view.ringer.phase === "start" ? t("ringer.hint") : ""}`
         : compact.ariaLabel;
@@ -470,7 +516,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
           width,
           height,
           borderRadius: radius,
-          boxShadow: ISLAND_EDGE,
+          ...islandEdgeStyle(keyline),
           overflow: "hidden",
           background: isDot
               ? "radial-gradient(circle, rgba(255,255,255,0.85) 0%, rgba(200,200,200,0.6) 100%)"
@@ -481,6 +527,9 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         // The launch entrance of the dot, and the release of the press feedback: no bounce.
         transition={reducedMotion ? { duration: 0.1, ease: "easeOut" } : springConfig.island}
         whileTap={view.kind === "idle" && !reducedMotion ? { scale: 0.97 } : undefined}
+        // A focus the pointer gave the island never shows the keyboard ring, even after a key
+        // press (index.css: that ring was the bright border around the island).
+        onPointerDown={(e) => e.currentTarget.setAttribute("data-pointer-focus", "")}
         onKeyDown={(e) => {
           if (view.kind === "idle" && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
@@ -492,12 +541,14 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
             unclickable) until it is gone, so closing never empties the island before it shrinks. */}
         <ShellContext.Provider value={shell}>
         <TransitionContext.Provider value={islandTransition}>
+        <IslandOriginContext.Provider value={origin}>
           <AnimatePresence>
             {shownKey === "compact" && <CompactIsland key="compact" content={compact} />}
             {view.kind === "meetingAlert" && !isDot && (
               <MeetingAlert
                 key={shownKey}
                 alert={view.alert}
+                nowMs={minute}
                 onJoin={() => closeAll("joined from the alert")}
                 onSnooze={() => {
                   snooze(view.alert);
@@ -510,6 +561,8 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
               <NotificationToast
                 key={shownKey}
                 notification={view.notification}
+                targetSize={target}
+                reducedMotion={reducedMotion}
                 onDismiss={islandState.dismissNotification}
                 onRemove={() => {
                   notificationHistory.remove(view.notification.id);
@@ -530,6 +583,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
               />
             )}
           </AnimatePresence>
+        </IslandOriginContext.Provider>
         </TransitionContext.Provider>
         </ShellContext.Provider>
 

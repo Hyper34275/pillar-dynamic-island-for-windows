@@ -61,6 +61,17 @@ afterEach(() => {
 
 const island = () => container.querySelector<HTMLElement>("[data-view]")!;
 const ms = (n: number) => act(async () => void (await vi.advanceTimersByTimeAsync(n)));
+/**
+ * Advances in 50 ms steps, as real time passes: a toast's dwell and the session's grace after it
+ * are two chained timers (the grace starts on the render after the dwell ends), and `each` sees
+ * the island at every step.
+ */
+async function steps(n: number, each?: () => void) {
+  for (let t = 0; t < n; t += 50) {
+    await ms(Math.min(50, n - t));
+    each?.();
+  }
+}
 
 async function mount(display: IslandDisplay = "full") {
   backend.display = display;
@@ -123,14 +134,14 @@ describe("the collapsed island's clock", () => {
 });
 
 describe("a notification arriving", () => {
-  it("shows the toast for 4.5 s of un-hovered time, then collapses to the island with a dot", async () => {
+  it("shows the toast for 4.5 s of un-hovered time (dwell + grace), then collapses to the island with a dot", async () => {
     await mount();
     await notify();
     expect(island().dataset.view).toBe("notification");
     expect(indicator()).toBeUndefined();
-    await ms(NOTIFICATION_MS - 100);
+    await steps(NOTIFICATION_MS - 100);
     expect(island().dataset.view).toBe("notification");
-    await ms(200);
+    await steps(200);
     expect(island().dataset.view).toBe("idle");
     expect(indicator()).toBeDefined();
     expect(indicator()!.textContent).toBe("");
@@ -144,21 +155,27 @@ describe("a notification arriving", () => {
     await ms(20_000);
     expect(island().dataset.view).toBe("notification");
     act(() => void island().dispatchEvent(new Event("pointerout", { bubbles: true })));
-    await ms(1_000);
-    expect(island().dataset.view).toBe("notification"); // 1.5 s were left, 1 s passed
-    await ms(700);
+    await steps(1_000);
+    expect(island().dataset.view).toBe("notification"); // 1.5 s were left (0.5 dwell + 1 grace), 1 s passed
+    await steps(700);
     expect(island().dataset.view).toBe("idle");
   });
 
-  it("restarts the full time for a second notification and counts both once collapsed", async () => {
+  it("queues a second notification behind the first, shows it without closing in between, and counts both once collapsed", async () => {
     await mount();
     await notify("first");
-    await ms(3_000);
+    await steps(3_000);
     await notify("second");
+    // The first keeps its readable time; the second waits in the session's queue.
+    expect(island().textContent).toContain("first");
+    const seen: string[] = [];
+    await steps(600, () => seen.push(island().dataset.view!));
     expect(island().textContent).toContain("second");
-    await ms(3_000); // 6 s since the first, but only 3 since the second
+    // One open, no close between the two.
+    expect(seen.every((view) => view === "notification")).toBe(true);
+    await steps(3_000); // the second's own dwell is running
     expect(island().dataset.view).toBe("notification");
-    await ms(NOTIFICATION_MS - 3_000 + 100);
+    await steps(NOTIFICATION_MS - 3_000 + 100);
     expect(island().dataset.view).toBe("idle");
     expect(indicator()!.textContent).toBe("2");
   });

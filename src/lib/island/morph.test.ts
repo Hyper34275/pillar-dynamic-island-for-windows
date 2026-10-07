@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { layerFade, partFade } from "../../components/Pill/animations";
+import { arrivalFade, layerFade, partFade } from "../../components/Pill/animations";
+import { tabFade } from "../../components/Pill/tabLayers";
+import { toastPayloadFade } from "../../components/Pill/toastHandoff";
 import { layerFrame, transitionDirection, transitionProgress, type Fade, type LayerFrame } from "./morph";
 
 const FRESH: LayerFrame = { opacity: 0, offset: 0 };
@@ -71,7 +73,7 @@ describe("layerFrame", () => {
   });
 
   it("continues an interrupted layer from what it showed, without a jump", () => {
-    const fade = layerFade.tab;
+    const fade = tabFade;
     const midway: LayerFrame = { opacity: 0.4, offset: -5 };
     // caught while leaving, then chosen again: rises at once from 0.4
     expect(layerFrame(fade, true, midway, 0, 0)).toEqual(midway);
@@ -82,55 +84,66 @@ describe("layerFrame", () => {
   });
 
   it("slides entering content in from its offset and leaving content out to the exit offset", () => {
-    expect(layerFrame(layerFade.tab, true, { opacity: 0, offset: 8 }, 0, 0).offset).toBe(8);
-    expect(layerFrame(layerFade.tab, true, { opacity: 0, offset: 8 }, 0, 1).offset).toBe(0);
-    expect(layerFrame(layerFade.tab, false, SHOWN, -8, 1).offset).toBe(-8);
+    expect(layerFrame(tabFade, true, { opacity: 0, offset: 8 }, 0, 0).offset).toBe(8);
+    expect(layerFrame(tabFade, true, { opacity: 0, offset: 8 }, 0, 1).offset).toBe(0);
+    expect(layerFrame(tabFade, false, SHOWN, -8, 1).offset).toBe(-8);
   });
 });
 
-describe("island choreography", () => {
-  // The most visible thing on the island at every point of the transition: the island is never
-  // an empty shape, in either direction. The expanded island is its parts (header, body, dock).
+describe("island choreography: one owner at a time", () => {
+  // Every hand-over (opening, closing, a toast arriving or leaving, a tab change, a toast replacing
+  // a toast) has ONE visual owner: the leaving content is faint before the arriving content is
+  // readable (never both above READABLE), and the island is never an empty shape for more than an
+  // instant (the most visible of the two stays above FLOOR).
+  const READABLE = 0.35;
+  const FLOOR = 0.08;
   const parts = Object.values(partFade);
   const expandedAt = (entering: boolean, p: number) =>
     Math.max(...parts.map((fade) => opacityAt(fade, entering, entering ? FRESH : SHOWN, p)));
-  const opening = (p: number) => Math.max(opacityAt(layerFade.compact, false, SHOWN, p), expandedAt(true, p));
-  const closing = (p: number) => Math.max(expandedAt(false, p), opacityAt(layerFade.compact, true, FRESH, p));
+  const handover = (leaving: (p: number) => number, arriving: (p: number) => number) => {
+    const frames = steps(1000).map((p) => [leaving(p), arriving(p)] as const);
+    return {
+      floor: Math.min(...frames.map(([a, b]) => Math.max(a, b))),
+      bothReadable: frames.filter(([a, b]) => a > READABLE && b > READABLE).length,
+      maxOverlap: Math.max(...frames.map(([a, b]) => Math.min(a, b))),
+    };
+  };
+  const leave = (fade: Fade) => (p: number) => opacityAt(fade, false, SHOWN, p);
+  const arrive = (fade: Fade) => (p: number) => opacityAt(fade, true, FRESH, p);
 
-  it("never empties the island while opening or closing", () => {
-    expect(Math.min(...steps().map(opening))).toBeGreaterThan(0.25);
-    expect(Math.min(...steps().map(closing))).toBeGreaterThan(0.25);
-  });
-
-  it("never empties the island when one toast or alert replaces another", () => {
-    const floor = Math.min(...steps().map((p) => Math.max(opacityAt(layerFade.temporary, false, SHOWN, p), opacityAt(layerFade.temporary, true, FRESH, p))));
-    expect(floor).toBeGreaterThan(0.25);
-  });
-
-  it("never leaves the tab content area empty while switching tabs", () => {
-    const floor = Math.min(...steps().map((p) => Math.max(opacityAt(layerFade.tab, false, SHOWN, p), opacityAt(layerFade.tab, true, FRESH, p))));
-    expect(floor).toBeGreaterThan(0.25);
+  it.each([
+    ["opening the panel", leave(layerFade.compact), (p: number) => expandedAt(true, p)],
+    ["closing the panel", (p: number) => expandedAt(false, p), arrive(arrivalFade("compact", "expanded"))],
+    ["a toast opening from the pill", leave(layerFade.compact), arrive(arrivalFade("temporary", "compact"))],
+    ["a toast closing to the pill", leave(layerFade.temporary), arrive(arrivalFade("compact", "temporary"))],
+    ["a meeting alert over the panel", (p: number) => expandedAt(false, p), arrive(arrivalFade("temporary", "expanded"))],
+    ["a tab change", leave(tabFade), arrive(tabFade)],
+    ["a toast replacing a toast (payload)", leave(toastPayloadFade), arrive(toastPayloadFade)],
+  ] as const)("%s: never two readable owners, never an empty shape", (_name, leaving, arriving) => {
+    const result = handover(leaving, arriving);
+    expect(result.bothReadable).toBe(0);
+    expect(result.floor).toBeGreaterThan(FLOOR);
+    expect(result.maxOverlap).toBeLessThan(READABLE);
   });
 
   it("removes the expanded layer only once its slowest part has gone", () => {
-    expect(layerFade.expanded.out).toBe(Math.max(...parts.map((fade) => fade.out)));
+    expect(layerFade.expanded.out).toBeGreaterThanOrEqual(Math.max(...parts.map((fade) => fade.out)));
   });
 
   it("opening: space first, then the header, the body, and the dock last", () => {
     expect(opacityAt(partFade.body, true, FRESH, 0.3)).toBe(0);
-    expect(opacityAt(partFade.body, true, FRESH, 0.65)).toBeGreaterThan(0.6);
+    expect(opacityAt(partFade.body, true, FRESH, 0.7)).toBeGreaterThan(0.6);
     expect(partFade.header.in[0]).toBeLessThan(partFade.body.in[0]);
-    expect(partFade.dock.in[1]).toBeGreaterThanOrEqual(partFade.body.in[1]);
+    expect(partFade.dock.in[0]).toBeGreaterThanOrEqual(partFade.body.in[0]);
     // the compact content is gone before the shape is far from a pill
-    expect(opacityAt(layerFade.compact, false, SHOWN, 0.3)).toBe(0);
+    expect(opacityAt(layerFade.compact, false, SHOWN, 0.25)).toBe(0);
   });
 
-  it("closing: the dock goes first, the body holds through most of it, and the compact content waits for a small shape", () => {
+  it("closing: the header leaves the top row first, the dock covers the body's cut, the body holds, and the compact content waits for a small shape", () => {
+    expect(partFade.header.out).toBeLessThan(partFade.dock.out);
     expect(partFade.dock.out).toBeLessThan(partFade.body.out);
-    expect(opacityAt(partFade.body, false, SHOWN, 0.25)).toBeGreaterThan(0.8);
-    // no compact date floating in a shape much larger than the pill
-    expect(opacityAt(layerFade.compact, true, FRESH, 0.7)).toBe(0);
-    // the expanded body is still there (fading) while the compact content has not arrived yet
-    expect(opacityAt(partFade.body, false, SHOWN, 0.7)).toBeGreaterThan(0.35);
+    // no compact date floating in a shape much larger than the pill (the last ~20 % of the morph only)
+    expect(opacityAt(arrivalFade("compact", "expanded"), true, FRESH, 0.78)).toBe(0);
+    expect(opacityAt(partFade.body, false, SHOWN, 0.6)).toBeGreaterThan(0.4);
   });
 });

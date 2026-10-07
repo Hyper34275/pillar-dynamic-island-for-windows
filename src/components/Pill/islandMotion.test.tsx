@@ -35,7 +35,7 @@ const island = () => container.querySelector<HTMLElement>("[data-expanded]")!;
 const layer = (name: string) => island().querySelector<HTMLElement>(`[data-layer="${name}"]`);
 const opacityOf = (el: HTMLElement | null) => (el ? Number(el.style.opacity || "1") : 0);
 /** A part of the expanded island (header, body, dock): the expanded layer itself stays opaque and its parts fade. */
-const part = (anchor: "top-start" | "center" | "bottom") => layer("expanded")?.querySelector<HTMLElement>(`[data-part="${anchor}"]`) ?? null;
+const part = (anchor: "top-start" | "top" | "bottom") => layer("expanded")?.querySelector<HTMLElement>(`[data-part="${anchor}"]`) ?? null;
 
 async function wait(ms: number) {
   await act(async () => {
@@ -83,7 +83,7 @@ describe("island transitions", () => {
     const checkFrame = () => {
       if (parseFloat(island().style.height) >= 140) return;
       smallFrames++;
-      expect(opacityOf(part("center"))).toBe(0);
+      expect(opacityOf(part("top"))).toBe(0);
       expect(opacityOf(part("bottom"))).toBe(0);
     };
     checkFrame();
@@ -92,7 +92,7 @@ describe("island transitions", () => {
     expect(layer("compact")).toBeNull();
     // At rest every part is exactly in place: no leftover offset.
     await waitUntil(() => island().style.width === `${panel.width}px` && island().style.height === `${panel.height}px`);
-    for (const anchor of ["top-start", "center", "bottom"] as const) expect(part(anchor)!.style.transform).toBe("none");
+    for (const anchor of ["top-start", "top", "bottom"] as const) expect(part(anchor)!.style.transform).toBe("none");
   });
 
   it("never draws a shape outside the compact..expanded range while opening and closing", async () => {
@@ -126,7 +126,7 @@ describe("island transitions", () => {
     // Still there as the collapse begins: the island is not emptied before it shrinks.
     const leaving = layer("expanded")!;
     expect(leaving).not.toBeNull();
-    expect(opacityOf(part("center"))).toBeGreaterThan(0.5); // a frame or two may already have run
+    expect(opacityOf(part("top"))).toBeGreaterThan(0.5); // a frame or two may already have run
     expect(leaving.getAttribute("aria-hidden")).toBe("true");
     expect(leaving.style.pointerEvents).toBe("none");
     expect(layer("compact")).not.toBeNull();
@@ -140,8 +140,8 @@ describe("island transitions", () => {
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
-    await waitUntil(() => opacityOf(part("center")) < 0.9);
-    const caught = opacityOf(part("center"));
+    await waitUntil(() => opacityOf(part("top")) < 0.9);
+    const caught = opacityOf(part("top"));
     expect(caught).toBeGreaterThan(0);
 
     await act(async () => {
@@ -149,8 +149,8 @@ describe("island transitions", () => {
     });
     expect(island().getAttribute("data-expanded")).toBe("true");
     // The same layer comes back from where it was (no remount at 0, no jump to 1).
-    expect(opacityOf(part("center"))).toBeGreaterThanOrEqual(caught - 0.05);
-    expect(opacityOf(part("center"))).toBeLessThan(1);
+    expect(opacityOf(part("top"))).toBeGreaterThanOrEqual(caught - 0.05);
+    expect(opacityOf(part("top"))).toBeLessThan(1);
     await waitUntil(() => opacityOf(part("bottom")) === 1);
   });
 

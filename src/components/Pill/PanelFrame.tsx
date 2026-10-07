@@ -41,9 +41,12 @@ interface PanelFrameProps extends Omit<ComponentProps<typeof IslandLayer>, "name
   dock: ReactNode;
   /** The body is a ref target (the tour scrolls it by code). */
   bodyRef?: Ref<HTMLDivElement>;
+  /** No scale on the body's fade (the OS "show animations" is off). */
+  reducedMotion?: boolean;
 }
 
-export function PanelFrame({ title, action, children, dock, bodyRef, className = "", style, ...rest }: PanelFrameProps) {
+export function PanelFrame({ title, action, children, dock, bodyRef, className = "", style, reducedMotion = false, ...rest }: PanelFrameProps) {
+  const rtl = uiDirection() === "rtl";
   return (
     <IslandLayer
       {...rest}
@@ -54,11 +57,11 @@ export function PanelFrame({ title, action, children, dock, bodyRef, className =
       className={`island-expanded flex flex-col cursor-default text-fg ${className}`}
       style={{ ...style, paddingTop: panel.paddingTop, paddingBottom: panel.paddingBottom }}
     >
-      <IslandPart anchor="top-start" fade={partFade.header} className="flex items-center flex-shrink-0 px-panel-inset" style={{ height: panel.headerHeight }}>
+      <IslandPart anchor="top-start" rtl={rtl} fade={partFade.header} className="flex items-center flex-shrink-0 px-panel-inset" style={{ height: panel.headerHeight }}>
         <div className="grid justify-items-start min-w-0 flex-1">{title}</div>
         <div className="grid justify-items-end flex-shrink-0 ms-auto">{action}</div>
       </IslandPart>
-      <IslandPart anchor="center" fade={partFade.body} className="flex-1 min-h-0 overflow-hidden w-full relative" style={{ marginTop: panel.headerGap }}>
+      <IslandPart anchor="top" between still={reducedMotion} fade={partFade.body} className="flex-1 min-h-0 overflow-hidden w-full relative" style={{ marginTop: panel.headerGap }}>
         <div ref={bodyRef} className="absolute inset-0">
           {children}
         </div>

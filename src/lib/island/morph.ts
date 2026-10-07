@@ -17,6 +17,13 @@ export interface Transition {
    * progress only ever counts forwards; the direction is the tab change's).
    */
   readonly direction?: -1 | 0 | 1;
+  /**
+   * How the drivers' progress combines. "sum" (default): the distance left over all drivers
+   * together (the island's width and height are one morph). "min": the least advanced driver that
+   * moves at all, each normalised on its own (a toast's payload handoff, whose own clock must
+   * wait for the shell: new content never reads ahead of the shape that has to hold it).
+   */
+  readonly combine?: "sum" | "min";
 }
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
@@ -33,6 +40,15 @@ const easeIn = (t: number) => t * t;
  * nowhere is complete at once.
  */
 export function transitionProgress(transition: Transition, current: readonly number[]): number {
+  if (transition.combine === "min") {
+    let least = 1;
+    for (let i = 0; i < transition.to.length; i++) {
+      const distance = Math.abs(transition.to[i] - transition.from[i]);
+      if (distance < 1e-6) continue;
+      least = Math.min(least, clamp01(1 - Math.abs(transition.to[i] - (current[i] ?? transition.to[i])) / distance));
+    }
+    return least;
+  }
   let total = 0;
   let left = 0;
   for (let i = 0; i < transition.to.length; i++) {

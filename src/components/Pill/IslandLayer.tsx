@@ -1,7 +1,31 @@
-import { motion, useMotionValue, useTransform, type HTMLMotionProps, type MotionValue } from "motion/react";
-import { useContext, useMemo, type CSSProperties, type ReactNode } from "react";
+import { motion, useIsPresent, useMotionValue, useTransform, type HTMLMotionProps, type MotionValue } from "motion/react";
+import { createContext, useContext, useMemo, type CSSProperties, type ReactNode } from "react";
 import type { Fade } from "../../lib/island/morph";
+import { arrivalFade, BODY_ENTRY_SCALE, fitScale, type IslandOrigin } from "./animations";
 import { LayerContext, ShellContext, useIslandPartFade, useTransitionLayer } from "./drivenTransition";
+
+/**
+ * What the island showed before the transition now running (PillShell provides it). An arriving
+ * layer picks its fade-in window from it (animations.ts entryFade), so each hand-over is strict:
+ * the compact content arrives late after the 400x440 panel, early after a toast. Leaving layers
+ * keep their own `out`. Outside a provider (tests, the tour) the layer's own `fade` applies.
+ */
+export const IslandOriginContext = createContext<IslandOrigin | null>(null);
+
+/** Layers whose arrival depends on the origin, by name. */
+const ARRIVAL_KIND: Record<string, "compact" | "temporary"> = { compact: "compact", meetingAlert: "temporary", ringer: "temporary", toast: "temporary" };
+
+/**
+ * The fade a layer called `name` uses: its own while leaving (or outside a shell), the
+ * origin's arrival window while it arrives.
+ */
+export function useArrivalFade(name: string, fade: Fade): Fade {
+  // useIsPresent only reads the presence (usePresence would register a second removal guard).
+  const isPresent = useIsPresent();
+  const origin = useContext(IslandOriginContext);
+  const kind = ARRIVAL_KIND[name];
+  return origin && kind && isPresent ? arrivalFade(kind, origin) : fade;
+}
 
 interface IslandLayerProps extends Omit<HTMLMotionProps<"div">, "style"> {
   /** Names the layer in the DOM (`data-layer`), for tests and diagnostics. */
@@ -35,7 +59,7 @@ function useRide(size: number, shellSize: MotionValue<number> | undefined) {
  * until it has faded out.
  */
 export function IslandLayer({ name, fade, size, parts = false, className = "", style, tabIndex, children, ...rest }: IslandLayerProps) {
-  const { opacity, isPresent } = useTransitionLayer({ fade });
+  const { opacity, isPresent } = useTransitionLayer({ fade: useArrivalFade(name, fade) });
   const shell = useContext(ShellContext);
   const y = useRide(size.height, shell?.height);
   const layer = useMemo(() => ({ width: size.width, height: size.height, isPresent }), [size.width, size.height, isPresent]);
@@ -61,12 +85,32 @@ export function IslandLayer({ name, fade, size, parts = false, className = "", s
   );
 }
 
-/** Which edge of the island's shape a part travels with. */
-export type PartAnchor = "top-start" | "bottom" | "center";
+/**
+ * Which edge of the island's shape a part travels with: "top-start" the top and leading corner
+ * (the header), "top" the top edge, centred horizontally (the body, right under the header),
+ * "bottom" the bottom edge (the dock), "center" the middle.
+ */
+export type PartAnchor = "top-start" | "top" | "bottom" | "center";
 
 interface IslandPartProps {
   fade: Fade;
   anchor: PartAnchor;
+  /**
+   * The layer runs right to left: "top-start" then rides the top-RIGHT corner (the title sits at
+   * the leading edge, so it must come out of the shape's leading side, not be cropped by it).
+   */
+  rtl?: boolean;
+  /**
+   * A "top" part (the panel's body) is masked to the room above the row that rides the bottom edge
+   * (the dock): while the shape is shorter than the layer the body never runs under the dock (no
+   * double exposure of a card and the dock). Its top, the primary content right under the header,
+   * is whole and in place from its first visible frame; its only cut is at the bottom, exactly on
+   * the dock's line, which the dock (arriving with it) covers. It scales a touch from its top with
+   * its fade (BODY_ENTRY_SCALE), so it establishes itself / recedes rather than being uncovered.
+   */
+  between?: boolean;
+  /** No scale (reduced motion). */
+  still?: boolean;
   className?: string;
   style?: CSSProperties;
   children: ReactNode;
@@ -79,7 +123,7 @@ interface IslandPartProps {
  * it shrinks, instead of being uncovered or cropped away by a moving mask. At rest every
  * offset is 0, so the resting layout is exactly the static one.
  */
-export function IslandPart({ fade, anchor, className = "", style, children }: IslandPartProps) {
+export function IslandPart({ fade, anchor, rtl = false, between = false, still: noScale = false, className = "", style, children }: IslandPartProps) {
   const opacity = useIslandPartFade(fade);
   const shell = useContext(ShellContext);
   const layer = useContext(LayerContext);
@@ -88,12 +132,28 @@ export function IslandPart({ fade, anchor, className = "", style, children }: Is
   const still = useMotionValue(0);
   // The layer is centred horizontally and rides the vertical centre (IslandLayer); these undo
   // that for the edge the part belongs to.
-  const x = useTransform(shell?.width ?? still, (w: number) => (shell && anchor === "top-start" ? (layerWidth - w) / 2 : 0));
+  const x = useTransform(shell?.width ?? still, (w: number) => (shell && anchor === "top-start" ? ((layerWidth - w) / 2) * (rtl ? -1 : 1) : 0));
   const y = useTransform(shell?.height ?? still, (h: number) =>
-    !shell ? 0 : anchor === "top-start" ? (layerHeight - h) / 2 : anchor === "bottom" ? (h - layerHeight) / 2 : 0
+    !shell ? 0 : anchor === "top-start" || anchor === "top" ? (layerHeight - h) / 2 : anchor === "bottom" ? (h - layerHeight) / 2 : 0
   );
+  // The body rides the top edge under the header; the dock rides the bottom edge, i.e. it is
+  // d = layerHeight - h closer to the body than at rest. Masking d off the body's bottom keeps it
+  // exactly above the dock (at rest d = 0: no mask).
+  const clipPath = useTransform(shell?.height ?? still, (h: number) => {
+    if (!between || !shell) return "none";
+    const cut = Math.max(0, layerHeight - h);
+    return cut > 0.01 ? `inset(0 0 ${cut}px 0)` : "none";
+  });
+  // The body establishes itself with a slight scale (not under reduced motion); the body and the
+  // dock also fit the shape's width while it is narrower than the panel (animations.ts fitScale).
+  const fits = anchor === "top" || anchor === "bottom";
+  const scale = useTransform([opacity, shell?.width ?? still], ([o, w]: number[]) => {
+    const entry = between && !noScale ? BODY_ENTRY_SCALE + (1 - BODY_ENTRY_SCALE) * o : 1;
+    return Math.min(entry, shell && fits ? fitScale(w, layerWidth) : 1);
+  });
+  const origin = anchor === "top" ? "50% 0" : anchor === "bottom" ? "50% 100%" : undefined;
   return (
-    <motion.div data-part={anchor} className={className} style={{ ...style, x, y, opacity }}>
+    <motion.div data-part={anchor} className={className} style={{ ...style, x, y, opacity, clipPath, scale, transformOrigin: origin }}>
       {children}
     </motion.div>
   );

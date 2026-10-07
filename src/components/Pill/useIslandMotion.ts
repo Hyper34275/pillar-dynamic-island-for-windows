@@ -15,14 +15,29 @@ const wrappers = new WeakMap<(timestamp: number) => void, () => void>();
 const wrapperOf = (callback: (timestamp: number) => void) => {
   let wrapper = wrappers.get(callback);
   if (!wrapper) {
-    wrapper = () => callback(frameData.timestamp);
+    wrapper = () => callback(scaled(frameData.timestamp));
     wrappers.set(callback, wrapper);
   }
   return wrapper;
 };
 
+/**
+ * Slow motion for frame-by-frame review (the motion harness sets `window.__ISLAND_TIME_SCALE__`,
+ * e.g. 0.1 = ten times slower): the springs see time pass at that rate, so a screenshot every
+ * real frame captures every intermediate state. Unset (always, in the product) it is the identity.
+ * Time is rebased whenever the scale changes, so changing it never makes the springs jump.
+ */
+let scaleBase = { real: 0, scaled: 0, scale: 1 };
+function scaled(real: number): number {
+  const wanted = (globalThis as { __ISLAND_TIME_SCALE__?: unknown }).__ISLAND_TIME_SCALE__;
+  const scale = typeof wanted === "number" && wanted > 0 ? wanted : 1;
+  if (scale === 1 && scaleBase.scale === 1) return real;
+  if (scale !== scaleBase.scale) scaleBase = { real, scaled: scaleBase.scaled + (real - scaleBase.real) * scaleBase.scale, scale };
+  return scaleBase.scaled + (real - scaleBase.real) * scale;
+}
+
 export const motionFrameScheduler: FrameScheduler = {
-  now: () => (frameData.isProcessing ? frameData.timestamp : performance.now()),
+  now: () => scaled(frameData.isProcessing ? frameData.timestamp : performance.now()),
   // One wrapper per callback: requesting the same callback twice still runs it once a frame.
   request: (callback) => {
     frame.update(wrapperOf(callback));
@@ -72,12 +87,18 @@ export function useIslandMotion(
   const radius = useMotionValue(options.initial.radius);
   const settled = useMotionValue(true);
 
+  // The engine reads its springs every frame from this box, so switching profile (reduced motion
+  // turned on or off while running) applies from the next frame, from the current velocity.
+  const springsRef = useRef({ ...options.springs });
+  springsRef.current.width = options.springs.width;
+  springsRef.current.height = options.springs.height;
+
   const engineRef = useRef<ReturnType<typeof createIslandMotion> | null>(null);
   if (engineRef.current === null) {
     engineRef.current = createIslandMotion({
       initial: options.initial,
       bounds: options.bounds,
-      springs: options.springs,
+      springs: springsRef.current,
       scheduler: motionFrameScheduler,
       onFrame: (f) => {
         width.set(f.width);
