@@ -8,14 +8,17 @@
 
 use chrono::{DateTime, Duration, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::fmt;
 use std::marker::PhantomData;
 use std::mem::ManuallyDrop;
-use windows::core::{implement, Interface, BSTR, GUID, PCWSTR, VARIANT};
+use std::sync::atomic::{AtomicU32, Ordering};
+use windows::core::{implement, Interface, BSTR, GUID, HRESULT, PCWSTR, VARIANT};
 use windows::Win32::Media::Audio::{IMessageFilter, IMessageFilter_Impl};
 use windows::Win32::Media::HTASK;
 use windows::Win32::System::Com::{
-    CLSIDFromProgID, CoInitializeEx, CoUninitialize, IDispatch, COINIT_APARTMENTTHREADED,
+    CLSIDFromProgID, CoInitializeEx, CoUninitialize, IConnectionPoint, IConnectionPointContainer, IDispatch, IDispatch_Vtbl,
+    COINIT_APARTMENTTHREADED,
     DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPATCH_PROPERTYPUTREF, DISPPARAMS, EXCEPINFO,
     INTERFACEINFO,
 };
@@ -448,6 +451,143 @@ pub fn date_to_utc(date: f64) -> Option<DateTime<Utc>> {
     resolve_local(date_to_naive(date)?, |n| chrono::Local.from_local_datetime(n).map(|d| d.with_timezone(&Utc)))
 }
 
+// =============================================================================
+// Event sinks (late-bound dispinterface events)
+// =============================================================================
+
+/// A COM object that answers `QueryInterface` for IUnknown, IDispatch and one source
+/// dispinterface, and turns every `Invoke` into `on_event(dispid)`. Arguments are never
+/// looked at: the callers only need to know *that* something happened.
+///
+/// Built by hand (not with `#[implement]`) because a connection point asks the sink for the
+/// dispinterface's own IID, which the macro cannot answer for an interface it does not know.
+/// Single-threaded by contract: it is created, advised and called on one STA thread.
+#[repr(C)]
+struct EventSink {
+    vtbl: *const IDispatch_Vtbl,
+    refs: AtomicU32,
+    iid: GUID,
+    on_event: Box<dyn Fn(i32)>,
+}
+
+const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
+const IID_IDISPATCH: GUID = GUID::from_u128(0x00020400_0000_0000_c000_000000000046);
+const E_NOINTERFACE: i32 = 0x8000_4002_u32 as i32;
+const E_NOTIMPL: i32 = 0x8000_4001_u32 as i32;
+
+static EVENT_SINK_VTBL: IDispatch_Vtbl = IDispatch_Vtbl {
+    base__: windows_core::IUnknown_Vtbl { QueryInterface: sink_query, AddRef: sink_add_ref, Release: sink_release },
+    GetTypeInfoCount: sink_type_info_count,
+    GetTypeInfo: sink_type_info,
+    GetIDsOfNames: sink_ids_of_names,
+    Invoke: sink_invoke,
+};
+
+unsafe extern "system" fn sink_query(this: *mut c_void, iid: *const GUID, out: *mut *mut c_void) -> HRESULT {
+    if out.is_null() || iid.is_null() {
+        return HRESULT(E_NOOBJECT);
+    }
+    let sink = &*(this as *const EventSink);
+    let iid = *iid;
+    if iid == IID_IUNKNOWN || iid == IID_IDISPATCH || iid == sink.iid {
+        sink.refs.fetch_add(1, Ordering::Relaxed);
+        *out = this;
+        HRESULT(0)
+    } else {
+        *out = std::ptr::null_mut();
+        HRESULT(E_NOINTERFACE)
+    }
+}
+
+unsafe extern "system" fn sink_add_ref(this: *mut c_void) -> u32 {
+    (*(this as *const EventSink)).refs.fetch_add(1, Ordering::Relaxed) + 1
+}
+
+unsafe extern "system" fn sink_release(this: *mut c_void) -> u32 {
+    let left = (*(this as *const EventSink)).refs.fetch_sub(1, Ordering::AcqRel) - 1;
+    if left == 0 {
+        drop(Box::from_raw(this as *mut EventSink));
+    }
+    left
+}
+
+unsafe extern "system" fn sink_type_info_count(_this: *mut c_void, count: *mut u32) -> HRESULT {
+    if !count.is_null() {
+        *count = 0;
+    }
+    HRESULT(0)
+}
+
+unsafe extern "system" fn sink_type_info(_this: *mut c_void, _i: u32, _lcid: u32, out: *mut *mut c_void) -> HRESULT {
+    if !out.is_null() {
+        *out = std::ptr::null_mut();
+    }
+    HRESULT(E_NOTIMPL)
+}
+
+unsafe extern "system" fn sink_ids_of_names(
+    _this: *mut c_void,
+    _iid: *const GUID,
+    _names: *const PCWSTR,
+    _count: u32,
+    _lcid: u32,
+    _ids: *mut i32,
+) -> HRESULT {
+    HRESULT(E_NOTIMPL)
+}
+
+unsafe extern "system" fn sink_invoke(
+    this: *mut c_void,
+    dispid: i32,
+    _iid: *const GUID,
+    _lcid: u32,
+    _flags: DISPATCH_FLAGS,
+    _params: *const DISPPARAMS,
+    _result: *mut std::mem::MaybeUninit<VARIANT>,
+    _excep: *mut EXCEPINFO,
+    _arg_err: *mut u32,
+) -> HRESULT {
+    let sink = &*(this as *const EventSink);
+    // A panic must not unwind into Outlook.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (sink.on_event)(dispid)));
+    HRESULT(0)
+}
+
+fn new_event_sink(iid: GUID, on_event: Box<dyn Fn(i32)>) -> windows_core::IUnknown {
+    let sink = Box::new(EventSink { vtbl: &EVENT_SINK_VTBL, refs: AtomicU32::new(1), iid, on_event });
+    // SAFETY: the box starts with a vtable pointer laid out as IDispatch (and so IUnknown),
+    // and the IUnknown takes over the one reference the box was created with.
+    unsafe { windows_core::IUnknown::from_raw(Box::into_raw(sink) as *mut c_void) }
+}
+
+/// One advised event connection. Dropping it unadvises, which releases the sink and the
+/// connection point, so Outlook holds nothing of ours afterwards.
+pub struct Connection {
+    point: IConnectionPoint,
+    cookie: u32,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // Fails harmlessly when Outlook is already gone.
+        let _ = unsafe { self.point.Unadvise(self.cookie) };
+    }
+}
+
+impl Dispatch {
+    /// Subscribe `on_event` to the source dispinterface `iid` of this object. The callback runs
+    /// on this (STA) thread while it pumps messages.
+    pub fn advise(&self, iid: GUID, on_event: Box<dyn Fn(i32)>) -> ComResult<Connection> {
+        let container: IConnectionPointContainer =
+            self.ptr.cast().map_err(|e| ComError::from_windows("QueryInterface(IConnectionPointContainer)", &e))?;
+        let point = unsafe { container.FindConnectionPoint(&iid) }.map_err(|e| ComError::from_windows("FindConnectionPoint", &e))?;
+        let sink = new_event_sink(iid, on_event);
+        let cookie = unsafe { point.Advise(&sink) }.map_err(|e| ComError::from_windows("Advise", &e))?;
+        Ok(Connection { point, cookie, _not_send: PhantomData })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,5 +781,35 @@ mod tests {
         let b = variant_from_bool(true);
         assert_eq!(variant_bool(&b), Some(true));
         assert!(variant_object(&v).is_none());
+    }
+
+    #[test]
+    fn event_sink_answers_its_interfaces_calls_back_and_frees_itself() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let iid = GUID::from_u128(0x000630f4_0000_0000_c000_000000000046);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let alive = Rc::new(());
+        let (seen_cb, alive_cb) = (Rc::clone(&seen), Rc::clone(&alive));
+        let sink = new_event_sink(
+            iid,
+            Box::new(move |id| {
+                let _keep = &alive_cb;
+                seen_cb.borrow_mut().push(id);
+            }),
+        );
+        let dispatch: IDispatch = sink.cast().unwrap();
+        let mut raw = std::ptr::null_mut();
+        assert!(unsafe { sink.query(&iid, &mut raw) }.is_ok());
+        let as_events = unsafe { windows_core::IUnknown::from_raw(raw) };
+        let other = GUID::from_u128(0x0006300f_0000_0000_c000_000000000046);
+        let mut none = std::ptr::null_mut();
+        assert_eq!(unsafe { sink.query(&other, &mut none) }.0, E_NOINTERFACE);
+        let params = DISPPARAMS::default();
+        unsafe { dispatch.Invoke(64458, &GUID::zeroed(), 0, DISPATCH_METHOD, &params, None, None, None) }.unwrap();
+        assert_eq!(*seen.borrow(), vec![64458]);
+        assert_eq!(Rc::strong_count(&alive), 2);
+        drop((sink, dispatch, as_events));
+        assert_eq!(Rc::strong_count(&alive), 1, "the last Release frees the sink and its callback");
     }
 }

@@ -8,6 +8,7 @@ mod com;
 mod autostart;
 mod notifications;
 mod outlook;
+mod outlook_nav;
 pub mod paths;
 mod reminder_state;
 mod clipboard;

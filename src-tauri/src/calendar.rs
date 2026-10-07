@@ -82,11 +82,111 @@ fn serialize_iso_opt<S: Serializer>(t: &Option<DateTime<Utc>>, s: S) -> Result<S
     }
 }
 
+/// What a calendar is to the user, decided from Outlook's navigation group type and the
+/// folder's store, never from a (localized) display name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceKind {
+    /// The profile's default calendar.
+    Primary,
+    /// Another calendar in the user's own mailbox.
+    Personal,
+    /// Another person's (or a shared mailbox's) calendar.
+    Shared,
+    /// Other Calendars, rooms and the like.
+    Other,
+}
+
+/// The Calendar navigation group a calendar sits in (`OlGroupType`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceGroup {
+    /// olMyFoldersGroup (1)
+    My,
+    /// olPeopleFoldersGroup (2): "Shared Calendars"
+    Shared,
+    /// olOtherFoldersGroup (3)
+    Other,
+    /// olRoomsGroup (5)
+    Rooms,
+    /// olCustomFoldersGroup (0) and anything else: a group the user made
+    Custom,
+    /// Not (yet) seen in the navigation pane (the default calendar before Outlook shows a window).
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SourceState {
+    /// Active and read (now or recently).
+    Ok,
+    /// Discovered, not checked in Outlook: contributes nothing.
+    NotSelected,
+    /// Active but could not be read; `error_code` says why. The other calendars are unaffected.
+    Unavailable,
+    /// Active, not read yet (time budget of this sync); last known events are kept meanwhile.
+    Pending,
+}
+
+/// One calendar the user has in Outlook's Calendar module. Discovery (all of them) is kept apart
+/// from activity (the ones that contribute events).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarSourceDto {
+    /// sha256(StoreID|EntryID), 16 hex; the same id the events carry as `calendarId`.
+    pub id: String,
+    /// Display name as Outlook shows it (presentation only; never logged).
+    pub name: String,
+    pub group: SourceGroup,
+    pub kind: SourceKind,
+    /// Checked in Outlook (as last known; see [`SelectionOrigin`]).
+    pub selected: bool,
+    /// Contributes events: selected, or the primary calendar (always on).
+    pub active: bool,
+    pub state: SourceState,
+    /// e.g. "CAL-SHARED-101"
+    pub error_code: Option<String>,
+    pub event_count: usize,
+    pub last_read_unix_ms: Option<i64>,
+}
+
+/// Where the checked state of the last discovery came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SelectionOrigin {
+    /// Read from Outlook's Calendar navigation pane just now.
+    Outlook,
+    /// Outlook is not showing its calendar: the last selection read from it.
+    Remembered,
+    /// Nothing known yet: only the primary calendar.
+    PrimaryOnly,
+}
+
+/// The calendars of the latest discovery. Memory only, like events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourcesReport {
+    pub sources: Vec<CalendarSourceDto>,
+    pub selection: SelectionOrigin,
+    /// Calendar navigation groups seen.
+    pub groups: usize,
+    /// The navigation pane's change notifications are connected.
+    pub listener: bool,
+    pub discovered_unix_ms: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEventDto {
     pub id: String,
     pub calendar_id: String,
+    /// The source calendar's display name (presentation only).
+    pub calendar_name: String,
+    pub source_kind: SourceKind,
+    /// Hash of the meeting's GlobalAppointmentID (the same in every calendar that shows it), read
+    /// only while several calendars are active. Used to drop copies; never sent to the page.
+    #[serde(skip)]
+    pub meeting_key: Option<String>,
     pub subject: String,
     #[serde(serialize_with = "serialize_iso")]
     pub start_utc: DateTime<Utc>,
@@ -132,6 +232,8 @@ pub struct CalendarSnapshot {
     pub events: Vec<CalendarEventDto>,
     /// Newest first, at most [`MAX_INVITES`]; empty while invites are switched off.
     pub invites: Vec<MeetingInviteDto>,
+    /// The calendars of the latest discovery (kept, like events, while Outlook is away).
+    pub sources: Option<SourcesReport>,
 }
 
 impl Default for CalendarSnapshot {
@@ -144,6 +246,7 @@ impl Default for CalendarSnapshot {
             next_retry_unix_ms: None,
             events: Vec::new(),
             invites: Vec::new(),
+            sources: None,
         }
     }
 }
@@ -182,11 +285,14 @@ pub struct FetchWindow {
     pub to: DateTime<Utc>,
     /// Also read the unread meeting requests (the `meetingInvitesEnabled` setting).
     pub invites: bool,
+    /// A day the user browses to, not the regular sync: every active calendar is read for it
+    /// and nothing is cached or rediscovered.
+    pub range: bool,
 }
 
 impl FetchWindow {
     pub fn starting_at(now: DateTime<Utc>) -> Self {
-        FetchWindow { from: now, to: now + ChronoDuration::hours(HORIZON_HOURS), invites: false }
+        FetchWindow { from: now, to: now + ChronoDuration::hours(HORIZON_HOURS), invites: false, range: false }
     }
 }
 
@@ -222,11 +328,13 @@ impl SourceError {
 pub struct Fetched {
     pub events: Vec<CalendarEventDto>,
     pub invites: Vec<MeetingInviteDto>,
+    /// The calendars discovered by this read (`None` for range reads and sources without discovery).
+    pub sources: Option<SourcesReport>,
 }
 
 impl From<Vec<CalendarEventDto>> for Fetched {
     fn from(events: Vec<CalendarEventDto>) -> Self {
-        Fetched { events, invites: Vec::new() }
+        Fetched { events, invites: Vec::new(), sources: None }
     }
 }
 
@@ -235,6 +343,13 @@ pub type FetchResult = Result<Fetched, SourceError>;
 /// A calendar backend. `fetch` returns the events (all calendars it covers) inside the window.
 pub trait CalendarSource {
     fn fetch(&mut self, window: &FetchWindow) -> FetchResult;
+
+    /// Called on the worker thread whenever it is idle and has dispatched its messages. True
+    /// when the source learned (from Outlook's own notifications) that its calendars changed
+    /// and a read should follow soon.
+    fn poll_changes(&mut self) -> bool {
+        false
+    }
 }
 
 /// Sort by start, drop duplicate ids, cap at [`MAX_EVENTS`].
@@ -243,6 +358,24 @@ pub fn normalize_events(mut events: Vec<CalendarEventDto>) -> Vec<CalendarEventD
     events.dedup_by(|a, b| a.id == b.id);
     events.truncate(MAX_EVENTS);
     events
+}
+
+/// Drop the copies of a meeting that several active calendars show (your own calendar and a
+/// colleague's shared one, say). Two events are the same meeting only when their
+/// GlobalAppointmentID (hashed into `meeting_key`) AND their start AND end agree: occurrences
+/// of one series share the id but not the times, and a subject is never an identity. Events
+/// without a key are never merged. `events` must be in source priority order (primary
+/// calendar first); the first copy wins, so a meeting keeps its id (and its reminder key)
+/// from one sync to the next.
+pub fn dedup_meetings(events: Vec<CalendarEventDto>) -> Vec<CalendarEventDto> {
+    let mut seen = std::collections::HashSet::new();
+    events
+        .into_iter()
+        .filter(|e| match &e.meeting_key {
+            Some(key) => seen.insert((key.clone(), e.start_utc, e.end_utc)),
+            None => true,
+        })
+        .collect()
 }
 
 // =============================================================================
@@ -284,6 +417,7 @@ pub struct Machine {
     error_code: Option<&'static str>,
     events: Vec<CalendarEventDto>,
     invites: Vec<MeetingInviteDto>,
+    sources: Option<SourcesReport>,
     last_sync_unix_ms: Option<i64>,
     next_retry_unix_ms: Option<i64>,
     action: Action,
@@ -310,6 +444,7 @@ impl Machine {
             error_code: None,
             events: Vec::new(),
             invites: Vec::new(),
+            sources: None,
             last_sync_unix_ms: None,
             next_retry_unix_ms: None,
             action: Action::Discover,
@@ -355,6 +490,7 @@ impl Machine {
             next_retry_unix_ms: self.next_retry_unix_ms,
             events,
             invites: self.invites.clone(),
+            sources: self.sources.clone(),
         }
     }
 
@@ -362,6 +498,14 @@ impl Machine {
     pub fn set_invites(&mut self, mut invites: Vec<MeetingInviteDto>) {
         invites.truncate(MAX_INVITES);
         self.invites = invites;
+    }
+
+    /// The calendars of the latest discovery. A read without one (a source that does not
+    /// discover) keeps the last; like events, they stay while Outlook is away.
+    pub fn set_sources(&mut self, sources: Option<SourcesReport>) {
+        if sources.is_some() {
+            self.sources = sources;
+        }
     }
 
     fn jittered(&mut self, base_ms: u64) -> u64 {
@@ -593,6 +737,9 @@ impl Machine {
 
 enum Msg {
     Refresh,
+    /// Outlook reported a change in its Calendar navigation pane (a calendar checked,
+    /// unchecked, added or removed): read again soon.
+    NavChanged,
     Shutdown,
     Reply { generation: u64, result: FetchResult },
     /// Read another stretch of the calendar (a day the user browses to) through the same worker.
@@ -630,6 +777,8 @@ struct Supervisor {
     last_logged: (CalendarStatus, Option<&'static str>),
     /// Range reads asked for while the worker was busy; served before the next scheduled step.
     pending_ranges: Vec<(FetchWindow, Sender<FetchResult>)>,
+    /// A navigation change arrived during a read that may have started before it.
+    nav_changed_during_read: bool,
 }
 
 impl Supervisor {
@@ -707,12 +856,26 @@ impl Supervisor {
         })
     }
 
+    fn notify_fn(&self) -> outlook::NotifyFn {
+        let tx = self.tx.clone();
+        Box::new(move || {
+            let _ = tx.send(Msg::NavChanged);
+        })
+    }
+
+    /// Outlook's calendar selection changed: read again now (rate-limited like a refresh).
+    fn on_nav_changed(&mut self) {
+        dlog!("INFO", "calendar", "calendar navigation changed in Outlook, re-reading");
+        let now = self.now();
+        self.machine.on_refresh(&now);
+    }
+
     /// Hand the window to the worker and wait up to the watchdog limit for its answer.
     fn run_fetch(&mut self, window: FetchWindow) -> Outcome {
         if self.worker.is_none() {
             self.generation += 1;
             let generation = self.generation;
-            match outlook::Worker::spawn_outlook(generation, self.reply_fn(generation)) {
+            match outlook::Worker::spawn_outlook(generation, self.reply_fn(generation), self.notify_fn()) {
                 Ok(w) => self.worker = Some(w),
                 Err(e) => {
                     return Outcome::Done(Err(SourceError::new(ErrKind::Failed, "OUTLOOK-102", format!("worker spawn failed: {e}"))));
@@ -733,6 +896,8 @@ impl Supervisor {
                 Ok(Msg::Refresh) => {
                     // Already reading; the refresh is satisfied by this read.
                 }
+                // This read may have looked at the navigation pane before the change.
+                Ok(Msg::NavChanged) => self.nav_changed_during_read = true,
                 Ok(Msg::Range { window, reply }) => self.pending_ranges.push((window, reply)),
                 Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => return Outcome::Shutdown,
                 Err(RecvTimeoutError::Timeout) => return Outcome::TimedOut,
@@ -783,6 +948,7 @@ impl Supervisor {
                 );
                 self.machine.on_fetch_ok(&now, fetched.events);
                 self.machine.set_invites(fetched.invites);
+                self.machine.set_sources(fetched.sources);
             }
             Outcome::Done(Err(err)) => {
                 dlog!("WARN", "calendar", "{} read failed ({:?}): {}", err.code, err.kind, err.detail);
@@ -792,6 +958,11 @@ impl Supervisor {
                 // A hung STA call cannot be cancelled: leave that thread (and its COM
                 // references) alone and use a fresh worker for the next attempt.
                 self.drop_worker(false);
+                // A shared calendar that hung the read is left out for a while, so it cannot
+                // take the user's own calendar down with it on every sync.
+                if outlook::quarantine_reading_source() {
+                    dlog!("WARN", "calendar", "CAL-SHARED-104 a calendar did not answer; skipped for a while");
+                }
                 self.machine.on_timeout(&now);
                 dlog!(
                     "ERROR",
@@ -817,6 +988,9 @@ impl Supervisor {
             let (window, reply) = self.pending_ranges.remove(0);
             return self.fetch_range(window, reply);
         }
+        if std::mem::take(&mut self.nav_changed_during_read) {
+            self.on_nav_changed();
+        }
         let (action, at) = self.machine.next();
         if at > now.mono_ms {
             let wait = (at - now.mono_ms).min(MAX_IDLE_WAIT_MS);
@@ -824,6 +998,10 @@ impl Supervisor {
                 Ok(Msg::Refresh) => {
                     let now = self.now();
                     self.machine.on_refresh(&now);
+                    true
+                }
+                Ok(Msg::NavChanged) => {
+                    self.on_nav_changed();
                     true
                 }
                 Ok(Msg::Range { window, reply }) => {
@@ -877,6 +1055,7 @@ pub fn start(app: AppHandle) {
         started: Instant::now(),
         last_logged: (CalendarStatus::Waiting, None),
         pending_ranges: Vec::new(),
+        nav_changed_during_read: false,
     };
     let spawned = std::thread::Builder::new().name("companyisland-calendar".into()).spawn(move || {
         supervisor.run();
@@ -920,7 +1099,7 @@ pub fn range_window(from_utc: &str, to_utc: &str) -> Result<FetchWindow, String>
     if to <= from || to - from > ChronoDuration::days(MAX_RANGE_DAYS) {
         return Err("OUTLOOK-108: invalid range".into());
     }
-    Ok(FetchWindow { from, to, invites: false })
+    Ok(FetchWindow { from, to, invites: false, range: true })
 }
 
 /// The events of another stretch of the calendar (a day the user browses to), read on demand
@@ -964,6 +1143,9 @@ mod tests {
         CalendarEventDto {
             id: id.into(),
             calendar_id: "cal".into(),
+            calendar_name: "Calendar".into(),
+            source_kind: SourceKind::Primary,
+            meeting_key: None,
             subject: "s".into(),
             start_utc: base + ChronoDuration::minutes(start_min),
             end_utc: base + ChronoDuration::minutes(start_min + len_min),
@@ -1109,6 +1291,7 @@ mod tests {
                 location: None,
                 received_utc: at_utc(0),
             }],
+            sources: None,
         };
         let json = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(json["status"], "newOutlookOnly");
@@ -1134,6 +1317,92 @@ mod tests {
         for s in [CalendarStatus::Waiting, CalendarStatus::ElevationMismatch, CalendarStatus::Unresponsive] {
             assert_eq!(serde_json::to_value(s).unwrap(), s.as_str());
         }
+    }
+
+    fn on(id: &str, cal: &str, kind: SourceKind, key: Option<&str>, start_min: i64) -> CalendarEventDto {
+        CalendarEventDto {
+            calendar_id: cal.into(),
+            calendar_name: cal.into(),
+            source_kind: kind,
+            meeting_key: key.map(String::from),
+            ..ev(id, start_min, 30)
+        }
+    }
+
+    #[test]
+    fn the_same_meeting_in_two_calendars_shows_once_from_the_first() {
+        let merged = dedup_meetings(vec![
+            on("p1", "mine", SourceKind::Primary, Some("g1"), 60),
+            on("s1", "team", SourceKind::Shared, Some("g1"), 60),
+            on("s2", "team", SourceKind::Shared, Some("g2"), 30),
+        ]);
+        let ids: Vec<_> = merged.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["p1", "s2"]);
+    }
+
+    #[test]
+    fn dedup_never_merges_on_subject_or_across_occurrences() {
+        // Same subject, no global id (plain appointments): both stay.
+        let a = on("a", "mine", SourceKind::Primary, None, 60);
+        let b = on("b", "team", SourceKind::Shared, None, 60);
+        assert_eq!(dedup_meetings(vec![a, b]).len(), 2);
+        // Same series id, different occurrences (daily recurrence): both stay.
+        let monday = on("m", "team", SourceKind::Shared, Some("series"), 0);
+        let tuesday = on("t", "team", SourceKind::Shared, Some("series"), 24 * 60);
+        assert_eq!(dedup_meetings(vec![monday, tuesday]).len(), 2);
+        // Same id and start but a moved end (an attendee copy not updated yet): both stay.
+        let mut longer = on("l", "team", SourceKind::Shared, Some("g"), 60);
+        longer.end_utc += ChronoDuration::minutes(15);
+        assert_eq!(dedup_meetings(vec![on("p", "mine", SourceKind::Primary, Some("g"), 60), longer]).len(), 2);
+    }
+
+    #[test]
+    fn meeting_keys_and_names_stay_out_of_the_wire_format_where_private() {
+        let json = serde_json::to_value(on("a", "Support", SourceKind::Shared, Some("secret-goid-hash"), 0)).unwrap();
+        assert!(json.get("meetingKey").is_none());
+        assert_eq!(json["calendarName"], "Support");
+        assert_eq!(json["sourceKind"], "shared");
+    }
+
+    fn report(n: usize) -> SourcesReport {
+        SourcesReport {
+            sources: (0..n)
+                .map(|i| CalendarSourceDto {
+                    id: format!("{i:016x}"),
+                    name: format!("cal {i}"),
+                    group: if i == 0 { SourceGroup::My } else { SourceGroup::Shared },
+                    kind: if i == 0 { SourceKind::Primary } else { SourceKind::Shared },
+                    selected: true,
+                    active: true,
+                    state: SourceState::Ok,
+                    error_code: None,
+                    event_count: 0,
+                    last_read_unix_ms: Some(1),
+                })
+                .collect(),
+            selection: SelectionOrigin::Outlook,
+            groups: 2,
+            listener: true,
+            discovered_unix_ms: 1,
+        }
+    }
+
+    #[test]
+    fn sources_survive_outlook_closing_like_events_do() {
+        let mut m = Machine::new(None);
+        m.on_fetch_ok(&at(0), vec![ev("a", 600, 30)]);
+        m.set_sources(Some(report(3)));
+        m.on_discovery(&at(1_000), Discovery::Waiting);
+        let snapshot = m.snapshot(at(1_000).unix_ms);
+        assert_eq!(snapshot.status, CalendarStatus::Waiting);
+        assert_eq!(snapshot.sources.as_ref().map(|r| r.sources.len()), Some(3));
+        // A read without discovery (range-style) keeps the last discovery.
+        m.set_sources(None);
+        assert!(m.snapshot(0).sources.is_some());
+        let json = serde_json::to_value(m.snapshot(0)).unwrap();
+        assert_eq!(json["sources"]["selection"], "outlook");
+        assert_eq!(json["sources"]["sources"][1]["kind"], "shared");
+        assert_eq!(json["sources"]["sources"][1]["state"], "ok");
     }
 
     #[test]

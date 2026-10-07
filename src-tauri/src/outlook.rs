@@ -23,9 +23,10 @@
 //! the user's own (running) Outlook on its calendar.
 
 use crate::calendar::{
-    BusyStatus, CalendarEventDto, CalendarSource, ErrKind, FetchResult, FetchWindow, Fetched, MeetingInviteDto, ResponseStatus,
-    SourceError, MAX_INVITES,
+    BusyStatus, CalendarEventDto, CalendarSource, CalendarSourceDto, ErrKind, FetchResult, FetchWindow, Fetched, MeetingInviteDto,
+    ResponseStatus, SelectionOrigin, SourceError, SourceGroup, SourceKind, SourceState, SourcesReport, MAX_INVITES,
 };
+use crate::outlook_nav::{self, NavCalendar, NavScan, NavWatcher, SelectionMemory};
 use crate::com::{self, ComApartment, ComError, ComResult, Dispatch, MessageFilterGuard};
 use crate::debug_log::hash_id;
 use chrono::{DateTime, Local, NaiveDateTime, Timelike, Utc};
@@ -233,7 +234,7 @@ pub fn discover() -> Result<Discovery, String> {
 // Pure helpers: hashing, URL, enum mapping, Restrict filter
 // =============================================================================
 
-fn hash16(input: &str) -> String {
+pub(crate) fn hash16(input: &str) -> String {
     Sha256::digest(input.as_bytes()).iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
@@ -410,14 +411,28 @@ struct RawItem {
     color: Option<String>,
     /// From a meeting add-in's property; only looked up when the Location has no join link.
     online_link: Option<String>,
+    /// GlobalAppointmentID, read only while several calendars are active (to drop copies).
+    global_id: Option<String>,
 }
 
-fn build_event(raw: RawItem, calendar_id: &str) -> CalendarEventDto {
+/// Which calendar an item is read from.
+pub(crate) struct CalendarCtx {
+    pub id: String,
+    pub name: String,
+    pub kind: SourceKind,
+    /// Several calendars are active: read GlobalAppointmentID to drop copies of a meeting.
+    pub want_meeting_key: bool,
+}
+
+fn build_event(raw: RawItem, ctx: &CalendarCtx) -> CalendarEventDto {
     let id_seed = if raw.entry_id.is_empty() { format!("noid:{}", raw.subject) } else { raw.entry_id };
     let meeting_url = raw.location.as_deref().and_then(find_meeting_url).or(raw.online_link);
     CalendarEventDto {
         id: event_id(&id_seed, &raw.start),
-        calendar_id: calendar_id.to_string(),
+        calendar_id: ctx.id.clone(),
+        calendar_name: ctx.name.clone(),
+        source_kind: ctx.kind,
+        meeting_key: raw.global_id.as_deref().filter(|g| !g.is_empty()).map(|g| hash16(&format!("goid|{g}"))),
         subject: clip(&raw.subject),
         start_utc: raw.start,
         end_utc: raw.end,
@@ -577,7 +592,7 @@ fn attach_error(e: ComError) -> SourceError {
 }
 
 /// Keep real transport/policy failures; a property that is merely unavailable is `None`.
-fn optional<T>(r: ComResult<T>) -> ComResult<Option<T>> {
+pub(crate) fn optional<T>(r: ComResult<T>) -> ComResult<Option<T>> {
     match r {
         Ok(v) => Ok(Some(v)),
         Err(e) if e.is_disconnected() || e.is_busy() || e.is_blocked() => Err(e),
@@ -585,15 +600,15 @@ fn optional<T>(r: ComResult<T>) -> ComResult<Option<T>> {
     }
 }
 
-fn str_prop(d: &mut Dispatch, name: &'static str) -> ComResult<Option<String>> {
+pub(crate) fn str_prop(d: &mut Dispatch, name: &'static str) -> ComResult<Option<String>> {
     Ok(optional(d.get(name))?.and_then(|v| com::variant_string(&v)))
 }
 
-fn i32_prop(d: &mut Dispatch, name: &'static str) -> ComResult<Option<i32>> {
+pub(crate) fn i32_prop(d: &mut Dispatch, name: &'static str) -> ComResult<Option<i32>> {
     Ok(optional(d.get(name))?.and_then(|v| com::variant_i32(&v)))
 }
 
-fn bool_prop(d: &mut Dispatch, name: &'static str) -> ComResult<bool> {
+pub(crate) fn bool_prop(d: &mut Dispatch, name: &'static str) -> ComResult<bool> {
     Ok(optional(d.get(name))?.and_then(|v| com::variant_bool(&v)).unwrap_or(false))
 }
 
@@ -631,7 +646,7 @@ fn online_meeting_link(item: &mut Dispatch) -> ComResult<Option<String>> {
     Ok(None)
 }
 
-fn read_item(item: &mut Dispatch, colors: &CategoryColors) -> ComResult<Option<RawItem>> {
+fn read_item(item: &mut Dispatch, colors: &CategoryColors, want_global_id: bool) -> ComResult<Option<RawItem>> {
     let (Some(start), Some(end)) = (date_prop(item, "Start")?, date_prop(item, "End")?) else {
         return Ok(None);
     };
@@ -661,6 +676,7 @@ fn read_item(item: &mut Dispatch, colors: &CategoryColors) -> ComResult<Option<R
         response: i32_prop(item, "ResponseStatus")?.unwrap_or(0),
         color,
         online_link,
+        global_id: if want_global_id { str_prop(item, "GlobalAppointmentID")? } else { None },
     }))
 }
 
@@ -793,11 +809,95 @@ fn read_invites(session: &mut Dispatch, now: DateTime<Utc>) -> ComResult<Vec<Mee
     Ok(invites)
 }
 
+/// Calendars other than the primary one are read again this often (the primary one on every
+/// sync); a change of selection reads a newly checked calendar at once.
+const SECONDARY_REFRESH_SECS: u64 = 300;
+/// No further calendar read starts after this much of a sync (the watchdog allows 10 s). The
+/// calendars left over keep their last events and are read first next time.
+const READ_BUDGET_MS: u128 = 6_000;
+/// A calendar whose read hung the worker is left out this long.
+const QUARANTINE_SECS: u64 = 900;
+
+/// The secondary calendar being read right now (its id), for the watchdog to blame.
+static READING: Mutex<Option<String>> = Mutex::new(None);
+/// Calendar id -> until when it is left out.
+static QUARANTINE: Mutex<Vec<(String, Instant)>> = Mutex::new(Vec::new());
+
+fn set_reading(id: Option<&str>) {
+    *READING.lock().unwrap_or_else(|e| e.into_inner()) = id.map(str::to_string);
+}
+
+/// The watchdog gave up on a read: if a secondary calendar was being read, leave it out for
+/// [`QUARANTINE_SECS`]. True when one was.
+pub fn quarantine_reading_source() -> bool {
+    let Some(id) = READING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return false;
+    };
+    let until = Instant::now() + std::time::Duration::from_secs(QUARANTINE_SECS);
+    let mut q = QUARANTINE.lock().unwrap_or_else(|e| e.into_inner());
+    q.retain(|(i, _)| *i != id);
+    dlog!("WARN", "outlook", "calendar {} quarantined after a hung read", hash_id(&id));
+    q.push((id, until));
+    true
+}
+
+fn is_quarantined(id: &str) -> bool {
+    let mut q = QUARANTINE.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    q.retain(|(_, until)| *until > now);
+    q.iter().any(|(i, _)| i == id)
+}
+
+/// Like [`map_com`], for a calendar that is not the primary one: Outlook-level failures keep
+/// their kind (they fail the whole read), anything else becomes that calendar's support code.
+fn map_shared(_stage: &'static str, e: ComError) -> SourceError {
+    if e.is_busy() || e.is_disconnected() || e.is_blocked() {
+        return map_com("OUTLOOK-108", e);
+    }
+    SourceError::new(ErrKind::Failed, outlook_nav::shared_error_code(&e), e.to_string())
+}
+
+fn is_outlook_level(e: &SourceError) -> bool {
+    matches!(e.kind, ErrKind::Busy | ErrKind::Disconnected | ErrKind::Blocked)
+}
+
+/// The last events read from one secondary calendar in the regular window.
+struct SourceCache {
+    events: Vec<CalendarEventDto>,
+    read_at: Instant,
+    read_unix_ms: i64,
+}
+
+/// A summary of the last discovery, to log only what changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct DiscoverySummary {
+    groups: usize,
+    discovered: usize,
+    selected: usize,
+    shared_discovered: usize,
+    shared_selected: usize,
+    origin: Option<SelectionOrigin>,
+}
+
 #[derive(Default)]
 pub struct OutlookSource {
     pub last_restrict_mode: Option<RestrictMode>,
     category_colors: CategoryColors,
     categories_read_at: Option<Instant>,
+    /// Hash of the Outlook profile of the last read; a different one starts discovery afresh.
+    profile: Option<String>,
+    selection: SelectionMemory,
+    watcher: Option<NavWatcher>,
+    /// The calendars of the last navigation scan (ids as in the scan; the primary one marked).
+    known: Vec<NavCalendar>,
+    groups: usize,
+    /// Calendar id -> checked, and where that came from, as of the last discovery.
+    checked: HashMap<String, bool>,
+    origin: Option<SelectionOrigin>,
+    cache: HashMap<String, SourceCache>,
+    summary: DiscoverySummary,
+    /// The last logged state of the listener (to log changes only).
+    listener_logged: Option<bool>,
 }
 
 impl OutlookSource {
@@ -818,7 +918,14 @@ impl OutlookSource {
 
     /// Read the items of `items` that Outlook returns for the window when the dates are
     /// written in `mode`'s format. Every item is re-checked against the window.
-    fn scan(&self, items: &mut Dispatch, window: &FetchWindow, mode: RestrictMode, calendar_id: &str) -> Result<Scan, SourceError> {
+    fn scan(
+        &self,
+        items: &mut Dispatch,
+        window: &FetchWindow,
+        mode: RestrictMode,
+        ctx: &CalendarCtx,
+        map: fn(&'static str, ComError) -> SourceError,
+    ) -> Result<Scan, SourceError> {
         let from = window.from.with_timezone(&Local).naive_local().with_second(0).unwrap_or_default();
         let to = window.to.with_timezone(&Local).naive_local();
         let fmt: fn(&NaiveDateTime) -> Option<String> = match mode {
@@ -829,17 +936,17 @@ impl OutlookSource {
             .ok_or_else(|| SourceError::new(ErrKind::Failed, "OUTLOOK-108", "date format unavailable"))?;
         let mut restricted = items
             .call_object("Restrict", vec![com::variant_from_str(&filter)])
-            .map_err(|e| map_com("OUTLOOK-108", e))?
+            .map_err(|e| map("OUTLOOK-108", e))?
             .ok_or_else(|| SourceError::new(ErrKind::Failed, "OUTLOOK-108", "Restrict returned nothing"))?;
 
         let mut scan = Scan { events: Vec::new(), stray: false };
-        let mut next = restricted.call_object("GetFirst", Vec::new()).map_err(|e| map_com("OUTLOOK-108", e))?;
+        let mut next = restricted.call_object("GetFirst", Vec::new()).map_err(|e| map("OUTLOOK-108", e))?;
         let mut scanned = 0;
         while let Some(mut item) = next.take() {
             scanned += 1;
-            if let Some(raw) = read_item(&mut item, &self.category_colors).map_err(|e| map_com("OUTLOOK-108", e))? {
+            if let Some(raw) = read_item(&mut item, &self.category_colors, ctx.want_meeting_key).map_err(|e| map("OUTLOOK-108", e))? {
                 match fit(raw.start, raw.end, window) {
-                    Fit::Inside => scan.events.push(build_event(raw, calendar_id)),
+                    Fit::Inside => scan.events.push(build_event(raw, ctx)),
                     Fit::Edge => {}
                     Fit::Stray => {
                         scan.stray = true;
@@ -854,27 +961,30 @@ impl OutlookSource {
             if scanned >= MAX_SCANNED || scan.events.len() >= crate::calendar::MAX_EVENTS {
                 break;
             }
-            next = restricted.call_object("GetNext", Vec::new()).map_err(|e| map_com("OUTLOOK-108", e))?;
+            next = restricted.call_object("GetNext", Vec::new()).map_err(|e| map("OUTLOOK-108", e))?;
         }
         Ok(scan)
     }
 
-    fn read_calendar(&mut self, folder: &mut Dispatch, window: &FetchWindow) -> Result<Vec<CalendarEventDto>, SourceError> {
-        let calendar_id = {
-            let store = str_prop(folder, "StoreID").map_err(|e| map_com("OUTLOOK-107", e))?.unwrap_or_default();
-            let entry = str_prop(folder, "EntryID").map_err(|e| map_com("OUTLOOK-107", e))?.unwrap_or_default();
-            hash16(&format!("{store}|{entry}"))
-        };
-        let mut items = folder.get_object("Items").map_err(|e| map_com("OUTLOOK-107", e))?;
+    /// The events of one calendar folder inside the window. Recurring series are expanded into
+    /// their occurrences (exceptions and deleted occurrences included) by Outlook itself.
+    fn read_calendar(
+        &mut self,
+        folder: &mut Dispatch,
+        window: &FetchWindow,
+        ctx: &CalendarCtx,
+        map: fn(&'static str, ComError) -> SourceError,
+    ) -> Result<Vec<CalendarEventDto>, SourceError> {
+        let mut items = folder.get_object("Items").map_err(|e| map("OUTLOOK-107", e))?;
         // Order matters: sort first, then expand recurrences, then restrict.
-        items.call("Sort", vec![com::variant_from_str("[Start]")]).map_err(|e| map_com("OUTLOOK-108", e))?;
-        items.put("IncludeRecurrences", com::variant_from_bool(true)).map_err(|e| map_com("OUTLOOK-108", e))?;
+        items.call("Sort", vec![com::variant_from_str("[Start]")]).map_err(|e| map("OUTLOOK-108", e))?;
+        items.put("IncludeRecurrences", com::variant_from_bool(true)).map_err(|e| map("OUTLOOK-108", e))?;
 
         // The format that worked last time goes first; the other only runs when the first
         // read was empty, impossible or rejected. A calendar that is empty for the next
         // 48 h therefore costs one extra Restrict per sync, and nothing otherwise.
         let primary = self.last_restrict_mode.unwrap_or(RestrictMode::Locale);
-        let first = self.scan(&mut items, window, primary, &calendar_id);
+        let first = self.scan(&mut items, window, primary, ctx, map);
         match &first {
             Ok(scan) if scan.proves_format() => {
                 self.last_restrict_mode = Some(primary);
@@ -883,7 +993,7 @@ impl OutlookSource {
             Err(e) if is_transport(e) => return first.map(|s| s.events),
             _ => {}
         }
-        let second = self.scan(&mut items, window, primary.other(), &calendar_id);
+        let second = self.scan(&mut items, window, primary.other(), ctx, map);
         let (result, second_proved) = choose(first, second);
         if second_proved {
             self.last_restrict_mode = Some(primary.other());
@@ -891,27 +1001,286 @@ impl OutlookSource {
         }
         result
     }
-}
 
-impl CalendarSource for OutlookSource {
-    fn fetch(&mut self, window: &FetchWindow) -> FetchResult {
+    /// A new Outlook profile (or the first read): nothing from another profile carries over.
+    fn switch_profile(&mut self, profile_hash: String) {
+        if self.profile.as_deref() == Some(profile_hash.as_str()) {
+            return;
+        }
+        if self.profile.is_some() {
+            dlog!("INFO", "outlook", "Outlook profile changed; calendar discovery starts afresh");
+        }
+        self.watcher = None;
+        self.known.clear();
+        self.checked.clear();
+        self.cache.clear();
+        self.origin = None;
+        self.summary = DiscoverySummary::default();
+        self.selection.switch_profile(&profile_hash, outlook_nav::state_dir().as_deref());
+        self.profile = Some(profile_hash);
+    }
+
+    /// Scan the Calendar navigation pane of the active explorer, and keep (or re-arm) the
+    /// notifications on it. `None` when Outlook shows no main window. Never changes what
+    /// Outlook shows.
+    fn discover(&mut self, app: &mut Dispatch, own_store: &str) -> Result<Option<NavScan>, SourceError> {
+        // A watcher from an Outlook that has since gone (or restarted) is let go here.
+        if self.watcher.as_mut().is_some_and(|w| !w.alive()) {
+            self.watcher = None;
+        }
+        let explorer = match app.call_object("ActiveExplorer", Vec::new()) {
+            Ok(e) => e,
+            Err(e) if e.is_disconnected() || e.is_busy() || e.is_blocked() => return Err(map_com("OUTLOOK-107", e)),
+            Err(e) => {
+                dlog!("DEBUG", "outlook", "no active explorer: {}", e);
+                None
+            }
+        };
+        let Some(mut explorer) = explorer else {
+            // No window: nothing to watch, and nothing of Outlook's is kept.
+            self.watcher = None;
+            return Ok(None);
+        };
+        let scan = match outlook_nav::scan(&mut explorer, own_store) {
+            Ok(scan) => scan,
+            Err(e) if e.is_disconnected() || e.is_busy() || e.is_blocked() => return Err(map_com("OUTLOOK-107", e)),
+            Err(e) => {
+                dlog!("WARN", "outlook", "calendar navigation pane not read: {}", e);
+                return Ok(None);
+            }
+        };
+        if self.watcher.is_none() {
+            match NavWatcher::arm(explorer) {
+                Ok(w) => self.watcher = Some(w),
+                Err(e) if self.listener_logged != Some(false) => {
+                    dlog!("WARN", "outlook", "calendar navigation notifications unavailable ({}); periodic reconciliation only", e);
+                }
+                Err(_) => {}
+            }
+        }
+        let listening = self.watcher.is_some();
+        if self.listener_logged != Some(listening) {
+            if listening {
+                dlog!("INFO", "outlook", "Outlook calendar navigation event subscription active");
+            }
+            self.listener_logged = Some(listening);
+        }
+        Ok(Some(scan))
+    }
+
+    /// Mark the scan's entry for the profile's default calendar as primary (same id), also when
+    /// Outlook spells its EntryID differently there.
+    fn mark_primary(session: &mut Dispatch, scan: &mut NavScan, primary: &(String, String, String)) {
+        let (entry, store, id) = primary;
+        if scan.calendars.iter().any(|c| c.id == *id) {
+            return;
+        }
+        for c in scan.calendars.iter_mut().filter(|c| c.store_id == *store && !c.entry_id.is_empty()) {
+            let same = session
+                .call("CompareEntryIDs", vec![com::variant_from_str(&c.entry_id), com::variant_from_str(entry)])
+                .ok()
+                .and_then(|v| com::variant_bool(&v))
+                .unwrap_or(false);
+            if same {
+                c.id = id.clone();
+                return;
+            }
+        }
+    }
+
+    fn log_discovery(&mut self, summary: DiscoverySummary) {
+        if summary == self.summary {
+            return;
+        }
+        dlog!(
+            "INFO",
+            "outlook",
+            "calendar discovery: groups={} calendars={} selected={} shared={} shared_selected={} selection_from={:?}",
+            summary.groups,
+            summary.discovered,
+            summary.selected,
+            summary.shared_discovered,
+            summary.shared_selected,
+            summary.origin
+        );
+        self.summary = summary;
+    }
+
+    /// Read one active calendar other than the primary one: from the cache while it is fresh,
+    /// skipped (last events kept) once the time budget is spent.
+    fn read_secondary(
+        &mut self,
+        session: &mut Dispatch,
+        cal: &NavCalendar,
+        window: &FetchWindow,
+        ctx: &CalendarCtx,
+        started: Instant,
+    ) -> Result<(Vec<CalendarEventDto>, SourceState, Option<String>, Option<i64>), SourceError> {
+        let stale = |cache: Option<&SourceCache>| -> Vec<CalendarEventDto> {
+            cache.map(|c| c.events.iter().filter(|e| e.end_utc > window.from).cloned().collect()).unwrap_or_default()
+        };
+        if let Some(code) = cal.error {
+            return Ok((Vec::new(), SourceState::Unavailable, Some(code.to_string()), None));
+        }
+        if is_quarantined(&cal.id) {
+            let cached = self.cache.get(&cal.id);
+            return Ok((stale(cached), SourceState::Unavailable, Some("CAL-SHARED-104".into()), cached.map(|c| c.read_unix_ms)));
+        }
+        if !window.range {
+            if let Some(c) = self.cache.get(&cal.id).filter(|c| c.read_at.elapsed().as_secs() < SECONDARY_REFRESH_SECS) {
+                return Ok((stale(Some(c)), SourceState::Ok, None, Some(c.read_unix_ms)));
+            }
+        }
+        if started.elapsed().as_millis() > READ_BUDGET_MS {
+            let cached = self.cache.get(&cal.id);
+            return Ok((stale(cached), SourceState::Pending, Some("CAL-SHARED-105".into()), cached.map(|c| c.read_unix_ms)));
+        }
+        set_reading(Some(&cal.id));
+        let read = (|| {
+            let mut folder = session
+                .call_object("GetFolderFromID", vec![com::variant_from_str(&cal.entry_id), com::variant_from_str(&cal.store_id)])
+                .map_err(|e| map_shared("OUTLOOK-107", e))?
+                .ok_or_else(|| SourceError::new(ErrKind::Failed, "CAL-SHARED-102", "GetFolderFromID returned nothing"))?;
+            self.read_calendar(&mut folder, window, ctx, map_shared)
+        })();
+        set_reading(None);
+        match read {
+            Ok(events) => {
+                let now_ms = Utc::now().timestamp_millis();
+                if !window.range {
+                    self.cache.insert(cal.id.clone(), SourceCache { events: events.clone(), read_at: Instant::now(), read_unix_ms: now_ms });
+                }
+                Ok((events, SourceState::Ok, None, Some(now_ms)))
+            }
+            Err(e) if is_outlook_level(&e) => Err(e),
+            Err(e) => {
+                // The detail is HRESULT text only; the calendar is named by its hash.
+                dlog!("WARN", "outlook", "{} calendar {} not read: {}", e.code, hash_id(&cal.id), e.detail);
+                self.cache.remove(&cal.id);
+                Ok((Vec::new(), SourceState::Unavailable, Some(e.code.to_string()), None))
+            }
+        }
+    }
+
+    fn fetch_all(&mut self, window: &FetchWindow) -> FetchResult {
+        let started = Instant::now();
         let mut app = Dispatch::get_active(PROG_ID).map_err(attach_error)?;
         let mut session = app.get_object("Session").map_err(|e| map_com("OUTLOOK-106", e))?;
-        // The profile name is only ever hashed for the log.
-        if let Ok(Some(profile)) = str_prop(&mut session, "CurrentProfileName") {
-            dlog!("DEBUG", "outlook", "attached, profile {}", hash_id(&profile));
-        }
-        let default_calendar = session
+        // The profile name is only ever hashed (for the log, and to keep each profile's calendars apart).
+        let profile = str_prop(&mut session, "CurrentProfileName").ok().flatten().unwrap_or_default();
+        dlog!("DEBUG", "outlook", "attached, profile {}", hash_id(&profile));
+        self.switch_profile(hash16(&format!("profile|{profile}")));
+
+        let mut default_calendar = session
             .call_object("GetDefaultFolder", vec![com::variant_from_i32(OL_FOLDER_CALENDAR)])
             .map_err(|e| map_com("OUTLOOK-107", e))?
             .ok_or_else(|| SourceError::new(ErrKind::Failed, "OUTLOOK-107", "no default calendar"))?;
+        let primary = {
+            let store = str_prop(&mut default_calendar, "StoreID").map_err(|e| map_com("OUTLOOK-107", e))?.unwrap_or_default();
+            let entry = str_prop(&mut default_calendar, "EntryID").map_err(|e| map_com("OUTLOOK-107", e))?.unwrap_or_default();
+            let id = hash16(&format!("{store}|{entry}"));
+            (entry, store, id)
+        };
         self.refresh_category_colors(&mut session)?;
-        // Multi-calendar-ready: today the list holds only the default calendar.
-        let mut calendars = vec![default_calendar];
-        let mut events = Vec::new();
-        for folder in calendars.iter_mut() {
-            events.extend(self.read_calendar(folder, window)?);
+
+        // Discovery: the regular sync only. A range read uses what the last one found.
+        if !window.range {
+            let mut scan = self.discover(&mut app, &primary.1)?;
+            if let Some(scan) = scan.as_mut() {
+                Self::mark_primary(&mut session, scan, &primary);
+                self.known = scan.calendars.clone();
+                self.groups = scan.groups;
+            }
+            let (checked, origin) = self.selection.resolve(scan.as_ref());
+            self.selection.save_if_dirty(outlook_nav::state_dir().as_deref());
+            for c in self.known.iter().filter(|c| c.id != primary.2) {
+                let now_checked = checked.get(&c.id).copied().unwrap_or(false);
+                let before = self.checked.get(&c.id).copied();
+                if before.is_some_and(|b| b != now_checked) || (before.is_none() && now_checked && self.origin.is_some()) {
+                    dlog!("INFO", "outlook", "calendar {} ({:?}) {}", hash_id(&c.id), c.group, if now_checked { "selected" } else { "deselected" });
+                }
+                if !now_checked {
+                    // Read afresh when it is checked again.
+                    self.cache.remove(&c.id);
+                }
+            }
+            self.checked = checked;
+            self.origin = Some(origin);
         }
+
+        let primary_entry = self.known.iter().find(|c| c.id == primary.2);
+        let primary_name = match primary_entry {
+            Some(c) if !c.name.is_empty() => c.name.clone(),
+            _ => non_empty(str_prop(&mut default_calendar, "Name").ok().flatten(), 120).unwrap_or_default(),
+        };
+        let primary_group = primary_entry.map_or(SourceGroup::Unknown, |c| c.group);
+        let secondaries: Vec<NavCalendar> = self.known.iter().filter(|c| c.id != primary.2).cloned().collect();
+        let active: Vec<bool> = secondaries.iter().map(|c| self.checked.get(&c.id).copied().unwrap_or(false)).collect();
+        let want_meeting_key = active.iter().any(|a| *a);
+
+        let primary_ctx = CalendarCtx { id: primary.2.clone(), name: primary_name.clone(), kind: SourceKind::Primary, want_meeting_key };
+        let mut events = self.read_calendar(&mut default_calendar, window, &primary_ctx, map_com)?;
+        drop(default_calendar);
+        let now_ms = Utc::now().timestamp_millis();
+        let mut sources = vec![CalendarSourceDto {
+            id: primary.2.clone(),
+            name: primary_name,
+            group: primary_group,
+            kind: SourceKind::Primary,
+            selected: self.checked.get(&primary.2).copied().unwrap_or(true),
+            active: true,
+            state: SourceState::Ok,
+            error_code: None,
+            event_count: events.len(),
+            last_read_unix_ms: Some(now_ms),
+        }];
+
+        for (cal, selected) in secondaries.iter().zip(active) {
+            let kind = outlook_nav::kind_of(cal.group, false, cal.own_store);
+            let mut dto = CalendarSourceDto {
+                id: cal.id.clone(),
+                name: cal.name.clone(),
+                group: cal.group,
+                kind,
+                selected,
+                active: selected,
+                state: SourceState::NotSelected,
+                error_code: None,
+                event_count: 0,
+                last_read_unix_ms: None,
+            };
+            if selected {
+                let ctx = CalendarCtx { id: cal.id.clone(), name: cal.name.clone(), kind, want_meeting_key };
+                let (read, state, code, read_ms) = self.read_secondary(&mut session, cal, window, &ctx, started)?;
+                dto.state = state;
+                dto.error_code = code;
+                dto.event_count = read.len();
+                dto.last_read_unix_ms = read_ms;
+                events.extend(read);
+            }
+            sources.push(dto);
+        }
+        let events = crate::calendar::normalize_events(crate::calendar::dedup_meetings(events));
+
+        let report = (!window.range).then(|| {
+            let shared = || sources.iter().filter(|s| s.kind == SourceKind::Shared);
+            self.log_discovery(DiscoverySummary {
+                groups: self.groups,
+                discovered: sources.len(),
+                selected: sources.iter().filter(|s| s.active).count(),
+                shared_discovered: shared().count(),
+                shared_selected: shared().filter(|s| s.active).count(),
+                origin: self.origin,
+            });
+            SourcesReport {
+                sources: sources.clone(),
+                selection: self.origin.unwrap_or(SelectionOrigin::PrimaryOnly),
+                groups: self.groups,
+                listener: self.watcher.is_some(),
+                discovered_unix_ms: now_ms,
+            }
+        });
+
         // The calendar is what matters: a request that cannot be read only costs its popup.
         let invites = if window.invites {
             read_invites(&mut session, Utc::now()).unwrap_or_else(|e| {
@@ -921,7 +1290,31 @@ impl CalendarSource for OutlookSource {
         } else {
             Vec::new()
         };
-        Ok(Fetched { events: crate::calendar::normalize_events(events), invites })
+        Ok(Fetched { events, invites, sources: report })
+    }
+}
+
+impl CalendarSource for OutlookSource {
+    fn fetch(&mut self, window: &FetchWindow) -> FetchResult {
+        let result = self.fetch_all(window);
+        if result.as_ref().is_err_and(|e| e.kind == ErrKind::Disconnected || e.kind == ErrKind::NotInRot) {
+            // That Outlook is gone: hold nothing of it.
+            self.watcher = None;
+        }
+        result
+    }
+
+    fn poll_changes(&mut self) -> bool {
+        let Some(watcher) = self.watcher.as_ref() else {
+            return false;
+        };
+        let signals = watcher.take();
+        if signals & outlook_nav::CLOSED != 0 {
+            // Unadvised and released here, outside Outlook's callback.
+            self.watcher = None;
+            dlog!("INFO", "outlook", "Outlook window closed; calendar navigation notifications released");
+        }
+        signals & outlook_nav::CHANGED != 0
     }
 }
 
@@ -1180,6 +1573,8 @@ pub async fn outlook_open_calendar(start_utc: Option<String>) -> Result<(), Stri
 // =============================================================================
 
 pub type ReplyFn = Box<dyn Fn(FetchResult) + Send>;
+/// Tells the supervisor that Outlook reported a calendar navigation change.
+pub type NotifyFn = Box<dyn Fn() + Send>;
 
 enum Job {
     Fetch(FetchWindow),
@@ -1233,7 +1628,7 @@ fn wait_for_work(waker: &Waker) {
     }
 }
 
-fn worker_main<S: CalendarSource>(make_source: impl FnOnce() -> S, jobs: Receiver<Job>, waker: Arc<Waker>, reply: ReplyFn) {
+fn worker_main<S: CalendarSource>(make_source: impl FnOnce() -> S, jobs: Receiver<Job>, waker: Arc<Waker>, reply: ReplyFn, notify: NotifyFn) {
     // Declaration order is drop order in reverse: the source (and every COM object it
     // owns) goes before the message filter and the apartment.
     let apartment = ComApartment::init_sta();
@@ -1247,6 +1642,10 @@ fn worker_main<S: CalendarSource>(make_source: impl FnOnce() -> S, jobs: Receive
     let mut source = apartment.is_ok().then(make_source);
     loop {
         pump_messages();
+        // Outlook's notifications arrive as messages on this thread; act on them outside the callback.
+        if source.as_mut().is_some_and(|s| s.poll_changes()) {
+            notify();
+        }
         match jobs.try_recv() {
             Ok(Job::Fetch(window)) => {
                 let result = match source.as_mut() {
@@ -1278,18 +1677,19 @@ impl Worker {
         generation: u64,
         make_source: impl FnOnce() -> S + Send + 'static,
         reply: ReplyFn,
+        notify: NotifyFn,
     ) -> std::io::Result<Worker> {
         let (jobs_tx, jobs_rx) = mpsc::channel();
         let waker = Arc::new(Waker::new()?);
         let thread_waker = Arc::clone(&waker);
         std::thread::Builder::new().name(format!("companyisland-outlook-{generation}")).spawn(move || {
-            crate::debug_log::catch("outlook", || worker_main(make_source, jobs_rx, thread_waker, reply));
+            crate::debug_log::catch("outlook", || worker_main(make_source, jobs_rx, thread_waker, reply, notify));
         })?;
         Ok(Worker { jobs: jobs_tx, waker })
     }
 
-    pub fn spawn_outlook(generation: u64, reply: ReplyFn) -> std::io::Result<Worker> {
-        Worker::spawn(generation, OutlookSource::default, reply)
+    pub fn spawn_outlook(generation: u64, reply: ReplyFn, notify: NotifyFn) -> std::io::Result<Worker> {
+        Worker::spawn(generation, OutlookSource::default, reply, notify)
     }
 
     /// False when the worker thread is gone.
@@ -1318,6 +1718,10 @@ mod tests {
     use super::*;
     use chrono::{NaiveDate, TimeZone};
     use std::time::Duration;
+
+    fn ctx(id: &str) -> CalendarCtx {
+        CalendarCtx { id: id.into(), name: "Calendar".into(), kind: SourceKind::Primary, want_meeting_key: false }
+    }
 
     fn me() -> Identity {
         Identity { session: 2, sid: vec![1, 5, 0, 0, 0, 0, 0, 5, 21, 7], elevated: false }
@@ -1534,11 +1938,12 @@ mod tests {
             response: 3,
             color: None,
             online_link: online_link.map(String::from),
+            global_id: None,
         };
         let teams = "https://teams.microsoft.com/l/meetup-join/1";
-        assert_eq!(build_event(raw(Some("Microsoft Teams Meeting"), Some(teams)), "c").meeting_url.as_deref(), Some(teams));
-        assert_eq!(build_event(raw(Some("https://zoom.us/j/1"), Some(teams)), "c").meeting_url.as_deref(), Some("https://zoom.us/j/1"));
-        assert_eq!(build_event(raw(None, None), "c").meeting_url, None);
+        assert_eq!(build_event(raw(Some("Microsoft Teams Meeting"), Some(teams)), &ctx("c")).meeting_url.as_deref(), Some(teams));
+        assert_eq!(build_event(raw(Some("https://zoom.us/j/1"), Some(teams)), &ctx("c")).meeting_url.as_deref(), Some("https://zoom.us/j/1"));
+        assert_eq!(build_event(raw(None, None), &ctx("c")).meeting_url, None);
     }
 
     #[test]
@@ -1608,8 +2013,9 @@ mod tests {
                 response: 3,
                 color: None,
                 online_link: None,
+                global_id: None,
             },
-            "cal",
+            &ctx("cal"),
         );
         assert!(!dto.id.contains("SECRET"));
         assert_eq!(dto.id, event_id("SECRET-ENTRY-ID", &start));
@@ -1636,8 +2042,9 @@ mod tests {
                 response: 3,
                 color: None,
                 online_link: None,
+                global_id: None,
             },
-            "cal",
+            &ctx("cal"),
         );
         assert_eq!(dto.meeting_url.as_deref(), Some(url.as_str()));
         assert_eq!(dto.location.as_deref().map(|l| l.chars().count()), Some(MAX_TEXT_CHARS));
@@ -1645,7 +2052,7 @@ mod tests {
 
     fn window() -> FetchWindow {
         let from = Utc.with_ymd_and_hms(2026, 10, 6, 9, 0, 30).unwrap();
-        FetchWindow { from, to: from + chrono::Duration::hours(48), invites: false }
+        FetchWindow { from, to: from + chrono::Duration::hours(48), invites: false, range: false }
     }
 
     #[test]
@@ -1677,8 +2084,9 @@ mod tests {
                         response: 3,
                         color: None,
                         online_link: None,
+                        global_id: None,
                     },
-                    "cal",
+                    &ctx("cal"),
                 )
             })
             .collect();
@@ -1727,7 +2135,7 @@ mod tests {
             }
         }
         let (tx, rx) = mpsc::channel();
-        let worker = Worker::spawn(9, || Boom, Box::new(move |r| tx.send(r).unwrap())).unwrap();
+        let worker = Worker::spawn(9, || Boom, Box::new(move |r| tx.send(r).unwrap()), Box::new(|| {})).unwrap();
         assert!(worker.fetch(FetchWindow::starting_at(Utc::now())));
         let reply = rx.recv_timeout(Duration::from_secs(5)).expect("worker answers even after a panic");
         assert_eq!(reply.unwrap_err().code, "OUTLOOK-108");
@@ -1765,7 +2173,7 @@ mod tests {
             }
         }
         let (tx, rx) = mpsc::channel();
-        let worker = Worker::spawn(7, || Echo, Box::new(move |r| tx.send(r).unwrap())).unwrap();
+        let worker = Worker::spawn(7, || Echo, Box::new(move |r| tx.send(r).unwrap()), Box::new(|| {})).unwrap();
         for _ in 0..3 {
             assert!(worker.fetch(FetchWindow::starting_at(Utc::now())));
             let reply = rx.recv_timeout(Duration::from_secs(5)).expect("worker answers");
@@ -1791,7 +2199,7 @@ mod tests {
         }
         let (released_tx, released_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
-        let worker = Worker::spawn(8, move || Tracked(released_tx), Box::new(move |r| reply_tx.send(r).unwrap())).unwrap();
+        let worker = Worker::spawn(8, move || Tracked(released_tx), Box::new(move |r| reply_tx.send(r).unwrap()), Box::new(|| {})).unwrap();
         assert!(worker.fetch(FetchWindow::starting_at(Utc::now())));
         reply_rx.recv_timeout(Duration::from_secs(5)).expect("worker answers").unwrap();
         // The thread is now parked in its wait; dropping the handle alone must wake it.
@@ -1850,8 +2258,8 @@ mod tests {
         let outcome = source.fetch(&window);
         let ms = started.elapsed().as_millis();
         match &outcome {
-            Ok(Fetched { events, invites }) => println!(
-                "live: status=connected errorCode=- events={} allDay={} recurring={} withMeetingUrl={} colored={} invites={} restrict={:?} ms={}",
+            Ok(Fetched { events, invites, sources }) => println!(
+                "live: status=connected errorCode=- events={} allDay={} recurring={} withMeetingUrl={} colored={} invites={} restrict={:?} ms={} sources={:?}",
                 events.len(),
                 events.iter().filter(|e| e.all_day).count(),
                 events.iter().filter(|e| e.is_recurring).count(),
@@ -1859,7 +2267,8 @@ mod tests {
                 events.iter().filter(|e| e.color.is_some()).count(),
                 invites.len(),
                 source.last_restrict_mode,
-                ms
+                ms,
+                sources.as_ref().map(|r| (r.groups, r.selection, r.listener, r.sources.iter().map(|s| (s.kind, s.group, s.selected, s.active, s.state, s.error_code.clone(), s.event_count)).collect::<Vec<_>>()))
             ),
             Err(e) => println!("live: status=error errorCode={} kind={:?} detail={} ms={}", e.code, e.kind, e.detail, ms),
         }
@@ -1889,6 +2298,29 @@ mod tests {
             before,
             handles()
         );
+
+        // CI_LIVE_WATCH_SECS=N: pump messages for N seconds and report Outlook's calendar
+        // navigation notifications (check/uncheck a calendar in Outlook meanwhile), re-reading
+        // after each one as the worker does.
+        let watch_secs: u64 = std::env::var("CI_LIVE_WATCH_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        if watch_secs > 0 {
+            println!("live: watching the calendar navigation pane for {watch_secs}s (listener={})", source.watcher.is_some());
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(watch_secs);
+            while std::time::Instant::now() < until {
+                pump_messages();
+                if source.poll_changes() {
+                    let report = source.fetch(&window).ok().and_then(|f| f.sources);
+                    println!(
+                        "live: navigation changed -> {:?}",
+                        report.map(|r| (r.selection, r.sources.iter().map(|s| (s.kind, s.selected, s.active, s.event_count)).collect::<Vec<_>>()))
+                    );
+                }
+                if source.watcher.is_none() {
+                    println!("live: watcher released (explorer closed or Outlook gone)");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
         drop(source);
     }
 }
