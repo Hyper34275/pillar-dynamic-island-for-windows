@@ -324,6 +324,12 @@ export const ipc = {
     return normalizeNotificationStatus(await call<unknown>("notifications_request_access"));
   },
 
+  /** Whether Windows "Do not disturb" is on (the user's choice); null when it can't be read. */
+  dndGet: () => call<boolean>("dnd_get", undefined, { timeoutMs: 5000 }),
+
+  /** Only ever from an explicit click on the bell. Returns the state after the change, null on failure. */
+  dndSet: (on: boolean) => call<boolean>("dnd_set", { on }, { timeoutMs: 5000 }),
+
   activateNotification: (id: number) => callVoid("activate_notification", { id }),
   activateAppByAumid: (aumid: string) => callVoid("activate_app_by_aumid", { aumid }),
 

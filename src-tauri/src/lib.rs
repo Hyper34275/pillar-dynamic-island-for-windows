@@ -12,6 +12,7 @@ pub mod paths;
 mod reminder_state;
 mod clipboard;
 mod diagnostics;
+mod dnd;
 mod fullscreen;
 mod monitors;
 mod notes;
@@ -127,6 +128,8 @@ pub fn run() {
             notifications::notifications_request_access,
             notifications::activate_notification,
             notifications::activate_app_by_aumid,
+            dnd::dnd_get,
+            dnd::dnd_set,
             outlook::outlook_open_calendar,
             outlook::outlook_respond_invite,
             outlook::open_meeting_url,
@@ -140,6 +143,7 @@ pub fn run() {
             window::init(&handle);
             tray::init(&handle);
             notifications::start(handle.clone());
+            dnd::start(handle.clone());
             calendar::start(handle.clone());
             center_ipc::start(handle.clone());
             first_run_welcome(&handle);
