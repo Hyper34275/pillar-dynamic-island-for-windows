@@ -9,6 +9,11 @@ dist-ssr/
 # Rust / Tauri
 src-tauri/target/
 
+# Island Center (WinUI 3): MSBuild output and the installer staging folder (scripts/build-center.cjs)
+center/publish/
+center/**/bin/
+center/**/obj/
+
 # Env and secrets
 .env
 .env.*

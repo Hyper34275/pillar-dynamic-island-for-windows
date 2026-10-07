@@ -6,6 +6,8 @@
 # CompanyIsland_<version>_x64-setup.exe with <version> equal to package.json. Exits 1 on any failure.
 # NSIS installers are 32-bit PE stubs even when the payload is x64, so both x86 and x64 PE pass; the
 # x64 payload is expressed by the file name. Inspect CompanyIsland.exe inside (7z x) for its own machine type.
+# It also checks that Tauri's generated installer.nsi (next to the setup's bundle folder) lists the Island Center
+# (centerCompanyIsland.Center.exe, its .pri and web	our.html).
 # It does not check the Authenticode signature; see docs/INSTALLER.md for signing.
 param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -65,6 +67,12 @@ if ($file.Name -ceq $expected) {
     '{0,-10} {1}, expected {2}' -f 'Name', $file.Name, $expected
     $failed = $true
 }
+
+$file = Get-Item -LiteralPath $Path
+# <target>\release\bundle\nsis\<setup>.exe -> <target>\release\nsis\x64\installer.nsi
+$nsi = Join-Path $file.Directory.Parent.Parent.FullName 'nsis\x64\installer.nsi'
+& node (Join-Path $PSScriptRoot 'build-center.cjs') --check-installer-script --nsi $nsi
+if ($LASTEXITCODE -ne 0) { $failed = $true }
 
 if ($failed) {
     Write-Output 'RESULT: FAILED'

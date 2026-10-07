@@ -10,7 +10,11 @@
     "tauri": "set PATH=%USERPROFILE%\\.cargo\\bin;%PATH% && tauri",
     "test": "vitest run",
     "prebuild:installer": "node scripts/check-versions.cjs",
-    "build:installer": "npm run tauri -- build"
+    "build:center": "node scripts/build-center.cjs",
+    "build:installer": "npm run tauri -- build --config src-tauri/tauri.installer.conf.json",
+    "postbuild:installer": "node scripts/build-center.cjs --check-installer-script",
+    "check:installer": "node scripts/build-center.cjs --check-installer-script",
+    "posttauri": "node scripts/build-center.cjs --after-tauri"
   },
   "dependencies": {
     "motion": "^11.15.0",
