@@ -1,7 +1,7 @@
 {
   "name": "companyisland",
   "private": true,
-  "version": "1.0.4",
+  "version": "1.0.6",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,9 @@
     "build:installer": "npm run tauri -- build --config src-tauri/tauri.installer.conf.json",
     "postbuild:installer": "node scripts/build-center.cjs --check-installer-script",
     "check:installer": "node scripts/build-center.cjs --check-installer-script",
-    "posttauri": "node scripts/build-center.cjs --after-tauri"
+    "posttauri": "node scripts/build-center.cjs --after-tauri",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "motion": "^11.15.0",
@@ -22,6 +24,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/cli": "^2.12.1",
     "@types/react": "^18.3.18",

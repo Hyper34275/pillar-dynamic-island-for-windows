@@ -102,6 +102,11 @@ describe("island choreography", () => {
     expect(Math.min(...steps().map(closing))).toBeGreaterThan(0.25);
   });
 
+  it("never empties the island when one toast or alert replaces another", () => {
+    const floor = Math.min(...steps().map((p) => Math.max(opacityAt(layerFade.temporary, false, SHOWN, p), opacityAt(layerFade.temporary, true, FRESH, p))));
+    expect(floor).toBeGreaterThan(0.25);
+  });
+
   it("never leaves the tab content area empty while switching tabs", () => {
     const floor = Math.min(...steps().map((p) => Math.max(opacityAt(layerFade.tab, false, SHOWN, p), opacityAt(layerFade.tab, true, FRESH, p))));
     expect(floor).toBeGreaterThan(0.25);
@@ -124,6 +129,8 @@ describe("island choreography", () => {
     expect(partFade.dock.out).toBeLessThan(partFade.body.out);
     expect(opacityAt(partFade.body, false, SHOWN, 0.25)).toBeGreaterThan(0.8);
     // no compact date floating in a shape much larger than the pill
-    expect(opacityAt(layerFade.compact, true, FRESH, 0.42)).toBe(0);
+    expect(opacityAt(layerFade.compact, true, FRESH, 0.7)).toBe(0);
+    // the expanded body is still there (fading) while the compact content has not arrived yet
+    expect(opacityAt(partFade.body, false, SHOWN, 0.7)).toBeGreaterThan(0.35);
   });
 });

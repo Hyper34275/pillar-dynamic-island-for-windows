@@ -75,9 +75,9 @@ const notify = (title = "New message") =>
     backend.handlers.get("notification-received")!({ id: nextId++, appName: "Slack", title, body: "", timestamp: Date.now(), aumid: null });
   });
 
-/** The unseen indicator in the collapsed island: the element filled with the island's blue. */
+/** The unseen indicator in the collapsed island: the element filled with the island's blue (the accent tokens). */
 const indicator = () =>
-  [...container.querySelectorAll<HTMLElement>('[data-layer="compact"] span')].find((s) => /rgb\(10, 132, 255\)|rgba\(10, 132, 255, 0\.24\)/.test(s.style.background));
+  [...container.querySelectorAll<HTMLElement>('[data-layer="compact"] span')].find((s) => /--ci-accent/.test(s.getAttribute("style") ?? ""));
 
 const pointer = (el: Element, type: string, clientX: number) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX, clientY: 10 }));
 
@@ -202,5 +202,33 @@ describe("a notification arriving", () => {
     });
     expect(island().dataset.view).toBe("idle");
     expect(backend.activate).not.toHaveBeenCalled();
+  });
+});
+
+describe("arrival announcement", () => {
+  it("announces a toast politely by app and title, and never moves focus to it", async () => {
+    await mount();
+    const before = document.activeElement;
+    await notify("Build finished");
+    await ms(300);
+    const polite = container.querySelector('[aria-live="polite"]');
+    expect(polite?.textContent).toContain("Slack");
+    expect(polite?.textContent).toContain("Build finished");
+    expect(container.querySelector('[aria-live="assertive"]')?.textContent ?? "").toBe("");
+    expect(document.activeElement).toBe(before);
+    expect(island().querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe("island semantics while a toast shows", () => {
+  it("is a group around the toast's own buttons, not a button containing buttons", async () => {
+    await mount();
+    expect(island().getAttribute("role")).toBe("button");
+    await notify("Build finished");
+    await ms(300);
+    expect(island().getAttribute("role")).toBe("group");
+    expect(island().hasAttribute("tabindex")).toBe(false);
+    expect(island().hasAttribute("aria-expanded")).toBe(false);
+    expect(island().querySelector("button")).not.toBeNull();
   });
 });

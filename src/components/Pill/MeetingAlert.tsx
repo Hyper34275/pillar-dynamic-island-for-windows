@@ -1,13 +1,14 @@
+import { uiDirection, textDirection } from "../../design/direction";
+import { alert as alertTokens, color, smallExpanded } from "../../design/tokens";
 import { formatTime } from "../../lib/dateFormat";
 import { t } from "../../lib/i18n";
 import type { ReminderAlert } from "../../lib/reminders/types";
-import { layerFade, pillDimensions } from "./animations";
-import { ALERT_SUBJECT_FONT_SIZE, alertHasActions, alertIslandSize, canSnooze } from "./alertLayout";
+import { layerFade } from "./animations";
+import { alertHasActions, alertIslandSize, canSnooze } from "./alertLayout";
 import { IslandLayer } from "./IslandLayer";
-import { SYSTEM_COLORS } from "./ui/primitives";
+import { BidiText } from "./ui/BidiText";
+import { ActionButton, ActionRow } from "./ui/controls";
 import { JoinButton } from "./ui/meetingActions";
-
-const a = pillDimensions.alert;
 
 /** "Meeting in 30 minutes" / "Meeting starting now"; the plural form comes from Intl.PluralRules per locale. */
 export function meetingAlertLabel(alert: ReminderAlert): string {
@@ -35,14 +36,11 @@ interface MeetingAlertProps {
   alert: ReminderAlert;
 }
 
-// Physically left-to-right like the rest of the island; each text picks its own glyph direction
-// (dir="auto"), so Hebrew subjects shape correctly without flipping the layout.
-const TEXT_BASE = { textAlign: "left", unicodeBidi: "plaintext" } as const;
-
 /**
  * Content of the island while a meeting reminder shows. It only fills the island: the island
- * itself (and the native window) grow around it, sized by meetingAlertSize. It never takes
- * pointer events or focus (only its Join / snooze buttons do), so it cannot get in the way; the
+ * itself (and the native window) grow around it, sized by meetingAlertSize. The layout follows the
+ * UI language (Hebrew: everything aligns right); each text shapes itself (`bidi`). The layer never
+ * takes pointer events or focus except through its action row, so it cannot get in the way; the
  * announcement for assistive tech is made by the shell's live region.
  */
 export function MeetingAlert({ alert, onJoin, onSnooze }: MeetingAlertProps) {
@@ -51,57 +49,35 @@ export function MeetingAlert({ alert, onJoin, onSnooze }: MeetingAlertProps) {
       name="meetingAlert"
       fade={layerFade.temporary}
       size={alertIslandSize(alert)}
-      dir="ltr"
-      className="flex flex-col justify-center select-none pointer-events-none"
-      style={{ paddingInline: a.paddingX, paddingBlock: a.paddingY, gap: a.gap, color: "#f5f5f7" }}
+      dir={uiDirection()}
+      className="flex flex-col select-none pointer-events-none"
+      style={{ padding: smallExpanded.padding, color: color.fg }}
     >
-      <span
-        dir="auto"
-        className="truncate text-[12px] font-semibold"
-        style={{ ...TEXT_BASE, height: a.labelHeight, lineHeight: `${a.labelHeight}px`, color: SYSTEM_COLORS.blue }}
-      >
+      {/* The context label is the meta role at weight 600 (the role itself is 500). */}
+      <span className="bidi truncate text-meta" style={{ color: color.accent, fontWeight: 600 }}>
         {meetingAlertLabel(alert)}
       </span>
-      <h3
-        dir="auto"
-        className="line-clamp-2 font-semibold"
-        style={{ ...TEXT_BASE, fontSize: ALERT_SUBJECT_FONT_SIZE, lineHeight: `${a.subjectLineHeight}px`, overflowWrap: "anywhere" }}
-      >
-        {meetingAlertSubject(alert)}
+      <h3 dir={textDirection(meetingAlertSubject(alert))} className="bidi line-clamp-2 text-title" style={{ marginTop: alertTokens.labelGap, overflowWrap: "anywhere" }}>
+        <BidiText text={meetingAlertSubject(alert)} />
       </h3>
-      <span
-        dir="auto"
-        className="truncate text-[13px] tabular-nums text-white/70"
-        style={{ ...TEXT_BASE, height: a.detailHeight, lineHeight: `${a.detailHeight}px` }}
-      >
-        {meetingAlertTimeRange(alert)}
+      <span className="bidi truncate text-body tabular-nums" style={{ marginTop: alertTokens.labelGap, color: color.fgSecondary }}>
+        {/* A time range is an isolated LTR token (BidiText): "11:00 – 12:00" keeps its order in Hebrew. */}
+        <BidiText text={meetingAlertTimeRange(alert)} />
       </span>
       {alert.location && (
-        <span
-          dir="auto"
-          className="truncate text-[12.5px] text-white/50"
-          style={{ ...TEXT_BASE, height: a.detailHeight, lineHeight: `${a.detailHeight}px` }}
-        >
-          {alert.location}
+        <span dir={textDirection(alert.location)} className="bidi truncate text-body" style={{ marginTop: alertTokens.detailGap, color: color.fgTertiary }}>
+          <BidiText text={alert.location} />
         </span>
       )}
       {alertHasActions(alert) && (
-        <div className="flex items-center gap-2 pointer-events-auto" style={{ height: pillDimensions.alertActions.height, marginTop: pillDimensions.alertActions.gap - a.gap }}>
-          {alert.meetingUrl && <JoinButton url={alert.meetingUrl} subject={meetingAlertSubject(alert)} height={28} onJoined={onJoin} />}
+        <ActionRow className="pointer-events-auto" style={{ marginTop: alertTokens.actionsGap }}>
+          {alert.meetingUrl && <JoinButton url={alert.meetingUrl} subject={meetingAlertSubject(alert)} onJoined={onJoin} />}
           {canSnooze(alert) && (
-            <button
-              type="button"
-              className="inline-flex items-center h-[28px] rounded-full px-3 text-[12.5px] font-semibold text-white/80 bg-white/[0.1] hover:bg-white/[0.16] flex-shrink-0"
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onSnooze?.();
-              }}
-            >
-              <span dir="auto">{t("reminder.snooze")}</span>
-            </button>
+            <ActionButton variant="neutral" onPress={() => onSnooze?.()}>
+              {t("reminder.snooze")}
+            </ActionButton>
           )}
-        </div>
+        </ActionRow>
       )}
     </IslandLayer>
   );

@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import tourHtml from "../../tour.html?raw";
 import { pillDimensions } from "../components/Pill/animations";
+import { smallExpanded } from "../design/tokens";
 import { t, type MessageKey } from "../lib/i18n";
 import { SCROLL_START_MS, SCROLL_STEP_MS } from "./autoScroll";
 import { TOUR_SYSTEM_INFO } from "./mockData";
@@ -110,8 +111,8 @@ describe("the twelve steps", () => {
       r: `${pillDimensions.ringer.height / 2}px`,
     });
     expect((await sizeAt(0)).h).toBe(`${pillDimensions.compact.height}px`);
-    expect((await sizeAt(5)).w).toBe(`${pillDimensions.notification.width}px`);
-    expect((await sizeAt(3)).w).toBe(`${pillDimensions.alert.width}px`);
+    expect((await sizeAt(5)).w).toBe(`${smallExpanded.width}px`);
+    expect((await sizeAt(3)).w).toBe(`${smallExpanded.width}px`);
   });
 
   it("shows the collapsed island in the full display: date, clock, weekday and the unseen indicator", async () => {

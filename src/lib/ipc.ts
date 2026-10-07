@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isTauriAvailable, tauriInvoke, type InvokeOptions } from "./tauri";
 import { dlog } from "./debugLog";
 import { describeError } from "./errors";
+import { NO_LIMITS, parseIslandLimits, type IslandLimits } from "./island/limits";
 
 // -----------------------------------------------------------------------------
 // Types (camelCase over IPC)
@@ -105,6 +106,9 @@ export type IslandGeometry = {
   width: number;
   height: number;
   radius?: number;
+  /** The native stage window around every island shape (it includes the island's gap below the screen's top edge). */
+  stageWidth?: number;
+  stageHeight?: number;
 };
 
 /** A notification as delivered by the backend. Held in memory only, never persisted or logged. */
@@ -368,8 +372,23 @@ export const ipc = {
     return raw === null ? null : normalizeNotes(raw);
   },
 
+  /**
+   * Only ever from a click in the Notes tab's text box (`true`) and when that box loses focus
+   * (`false`): while on, the island window may be active so typing reaches the page. When another
+   * window takes the keyboard the backend ends it and emits `island-keyboard-ended`.
+   */
+  islandKeyboard: (on: boolean) => callVoid("island_keyboard", { on }, { timeoutMs: 3000 }),
+
   /** Only ever from an explicit user click: opens (or brings forward) the Island Center on a page. */
   openCenter: (page: CenterPage) => callVoid("open_center", { page }, { timeoutMs: 10_000 }),
+
+  /**
+   * How large the island may be on the monitor it is on (logical px). Never fails: outside Tauri,
+   * on an error or on an unusable answer there is no limit (the preferred sizes apply).
+   */
+  async getIslandLimits(): Promise<IslandLimits> {
+    return parseIslandLimits(await call<unknown>("get_island_limits", undefined, { timeoutMs: 2000 })) ?? NO_LIMITS;
+  },
 
   async getMonitors(): Promise<MonitorInfo[] | null> {
     const raw = await call<unknown>("get_monitors");

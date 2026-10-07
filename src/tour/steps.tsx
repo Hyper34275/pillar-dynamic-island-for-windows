@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSpring } from "motion/react";
 import { alertIslandSize } from "../components/Pill/alertLayout";
-import { expandedSize, layerFade, notificationSize, ringerSize, type IslandSize } from "../components/Pill/animations";
+import { expandedSize, ringerSize, type IslandSize } from "../components/Pill/animations";
+import { toastLayout } from "../components/Pill/toastLayout";
 import { CompactIsland } from "../components/Pill/CompactIsland";
-import { IslandLayer } from "../components/Pill/IslandLayer";
+import { HeaderActionButton } from "../components/Pill/HeaderAction";
+import { PANEL_TITLE_CLASS, PanelFrame, panelBodyClass } from "../components/Pill/PanelFrame";
 import { MeetingAlert } from "../components/Pill/MeetingAlert";
 import { NotificationToast } from "../components/Pill/NotificationToast";
 import { AboutView } from "../components/Pill/panels/AboutTab";
@@ -55,6 +57,9 @@ const CLOCK_TICK_MS = 1000;
 /** The dock capsule's slide between tabs: critically damped, about 0.2 s (the island's own tab motion is its own session's business). */
 const DOCK_SPRING = { type: "spring" as const, stiffness: 500, damping: 45, mass: 1 };
 
+/** A cross-fading layer in a header cell: the layers overlap in the cell instead of filling the island. */
+const CELL = { gridArea: "1 / 1", position: "relative", inset: "auto" } as const;
+
 const noop = () => {};
 const never = async () => false;
 
@@ -94,7 +99,7 @@ function CalendarDemo() {
   const selected = TOUR_DAYS[index];
   const dayEvents = useMemo(() => eventsOfDay(TOUR_EVENTS, selected), [selected]);
   return (
-    <div dir="ltr" className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-2">
       <WeekStrip selected={selected} today={TOUR_TODAY} busyDays={BUSY_DAYS} onSelect={noop} />
       <DayTimeline events={dayEvents.filter(isRealMeeting)} dayStartMs={selected} nowMs={TOUR_NOW} colorOf={colorOf} />
       {selected === TOUR_TODAY ? (
@@ -119,7 +124,7 @@ function AboutDemo() {
 
 const PANELS: Record<TabId, () => ReactNode> = {
   calendar: () => <CalendarDemo />,
-  notifications: () => <NotificationsView entries={tourHistory()} nowMs={TOUR_NOW} notificationsEnabled onActivate={noop} onRemove={noop} onClear={noop} />,
+  notifications: () => <NotificationsView entries={tourHistory()} nowMs={TOUR_NOW} notificationsEnabled lastViewedAt={TOUR_NOW - 5 * 60_000} onActivate={noop} onRemove={noop} />,
   notes: () => <NotesView notes={TOUR_NOTES} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} />,
   about: () => <AboutDemo />,
   settings: () => (
@@ -157,29 +162,28 @@ function ExpandedFrame({ tab }: { tab: TabId }) {
     indicator.set(index);
   }, [index, indicator]);
   return (
-    <IslandLayer
-      name="expanded"
-      fade={layerFade.expanded}
-      size={expandedSize()}
-      dir="ltr"
-      className="island-expanded flex flex-col pt-4 pb-2 px-4 cursor-default text-white"
+    <PanelFrame
       role="region"
       aria-label={t("island.expandedLabel", { app: APP_NAME })}
+      bodyRef={panelHost}
+      title={
+        <CrossFade id={tab} style={CELL}>
+          <h2 className={PANEL_TITLE_CLASS}>{t(config.labelKey)}</h2>
+        </CrossFade>
+      }
+      action={
+        config.HeaderAction && (
+          <CrossFade id={tab} style={CELL}>
+            {tab === "notifications" ? <HeaderActionButton onPress={noop}>{t("notifs.clear")}</HeaderActionButton> : null}
+          </CrossFade>
+        )
+      }
+      dock={<TabDock active={tab} indicator={indicator} onSelect={noop} />}
     >
-      <div className="relative flex-shrink-0 mb-3 px-1 h-[22px]">
-        <CrossFade id={tab} className="px-1">
-          <h2 className="text-white text-[20px] font-bold tracking-tight leading-none" dir="auto">
-            {t(config.labelKey)}
-          </h2>
-        </CrossFade>
-      </div>
-      <div ref={panelHost} className="flex-1 min-h-0 overflow-hidden w-full relative">
-        <CrossFade id={tab} className={`flex flex-col px-1 ${tab === "about" ? "overflow-hidden" : "overflow-y-auto island-scroll pb-3"}`}>
-          {PANELS[tab]()}
-        </CrossFade>
-      </div>
-      <TabDock active={tab} indicator={indicator} onSelect={noop} />
-    </IslandLayer>
+      <CrossFade id={tab} className={panelBodyClass(tab)}>
+        {PANELS[tab]()}
+      </CrossFade>
+    </PanelFrame>
   );
 }
 
@@ -209,13 +213,13 @@ export function buildSteps(): TourStep[] {
     {
       id: "invitation",
       layer: "invitation",
-      size: notificationSize(invite.body !== "", true),
+      size: toastLayout(invite).size,
       content: <NotificationToast notification={invite} onDismiss={noop} onActivate={noop} />,
     },
     {
       id: "windows-notification",
       layer: "windows-notification",
-      size: notificationSize(TEAMS_NOTIFICATION.body !== "", false),
+      size: toastLayout(TEAMS_NOTIFICATION).size,
       content: <NotificationToast notification={TEAMS_NOTIFICATION} onDismiss={noop} onActivate={noop} />,
     },
     expandedStep("calendar"),

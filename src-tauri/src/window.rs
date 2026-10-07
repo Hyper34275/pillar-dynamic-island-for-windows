@@ -8,7 +8,13 @@
 //! click on a meeting invitation, lets the user's own Outlook come forward for that one click;
 //! `center::open`, after a click on an island button or the tray item (or on the first run),
 //! lets the Island Center process come forward, naming only that process's pid (never
-//! `ASFW_ANY`). The island window itself still never takes focus.
+//! `ASFW_ANY`).
+//!
+//! The one exception to "never takes focus" is typing a note in the island's Notes tab: a
+//! click in its text box calls `island_keyboard(true)`, which drops `WS_EX_NOACTIVATE` and
+//! activates the window (the user's click is the last input, so Windows allows it). It ends
+//! when the text box loses focus (`island_keyboard(false)`) or another window becomes active
+//! (`WM_ACTIVATE`, then `island-keyboard-ended` to the frontend); the style comes back at once.
 //!
 //! There is no global mouse hook. The native window is a fixed *stage*, as large as the
 //! largest island (the frontend sends logical px), placed once and never resized or moved
@@ -17,20 +23,26 @@
 //! stalls its frame pipeline (~110 ms). Only the window *region* follows the island: a rounded
 //! rectangle around the island's resting shape, so the transparent rest of the stage is not
 //! part of the window at all and every click there reaches the windows below.
+//!
+//! The stage starts at the monitor's top edge; the island is drawn `ISLAND_TOP_INSET` below it. The
+//! region is the union of the island's rounded shape and a "bridge" rectangle over that gap, as wide
+//! as the island and nothing more, so a pointer thrown against the screen's top edge still hits the
+//! island (no bridge when a top-docked taskbar owns that edge). The stage is sized by the frontend
+//! from `get_island_limits` (the panel shrinks on a small monitor), never beyond the monitor.
 
 use crate::{fullscreen, monitors, settings::SettingsStore};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, Window, WindowEvent};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
+use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, RGN_OR};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, KillTimer, RegisterWindowMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
     GWL_EXSTYLE, HWND_TOPMOST, SPI_SETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
     SWP_NOSIZE, SWP_NOZORDER, STYLESTRUCT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY, WM_POWERBROADCAST,
-    WM_SETTINGCHANGE, WM_STYLECHANGING, WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WA_INACTIVE, WM_ACTIVATE, WM_SETTINGCHANGE, WM_STYLECHANGING, WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
 pub const MAIN: &str = "main";
@@ -62,13 +74,26 @@ struct Geometry {
 }
 
 static GEOMETRY: Mutex<Geometry> = Mutex::new(INITIAL);
-/// (left, width, height, region radius) in physical px of the region currently applied.
-static APPLIED_REGION: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+/// (left, top, width, height, region radius, bridge) in physical px of the region currently applied.
+type AppliedRegion = (i32, i32, i32, i32, i32, Option<monitors::Bounds>);
+static APPLIED_REGION: Mutex<Option<AppliedRegion>> = Mutex::new(None);
 /// Window rectangle (physical px) last applied, so an unchanged stage is never moved again.
 static APPLIED_RECT: Mutex<Option<monitors::Bounds>> = Mutex::new(None);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 /// Registered "TaskbarCreated" message (explorer restarted); 0 until `init`.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+/// A note is being typed in the island: the window may be active and hold the keyboard.
+static KEYBOARD: AtomicBool = AtomicBool::new(false);
+
+/// The extended-style bits the island always forces: no taskbar button, and no activation
+/// unless a note is being typed.
+fn forced_ex_style() -> u32 {
+    if KEYBOARD.load(Ordering::Acquire) {
+        WS_EX_TOOLWINDOW.0
+    } else {
+        (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).0
+    }
+}
 
 fn main_window(app: &AppHandle) -> Option<Window> {
     app.get_webview_window(MAIN).map(|w| w.as_ref().window())
@@ -91,7 +116,7 @@ pub fn main_hwnd(app: &AppHandle) -> Result<HWND, String> {
 fn apply_non_activating(hwnd: HWND) -> Result<(), String> {
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let wanted = style | WS_EX_NOACTIVATE.0 as isize | WS_EX_TOOLWINDOW.0 as isize;
+        let wanted = style | forced_ex_style() as isize;
         if wanted != style {
             SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
         }
@@ -144,10 +169,12 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Apply the rounded window region around the island (window-relative physical px), so the
-/// transparent rest of the stage does not catch clicks.
-fn apply_region(hwnd: HWND, region: monitors::Bounds, radius: i32) {
-    let key = Some((region.left, region.width(), region.height(), radius));
+/// Apply the window region (window-relative physical px): the rounded island, united with the
+/// bridge rectangle above it when there is one, so the transparent rest of the stage does not
+/// catch clicks but the strip between the island and the screen's top edge does.
+fn apply_region(hwnd: HWND, shape: monitors::RegionShape, radius: i32) {
+    let region = shape.island;
+    let key = Some((region.left, region.top, region.width(), region.height(), radius, shape.bridge));
     let mut applied = lock(&APPLIED_REGION);
     if *applied == key {
         return;
@@ -156,7 +183,21 @@ fn apply_region(hwnd: HWND, region: monitors::Bounds, radius: i32) {
         // CreateRoundRectRgn excludes the right/bottom edge, hence +1. A zero radius is a
         // plain rectangle (still a region: the stage around it must stay click-through).
         let diameter = radius * 2;
-        let rgn = CreateRoundRectRgn(region.left, region.top, region.right + 1, region.bottom + 1, diameter, diameter);
+        let mut rgn = CreateRoundRectRgn(region.left, region.top, region.right + 1, region.bottom + 1, diameter, diameter);
+        if let Some(bridge) = shape.bridge {
+            // Same +1 on the right so the bridge is exactly as wide as the island's region.
+            let strip = CreateRectRgn(bridge.left, bridge.top, bridge.right + 1, bridge.bottom);
+            let united = CreateRectRgn(0, 0, 0, 0);
+            if CombineRgn(united, rgn, strip, RGN_OR).0 != 0 {
+                let _ = DeleteObject(HGDIOBJ(rgn.0));
+                rgn = united;
+            } else {
+                // Without the union the island itself still works (the bridge is a convenience).
+                let _ = DeleteObject(HGDIOBJ(united.0));
+                dlog!("WARN", "window", "WIN-501: CombineRgn failed, no top bridge");
+            }
+            let _ = DeleteObject(HGDIOBJ(strip.0));
+        }
         // On success the system owns the region; on failure it is ours to free.
         if SetWindowRgn(hwnd, rgn, true) == 0 {
             let _ = DeleteObject(HGDIOBJ(rgn.0));
@@ -179,9 +220,11 @@ fn place(app: &AppHandle) -> Result<(), String> {
     let monitors = monitors::list();
     let target = monitors::pick(&setting, &monitors).ok_or_else(|| "WIN-503: no monitors found".to_string())?;
 
-    // An island larger than the stage (a size the frontend did not announce) still fits.
+    // An island larger than the stage (a size the frontend did not announce) still fits. The stage
+    // starts at the monitor's top edge, so it also holds the island's gap below it (the frontend
+    // adds it to `stage_height`; this keeps an older or smaller announcement safe).
     let stage_width = geometry.stage_width.max(geometry.width);
-    let stage_height = geometry.stage_height.max(geometry.height);
+    let stage_height = geometry.stage_height.max(geometry.height + monitors::ISLAND_TOP_INSET);
     let rect = monitors::island_bounds(target.bounds, target.dpi, stage_width, stage_height);
     let mut applied_rect = lock(&APPLIED_RECT);
     let moved = *applied_rect != Some(rect);
@@ -198,11 +241,13 @@ fn place(app: &AppHandle) -> Result<(), String> {
     }
     drop(applied_rect);
 
-    let region = monitors::island_region(rect.width(), rect.height(), target.dpi, geometry.width, geometry.height);
+    // The bridge over the top gap exists only where nothing (a top-docked taskbar) is above the
+    // island: there it would sit on the taskbar and swallow its clicks.
+    let shape = monitors::region_shape(rect.width(), rect.height(), target.dpi, geometry.width, geometry.height, target.top_is_free());
     apply_region(
         hwnd,
-        region,
-        monitors::region_radius(geometry.radius, target.dpi, region.width(), region.height()),
+        shape,
+        monitors::region_radius(geometry.radius, target.dpi, shape.island.width(), shape.island.height()),
     );
     Ok(())
 }
@@ -221,7 +266,9 @@ fn reflow(app: &AppHandle) {
     if let Err(e) = place(app) {
         dlog!("WARN", "window", "{}", e);
     }
-    if let Err(e) = app.emit("display-changed", ()) {
+    // The payload is the new target monitor's limits (`IslandLimits`); a listener that ignores
+    // it keeps working.
+    if let Err(e) = app.emit("display-changed", current_limits(app)) {
         dlog!("WARN", "window", "emit display-changed failed: {}", e);
     }
     fullscreen::reevaluate();
@@ -262,10 +309,20 @@ unsafe extern "system" fn subclass_proc(
         // tao rewrites the whole extended style on every window flag change (show/hide,
         // click-through) and then shows the window; forcing our bits into the style being
         // applied means the window never becomes visible without WS_EX_TOOLWINDOW (which
-        // would give it a taskbar button) or WS_EX_NOACTIVATE.
+        // would give it a taskbar button) or WS_EX_NOACTIVATE (unless a note is being typed).
         WM_STYLECHANGING if wparam.0 as i32 == GWL_EXSTYLE.0 => {
             let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
-            styles.styleNew |= (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW).0;
+            styles.styleNew |= forced_ex_style();
+        }
+        // Another window became active while a note was being typed: the island gives the
+        // keyboard back. Queued, so the style is not rewritten inside the activation itself.
+        WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE && KEYBOARD.load(Ordering::Acquire) => {
+            if let Some(app) = APP.get() {
+                let handle = app.clone();
+                if let Err(e) = app.run_on_main_thread(move || end_keyboard(&handle, true)) {
+                    dlog!("WARN", "window", "WIN-501: ending keyboard input could not be queued: {}", e);
+                }
+            }
         }
         WM_NCDESTROY => {
             let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
@@ -343,6 +400,47 @@ pub fn emit_island_toggle(app: &AppHandle, tab: Option<&str>) {
     }
 }
 
+/// Typing in the island is over: back to non-activating. `notify` tells the frontend (its
+/// text box still has DOM focus when another window took the keyboard away). Main thread.
+fn end_keyboard(app: &AppHandle, notify: bool) {
+    if !KEYBOARD.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    if let Some(window) = main_window(app) {
+        if let Err(e) = window.set_focusable(false) {
+            dlog!("WARN", "window", "WIN-501: restoring non-activating style failed: {}", e);
+        }
+        restyle_later(&window);
+    }
+    dlog!("INFO", "window", "keyboard input ended");
+    if notify {
+        if let Err(e) = app.emit("island-keyboard-ended", ()) {
+            dlog!("WARN", "window", "emit island-keyboard-ended failed: {}", e);
+        }
+    }
+}
+
+/// The Notes tab's text box wants the keyboard (`on`, after a click in it) or is done with it.
+/// While on, the island window is activatable and active, so key presses reach the page. Runs
+/// on the main thread (sync command), like every other window mutation.
+#[tauri::command]
+pub fn island_keyboard(app: AppHandle, on: bool) -> Result<(), String> {
+    if !on {
+        end_keyboard(&app, false);
+        return Ok(());
+    }
+    let window = app.get_webview_window(MAIN).ok_or_else(|| "WIN-501: main window is missing".to_string())?;
+    if !KEYBOARD.swap(true, Ordering::AcqRel) {
+        dlog!("INFO", "window", "keyboard input for a note");
+    }
+    let focused = window.set_focusable(true).and_then(|()| window.set_focus());
+    if let Err(e) = focused {
+        end_keyboard(&app, false);
+        return Err(format!("WIN-501: the island could not take the keyboard: {e}"));
+    }
+    Ok(())
+}
+
 /// The window is only ever hidden, never destroyed; Quit lives in the tray menu.
 pub fn on_window_event(window: &Window, event: &WindowEvent) {
     if let WindowEvent::CloseRequested { api, .. } = event {
@@ -379,6 +477,20 @@ pub fn set_island_geometry(
         stage_height: stage(stage_height, height),
     };
     place(&app)
+}
+
+/// How large the island may be on the monitor it is on (logical px) and that monitor's scale.
+/// None only when no monitor can be enumerated (the frontend then keeps its preferred sizes).
+fn current_limits(app: &AppHandle) -> Option<monitors::IslandLimits> {
+    let setting = app.state::<SettingsStore>().get().monitor;
+    let monitors = monitors::list();
+    monitors::pick(&setting, &monitors).map(|m| m.limits())
+}
+
+/// The target monitor's limits for the panel, so the frontend can fit it into a small screen.
+#[tauri::command(async)]
+pub fn get_island_limits(app: AppHandle) -> Result<monitors::IslandLimits, String> {
+    current_limits(&app).ok_or_else(|| "WIN-503: no monitors found".to_string())
 }
 
 /// Connected displays for the settings UI (physical size, no identifying data).

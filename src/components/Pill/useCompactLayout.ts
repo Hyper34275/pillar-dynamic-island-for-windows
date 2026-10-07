@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { useMinute } from "../../hooks/useClock";
 import { useSettings } from "../../hooks/useSettings";
 import { formatTime, fullDate, shortDate, timeParts, weekdayLong, weekdayShort } from "../../lib/dateFormat";
@@ -6,20 +6,27 @@ import { getFormatTag, getWordTag, t } from "../../lib/i18n";
 import type { IslandDisplay } from "../../lib/ipc";
 import { layoutCompact } from "../../lib/island/compactLayout";
 import { measureText } from "../../lib/textMeasure";
-import { badgeWidth, compactSize, pillDimensions, type IslandSize } from "./animations";
+import { badge as badgeTokens, compact as compactTokens, icon as iconTokens, progress as progressTokens, type as typeRoles } from "../../design/tokens";
+import { compactSize, pillDimensions, type IslandSize } from "./animations";
+import { countBadgeWidth } from "./ui/identity";
 import { meetingStatusLabel, type MeetingStatus } from "../../lib/calendar/meetingStatus";
 
-export const COMPACT_FONT_SIZE = 14;
-const COMPACT_FONT_WEIGHT = 600;
-/** The clock's digits: a small companion to the date in "full", the only label in "clock". */
-export const CLOCK_FONT_SIZE = { full: 12, clock: 15 } as const;
-/** The 12-hour day period ("PM") is smaller than the digits it follows. */
-export const PERIOD_FONT_SIZE = 11;
-/** Space between the clock's digits and the period. */
-export const PERIOD_GAP = 3;
+/** Date, weekday (secondary) and meeting status: the label role (14/600). */
+export const COMPACT_FONT_SIZE = typeRoles.label.size;
+/** The clock is the primary label of the compact island: the headline role (15/600), in every display. */
+export const CLOCK_FONT_SIZE = typeRoles.headline.size;
+/**
+ * The 12-hour day period ("PM") is the meta role's size (12): the smallest text the compact island
+ * shows. It is rendered at the label's weight (600) so Hebrew, which has no 500, matches Latin.
+ */
+export const PERIOD_FONT_SIZE = typeRoles.meta.size;
+/** Digits and their period are a tight pair. */
+export const PERIOD_GAP = compactTokens.gapTight;
+const COMPACT_FONT_WEIGHT = typeRoles.label.weight;
 // The labels render tabular digits (all as wide as the widest), so every digit is measured as the
 // widest one (`measureAt`). What is left is sub-pixel rounding between canvas and DOM text.
-const MEASURE_SLACK_PX = 4;
+// The layout spreads the slack into the gaps (justify-between), so it is never visible.
+const MEASURE_SLACK_PX = 2;
 
 export interface CompactLabels {
   date: string;
@@ -34,6 +41,45 @@ export interface CompactLabels {
 
 const cache = new Map<string, CompactLabels>();
 let fontFamily: string | null = null;
+
+// -----------------------------------------------------------------------------
+// Fonts. The measuring below runs on a canvas with the same stack the DOM renders (uiFontFamily),
+// which starts with "CI Hebrew" (design/fonts.css): local() faces that the browser loads lazily.
+// A canvas measures with a face that is not loaded yet as if it were the fallback, so the faces
+// are loaded first (preloadUiFonts, started when this module loads) and, when they arrive, every
+// measured size is dropped and recomputed (fontsVersion, a dependency of the hooks below).
+// -----------------------------------------------------------------------------
+
+let fontsVersion = 0;
+const fontListeners = new Set<() => void>();
+const subscribeFonts = (listener: () => void) => {
+  fontListeners.add(listener);
+  return () => void fontListeners.delete(listener);
+};
+const readFontsVersion = () => fontsVersion;
+
+function fontsChanged(): void {
+  cache.clear();
+  digitCache.clear();
+  tabularDigitCache.clear();
+  fontFamily = null;
+  fontsVersion++;
+  fontListeners.forEach((listener) => listener());
+}
+
+/** The faces of the Hebrew family at the three weights it maps, one Hebrew glyph each. */
+const HEBREW_SAMPLE = "א";
+const FONT_WEIGHTS = [400, 600, 700] as const;
+
+/** Loads the Hebrew faces (a no-op without document.fonts) and re-measures once they are there. */
+export function preloadUiFonts(): Promise<void> {
+  const fonts = typeof document === "undefined" ? undefined : document.fonts;
+  if (!fonts?.load) return Promise.resolve();
+  return Promise.all(FONT_WEIGHTS.map((weight) => fonts.load(`${weight} 14px "CI Hebrew"`, HEBREW_SAMPLE)))
+    .then(() => fonts.ready)
+    .then(fontsChanged, () => undefined);
+}
+void preloadUiFonts();
 
 /** The island's UI font stack, for canvas text measurement. */
 export function uiFontFamily(): string {
@@ -115,7 +161,6 @@ export function widestDigit(measure: (text: string) => number, locale: string): 
 }
 
 export interface TimeSlotInput {
-  display: "full" | "clock";
   /** Width of a text at a font size (px), in the island's font. */
   measure: (text: string, sizePx: number) => number;
   /** The widest digit glyph of the words locale. */
@@ -129,8 +174,8 @@ export interface TimeSlotInput {
  * to 10:00, or 12:59 to 1:00 in a 12-hour region, never resizes the island) and the period
  * takes the longer of its AM and PM forms.
  */
-export function timeSlotWidth({ display, measure, digit, parts }: TimeSlotInput): number {
-  const size = CLOCK_FONT_SIZE[display];
+export function timeSlotWidth({ measure, digit, parts }: TimeSlotInput): number {
+  const size = CLOCK_FONT_SIZE;
   // 10:00 has two hour digits in every cycle; each digit is then swapped for the widest one.
   const reference = parts(new Date(2000, 0, 1, 10, 0));
   const template = reference.digits.replace(/\p{Nd}/gu, digit);
@@ -145,8 +190,8 @@ export function timeSlotWidth({ display, measure, digit, parts }: TimeSlotInput)
 
 const digitCache = new Map<string, string>();
 
-function measuredTimeSlot(display: "full" | "clock"): number {
-  const size = CLOCK_FONT_SIZE[display];
+function measuredTimeSlot(): number {
+  const size = CLOCK_FONT_SIZE;
   const words = getWordTag();
   const key = `${fontOf(size)}|${words}`;
   let digit = digitCache.get(key);
@@ -155,7 +200,7 @@ function measuredTimeSlot(display: "full" | "clock"): number {
     if (digitCache.size > 16) digitCache.clear();
     digitCache.set(key, digit);
   }
-  return timeSlotWidth({ display, measure: (text, sizePx) => measureAt(sizePx)(text), digit, parts: (date) => timeParts(date) });
+  return timeSlotWidth({ measure: (text, sizePx) => measureAt(sizePx)(text), digit, parts: (date) => timeParts(date) });
 }
 
 /**
@@ -167,6 +212,7 @@ export function useCompactLabels(today: Date, displayOverride?: IslandDisplay): 
   const { settings, loaded } = useSettings();
   const display = displayOverride ?? (loaded ? settings.islandDisplay : "full");
   const dayKey = today.getTime();
+  const fonts = useSyncExternalStore(subscribeFonts, readFontsVersion, readFontsVersion);
   return useMemo(() => {
     // Numbers follow the regional format, the weekday the (pinned) UI language.
     const locale = `${getFormatTag()}|${getWordTag()}`;
@@ -176,16 +222,16 @@ export function useCompactLabels(today: Date, displayOverride?: IslandDisplay): 
 
     const date = new Date(dayKey);
     const dateText = shortDate(date);
-    const timeWidth = display === "date" ? 0 : measuredTimeSlot(display);
+    const timeWidth = display === "date" ? 0 : measuredTimeSlot();
     const { weekday, contentWidth } = layoutCompact({
       date: dateText,
       weekdayLong: weekdayLong(date),
       weekdayShort: weekdayShort(date),
       measure: measureAt(COMPACT_FONT_SIZE),
-      paddingX: pillDimensions.compact.paddingX,
-      gap: pillDimensions.compact.gap,
-      gapFull: pillDimensions.compact.gapFull,
-      maxWidth: pillDimensions.compact.maxWidth,
+      paddingX: compactTokens.paddingX,
+      gap: compactTokens.gap,
+      gapFull: compactTokens.gap,
+      maxWidth: compactTokens.maxWidth,
       display,
       timeWidth,
     });
@@ -193,7 +239,7 @@ export function useCompactLabels(today: Date, displayOverride?: IslandDisplay): 
     if (cache.size > 16) cache.clear();
     cache.set(key, labels);
     return labels;
-  }, [dayKey, display]);
+  }, [dayKey, display, fonts]);
 }
 
 // -----------------------------------------------------------------------------
@@ -201,10 +247,7 @@ export function useCompactLabels(today: Date, displayOverride?: IslandDisplay): 
 // unseen indicator. One size function serves PillShell's target and the layer, so they always agree.
 // -----------------------------------------------------------------------------
 
-export const STATUS_FONT_SIZE = 13;
-const STATUS_DOT = 8;
-const STATUS_GAP = 8;
-const SILENT_ICON = 14;
+export const STATUS_FONT_SIZE = typeRoles.label.size;
 
 export interface CompactContent {
   labels: CompactLabels;
@@ -220,24 +263,37 @@ export interface CompactContent {
   ariaLabel: string;
 }
 
-export function compactContentSize(labels: CompactLabels, statusTextWidth: number | null, unseen: number, silent: boolean): IslandSize {
-  const badge = badgeWidth(unseen);
+/**
+ * What a badge adds beyond the symmetric padding. Without a badge the island is padding + content +
+ * padding; with one it is paddingX + content + gap + badge + endInset (the badge is concentric with
+ * the end cap, so it sits closer to the end than text does). `compactSize` adds paddingX twice, so
+ * it is given the content plus this.
+ */
+export function badgeExtra(unseen: number): number {
+  const badge = countBadgeWidth(unseen);
+  return badge === 0 ? 0 : compactTokens.gap + badge + badgeTokens.endInset - compactTokens.paddingX;
+}
+
+export function compactContentSize(labels: CompactLabels, statusTextWidth: number | null, unseen: number, silent: boolean, progressRing = false): IslandSize {
+  const extra = badgeExtra(unseen);
   if (statusTextWidth !== null) {
-    const content = STATUS_DOT + STATUS_GAP + statusTextWidth + (silent ? STATUS_GAP + SILENT_ICON : 0) + badge;
-    return compactSize(content, pillDimensions.compactMeeting.maxWidth);
+    const content = (progressRing ? progressTokens.ring : compactTokens.statusDot) + compactTokens.gap + statusTextWidth + (silent ? compactTokens.gap + iconTokens.small : 0);
+    // A long meeting name ellipsizes: the island never goes past its maximum, badge or not.
+    return compactSize(content + extra, pillDimensions.compactMeeting.maxWidth);
   }
   const minWidth = labels.display === "clock" ? pillDimensions.compact.clockMinWidth : pillDimensions.compact.minWidth;
-  return compactSize(labels.contentWidth + badge, pillDimensions.compact.maxWidth + badge, minWidth);
+  return compactSize(labels.contentWidth + extra, pillDimensions.compact.maxWidth + extra, minWidth);
 }
 
 export function useCompactContent(labels: CompactLabels, status: MeetingStatus | null, unseen: number, silent: boolean): CompactContent {
   // The same minute the shell follows: one clock store, one timer, whoever subscribes.
   const minute = useMinute().getTime();
   const statusText = status ? meetingStatusLabel(status) : null;
+  const fonts = useSyncExternalStore(subscribeFonts, readFontsVersion, readFontsVersion);
   const size = useMemo(() => {
     const width = statusText === null ? null : measureAt(STATUS_FONT_SIZE)(statusText);
-    return compactContentSize(labels, width, unseen, silent);
-  }, [labels, statusText, unseen, silent]);
+    return compactContentSize(labels, width, unseen, silent, status?.kind === "now");
+  }, [labels, status?.kind, statusText, unseen, silent, fonts]);
   return useMemo(() => {
     const now = new Date(minute);
     const open = t("island.open");

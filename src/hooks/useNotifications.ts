@@ -38,6 +38,8 @@ export interface UseNotificationsResult {
   /** Notifications received since the island was last opened. */
   unseen: number;
   markSeen: () => void;
+  /** The island closed: what the Notifications tab showed is no longer unread (history.markViewed). */
+  markViewed: () => void;
   activate: (notification: IslandNotification) => void;
   requestAccess: () => void;
 }
@@ -106,6 +108,8 @@ export function useNotifications(
 
   const markSeen = useCallback(() => setUnseen(0), []);
 
+  const markViewed = useCallback(() => historyStore.markViewed(Date.now()), [historyStore]);
+
   const activate = useCallback(activateNotification, []);
 
   const requestAccess = useCallback(() => {
@@ -114,5 +118,5 @@ export function useNotifications(
     });
   }, []);
 
-  return { status, unseen, markSeen, activate, requestAccess };
+  return { status, unseen, markSeen, markViewed, activate, requestAccess };
 }

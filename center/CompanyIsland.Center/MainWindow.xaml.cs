@@ -5,6 +5,7 @@ using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Windows.Graphics;
 using Windows.UI.ViewManagement;
 using WinRT.Interop;
@@ -25,10 +26,15 @@ public interface ICenterPage
 
 public sealed partial class MainWindow : Window
 {
-    private const double DesignWidth = 1000;
+    // The navigation pane is 48 DIP wide (icons) and opens over the page, so the pages keep the width they had next to the old 232 DIP pane.
+    private const double DesignWidth = 820;
     private const double DesignHeight = 700;
-    private const double MinWidthDip = 840;
+    private const double MinWidthDip = 660;
     private const double MinHeightDip = 600;
+
+    /// <summary>Hover intent before the pane opens (a pointer crossing it on the way to the title bar does not open it) and the grace before it closes.</summary>
+    private static readonly TimeSpan PaneOpenDelay = TimeSpan.FromMilliseconds(120);
+    private static readonly TimeSpan PaneCloseDelay = TimeSpan.FromMilliseconds(250);
 
     private readonly CenterModel _model;
     private readonly Dictionary<CenterPageKind, UIElement> _pages = [];
@@ -38,6 +44,12 @@ public sealed partial class MainWindow : Window
     private bool _syncingSelection;
     private bool _barArmed;
     private AccessibilitySettings? _accessibility;
+    private readonly DispatcherTimer _paneTimer = new();
+    private FrameworkElement? _pane;
+    private bool _pointerOnPane;
+    private bool _keyboardInPane;
+    private long _lastKeyDown = long.MinValue / 2;
+    private const long KeyFocusWindowMs = 1000;
 
     public MainWindow(CenterModel model)
     {
@@ -260,6 +272,102 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// The pane shows icons only and opens over the page while the pointer is on it or keyboard focus is in it.
+    /// Without the template part (another WinUI template) it simply stays compact; the icons have tooltips.
+    /// </summary>
+    private void OnNavLoaded(object sender, RoutedEventArgs e)
+    {
+        if (_pane is not null || FindNamed(Nav, "PaneContentGrid") is not { } pane)
+        {
+            return;
+        }
+
+        _pane = pane;
+        _paneTimer.Tick += (_, _) =>
+        {
+            _paneTimer.Stop();
+            Nav.IsPaneOpen = _pointerOnPane || _keyboardInPane;
+        };
+        pane.PointerEntered += (_, _) =>
+        {
+            _pointerOnPane = true;
+            UpdatePane();
+        };
+        pane.PointerExited += (_, _) =>
+        {
+            _pointerOnPane = false;
+            UpdatePane();
+        };
+        pane.PointerCanceled += (_, _) =>
+        {
+            _pointerOnPane = false;
+            UpdatePane();
+        };
+        // Only focus moved by a key (Tab, arrows) opens it. WinUI also reports the focus it puts on the first item when the
+        // window is activated as keyboard focus, and that must not open the pane.
+        Root.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, _) => _lastKeyDown = Environment.TickCount64), handledEventsToo: true);
+        pane.GotFocus += (_, args) =>
+        {
+            _keyboardInPane = args.OriginalSource is Control { FocusState: FocusState.Keyboard }
+                && Environment.TickCount64 - _lastKeyDown < KeyFocusWindowMs;
+            UpdatePane();
+        };
+        pane.LostFocus += (_, _) => DispatcherQueue.TryEnqueue(() =>
+        {
+            _keyboardInPane = FocusManager.GetFocusedElement(Root.XamlRoot) is DependencyObject focused && IsInside(focused, pane);
+            UpdatePane();
+        });
+    }
+
+    private void UpdatePane()
+    {
+        bool open = _pointerOnPane || _keyboardInPane;
+        _paneTimer.Stop();
+        if (Nav.IsPaneOpen != open)
+        {
+            _paneTimer.Interval = open ? PaneOpenDelay : PaneCloseDelay;
+            _paneTimer.Start();
+        }
+    }
+
+    // The version line does not fit the 48 DIP pane, so it shows only while the pane is open.
+    private void OnPaneOpening(NavigationView sender, object args) => VersionText.Visibility = Visibility.Visible;
+
+    private void OnPaneClosing(NavigationView sender, NavigationViewPaneClosingEventArgs args) => VersionText.Visibility = Visibility.Collapsed;
+
+    private static FrameworkElement? FindNamed(DependencyObject root, string name)
+    {
+        for (int i = 0; i < Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            DependencyObject child = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetChild(root, i);
+            if (child is FrameworkElement { Name: var childName } element && childName == name)
+            {
+                return element;
+            }
+
+            if (FindNamed(child, name) is { } nested)
+            {
+                return nested;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsInside(DependencyObject element, DependencyObject container)
+    {
+        for (DependencyObject? node = element; node is not null; node = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(node))
+        {
+            if (ReferenceEquals(node, container))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private void OnConnectionChanged()
     {
         bool connected = _model.Connected;
@@ -308,6 +416,14 @@ public sealed partial class MainWindow : Window
 
     internal void DebugCommand(string page, string command)
     {
+        if (command == "pane")
+        {
+            // As if the pointer rested on the pane.
+            _pointerOnPane = true;
+            Nav.IsPaneOpen = true;
+            return;
+        }
+
         if (!_pages.TryGetValue(KindOfPage(CenterPage.TryParse(page, out CenterPage parsed) ? parsed.Kind : CenterPageKind.Welcome), out UIElement? element))
         {
             return;

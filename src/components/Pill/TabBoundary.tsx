@@ -3,6 +3,7 @@ import { ERROR_CODES } from "../../lib/appInfo";
 import { dlog } from "../../lib/debugLog";
 import { describeError, stackFrames } from "../../lib/errors";
 import { t } from "../../lib/i18n";
+import { ErrorState } from "./ui/states";
 
 interface TabBoundaryProps {
   /** Tab id, for the log only. Remount with a new key to reset after a failure. */
@@ -10,7 +11,7 @@ interface TabBoundaryProps {
   children: ReactNode;
 }
 
-/** Contains a render error to one tab: the tab shows "Unavailable", the island keeps working. */
+/** Contains a render error to one tab: the tab shows an error state (Unavailable, code, Try again), the island keeps working. */
 export class TabBoundary extends Component<TabBoundaryProps, { failed: boolean }> {
   state = { failed: false };
 
@@ -25,12 +26,12 @@ export class TabBoundary extends Component<TabBoundaryProps, { failed: boolean }
   render() {
     if (!this.state.failed) return this.props.children;
     return (
-      <div dir="ltr" role="alert" className="flex-1 flex flex-col items-center justify-center gap-1 text-center">
-        <span className="text-[14px] font-semibold text-white/80" dir="auto">
-          {t("island.unavailable")}
-        </span>
-        <span className="text-[11px] font-medium text-white/40 tabular-nums">{ERROR_CODES.uiRender}</span>
-      </div>
+      <ErrorState
+        title={t("island.unavailable")}
+        code={ERROR_CODES.uiRender}
+        // If the cause is still there the boundary simply fails again; the island never goes down with it.
+        action={{ label: t("island.tryAgain"), onPress: () => this.setState({ failed: false }) }}
+      />
     );
   }
 }

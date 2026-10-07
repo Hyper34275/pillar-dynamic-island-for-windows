@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { TabId } from "../components/Pill/tabs";
 import { dlog } from "../lib/debugLog";
 import { FOREGROUND_GRACE_MS, HOVER_INTENT_MS, LEAVE_COLLAPSE_MS, UNATTENDED_COLLAPSE_MS } from "../lib/island/timing";
+import { islandTyping } from "../lib/notes/typing";
 
 interface PillIsland {
   /** The user layer is expanded (it may be hidden behind an alert or a toast). */
@@ -44,6 +45,8 @@ interface UsePillStateReturn {
  *    it or it opened less than FOREGROUND_GRACE_MS ago.
  *  - While a meeting alert or toast is showing nothing is armed; when it ends the rules above
  *    apply again to whatever the user had open.
+ *  - While a note is being typed in the island (lib/notes/typing) leaving does not collapse it:
+ *    the leave timer arms when the typing ends. A click outside still closes it.
  * The timers are effects of (pointer, island) state, so a stale timer cannot outlive its condition.
  */
 export function usePillState(island: PillIsland): UsePillStateReturn {
@@ -96,15 +99,17 @@ export function usePillState(island: PillIsland): UsePillStateReturn {
     return () => clearTimeout(handle);
   }, [inside, isBooting, expanded, temporary, expand]);
 
+  const typing = useSyncExternalStore(islandTyping.subscribe, islandTyping.get);
+
   useEffect(() => {
-    if (!expanded || inside || temporary) return;
+    if (!expanded || inside || temporary || typing) return;
     const delay = visited ? LEAVE_COLLAPSE_MS : UNATTENDED_COLLAPSE_MS;
     const handle = setTimeout(() => {
       dlog("info", "pill", visited ? `collapse: pointer left (${delay} ms)` : `collapse: opened elsewhere, pointer never arrived (${delay} ms)`);
       collapse();
     }, delay);
     return () => clearTimeout(handle);
-  }, [expanded, inside, temporary, visited, collapse]);
+  }, [expanded, inside, temporary, typing, visited, collapse]);
 
   const foregroundChanged = useCallback(() => {
     if (!expanded || temporary || insideRef.current) return;

@@ -1,62 +1,24 @@
-import type { MouseEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
+import { color, control } from "../../../design/tokens";
 import { inviteAnswers, useInviteAnswer, type InviteAnswers } from "../../../lib/calendar/inviteAnswers";
 import { t, type MessageKey } from "../../../lib/i18n";
 import { ipc, type InviteResponse } from "../../../lib/ipc";
-import { CalendarIcon, CheckIcon, VideoIcon } from "./icons";
-import { SYSTEM_COLORS } from "./primitives";
+import { ActionButton, ActionRow } from "./controls";
+import { CheckIcon, VideoIcon } from "./icons";
 
-/** Buttons inside clickable surfaces (a toast, the island) must not trigger the surface too. */
-function stop(e: MouseEvent) {
-  e.stopPropagation();
-}
-
-function ActionButton({
-  label,
-  tint,
-  onClick,
-  children,
-  ariaLabel,
-  height = 28,
-}: {
-  label: string;
-  tint: string;
-  onClick: () => void;
-  children?: ReactNode;
-  ariaLabel?: string;
-  height?: number;
-}) {
-  return (
-    <button
-      type="button"
-      className="inline-flex items-center justify-center gap-1.5 rounded-full px-3 font-semibold transition-[filter] hover:brightness-125 active:brightness-90 flex-shrink-0"
-      style={{ height, fontSize: height >= 28 ? 12.5 : 11.5, color: tint, background: `color-mix(in srgb, ${tint} 20%, transparent)` }}
-      aria-label={ariaLabel ?? label}
-      onPointerDown={stop}
-      onClick={(e) => {
-        stop(e);
-        onClick();
-      }}
-    >
-      {children}
-      <span dir="auto">{label}</span>
-    </button>
-  );
-}
-
-/** "Join": opens the meeting's join link (the Teams app for Teams links). */
-export function JoinButton({ url, subject, height, onJoined }: { url: string; subject: string; height?: number; onJoined?: () => void }) {
+/** "Join": opens the meeting's join link (the Teams app for Teams links). Sits in an ActionRow. */
+export function JoinButton({ url, subject, onJoined }: { url: string; subject: string; onJoined?: () => void }) {
   return (
     <ActionButton
-      label={t("calendar.join")}
+      variant="primary"
       ariaLabel={t("calendar.joinAria", { subject })}
-      tint={SYSTEM_COLORS.green}
-      height={height}
-      onClick={() => {
+      icon={<VideoIcon size={control.iconSize} strokeWidth={2.2} />}
+      onPress={() => {
         void ipc.openMeetingUrl(url);
         onJoined?.();
       }}
     >
-      <VideoIcon size={height && height < 28 ? 13 : 15} strokeWidth={2.2} />
+      {t("calendar.join")}
     </ActionButton>
   );
 }
@@ -67,72 +29,73 @@ const DONE_LABEL: Record<InviteResponse, MessageKey> = {
   decline: "invite.declined",
 };
 
+/** A one-line state (sending, answered) with the same height as the buttons it replaces, so the card never jumps. */
+function StatusLine({ tone, children }: { tone: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-center text-label" role="status" style={{ height: control.height, gap: control.gap, color: tone }}>
+      {children}
+    </div>
+  );
+}
+
 /**
  * Accept / maybe / decline for a meeting invitation, answered through the user's own Outlook
- * (which sends the reply to the organizer). Shows the answer once given.
+ * (which sends the reply to the organizer). Three equal buttons across the full width; once
+ * answered (or while sending) a status line of the same height replaces them. If Outlook could
+ * not take the answer, the line says so and pressing it sends the same answer again.
  */
 export function InviteActions({
   inviteId,
-  height = 28,
   showTentative = true,
   store = inviteAnswers,
 }: {
   inviteId: string;
-  height?: number;
   showTentative?: boolean;
   store?: InviteAnswers;
 }) {
   const answer = useInviteAnswer(inviteId, store);
+  const respond = (response: InviteResponse) => void store.respond(inviteId, response);
   if (answer?.state === "done") {
-    const declined = answer.response === "decline";
     return (
-      <span
-        className="inline-flex items-center gap-1 text-[12px] font-semibold"
-        style={{ color: declined ? SYSTEM_COLORS.red : SYSTEM_COLORS.green }}
-        role="status"
-      >
-        <CheckIcon size={13} strokeWidth={2.6} />
-        <span dir="auto">{t(DONE_LABEL[answer.response])}</span>
-      </span>
+      <StatusLine tone={answer.response === "decline" ? color.destructiveText : color.positive}>
+        <CheckIcon size={control.iconSize} strokeWidth={2.6} />
+        <span className="bidi">{t(DONE_LABEL[answer.response])}</span>
+      </StatusLine>
     );
   }
   if (answer?.state === "sending") {
     return (
-      <span className="text-[12px] font-medium text-white/55" role="status" dir="auto">
-        {t("invite.sending")}
-      </span>
+      <StatusLine tone={color.fgTertiary}>
+        <span className="bidi">{t("invite.sending")}</span>
+      </StatusLine>
     );
   }
-  const respond = (response: InviteResponse) => void store.respond(inviteId, response);
+  if (answer?.state === "failed") {
+    const retry = answer.response;
+    return (
+      <ActionRow>
+        <ActionButton variant="neutral" onPress={() => respond(retry)}>
+          <span className="bidi" role="alert" style={{ color: color.warning }}>
+            {t("invite.failed")}
+          </span>
+        </ActionButton>
+      </ActionRow>
+    );
+  }
   return (
-    <span className="inline-flex items-center gap-1.5 flex-wrap">
-      <ActionButton label={t("invite.accept")} tint={SYSTEM_COLORS.green} height={height} onClick={() => respond("accept")} />
-      {showTentative && <ActionButton label={t("invite.tentative")} tint="#c7c7cc" height={height} onClick={() => respond("tentative")} />}
-      <ActionButton label={t("invite.decline")} tint={SYSTEM_COLORS.red} height={height} onClick={() => respond("decline")} />
-      {answer?.state === "failed" && (
-        <span className="text-[11px] font-medium" style={{ color: SYSTEM_COLORS.orange }} role="alert" dir="auto">
-          {t("invite.failed")}
-        </span>
+    <ActionRow>
+      <ActionButton variant="primary" onPress={() => respond("accept")}>
+        {t("invite.accept")}
+      </ActionButton>
+      {showTentative && (
+        <ActionButton variant="neutral" onPress={() => respond("tentative")}>
+          {t("invite.tentative")}
+        </ActionButton>
       )}
-    </span>
+      <ActionButton variant="destructive" onPress={() => respond("decline")}>
+        {t("invite.decline")}
+      </ActionButton>
+    </ActionRow>
   );
 }
 
-/** The tile in front of a meeting invitation: a calendar, tinted like the app's meeting accents. */
-export function InviteAvatar({ size = 40, radius }: { size?: number; radius?: number }) {
-  return (
-    <div
-      className="flex items-center justify-center flex-shrink-0 text-white"
-      style={{
-        width: size,
-        height: size,
-        borderRadius: radius ?? Math.round(size * 0.3),
-        background: `linear-gradient(160deg, ${SYSTEM_COLORS.blue}, color-mix(in srgb, ${SYSTEM_COLORS.blue} 70%, black))`,
-        boxShadow: "inset 0 0.5px 0 rgba(255,255,255,0.25)",
-      }}
-      aria-hidden="true"
-    >
-      <CalendarIcon size={Math.round(size / 2)} strokeWidth={2.2} />
-    </div>
-  );
-}

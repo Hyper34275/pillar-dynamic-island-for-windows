@@ -14,9 +14,13 @@ import { silence, useSilenceUntil } from "../../lib/island/silence";
 import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenReader";
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
+import { color } from "../../design/tokens";
+import { NO_LIMITS, setIslandLimits, useIslandLimits, type IslandLimits } from "../../lib/island/limits";
+import { ipc } from "../../lib/ipc";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
-import { bootAnimationDuration, expandedSize, islandSprings, notificationSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
+import { bootAnimationDuration, expandedSize, ISLAND_TOP_INSET, islandSprings, limitSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
+import { toastLayout } from "./toastLayout";
 import { ShellContext, TransitionContext, useDrivenTransition } from "./drivenTransition";
 import { useIslandMotion } from "./useIslandMotion";
 import type { ReminderStore } from "../../lib/reminders/types";
@@ -26,19 +30,23 @@ import { ContextMenu } from "./ContextMenu";
 import { ExpandedIsland } from "./ExpandedIsland";
 import { MeetingAlert, meetingAlertAnnouncement, meetingAlertLabel, meetingAlertSubject } from "./MeetingAlert";
 import { NotificationToast } from "./NotificationToast";
+import { notificationAnnouncement } from "./ui/notification";
+import { notificationHistory } from "../../lib/notifications/history";
 import { RingerPill, ringerLabel } from "./RingerPill";
 import { TABS, type TabId } from "./tabs";
 import { useCompactContent, useCompactLabels } from "./useCompactLayout";
-import { stageSize, usePillGeometry } from "./usePillGeometry";
+import { maxShapeSize, usePillGeometry } from "./usePillGeometry";
 
 // Constant on purpose: an animated shadow would repaint every frame of every morph. Inset,
 // because the window region is cut to the island's shape and would clip anything outside it.
-const ISLAND_EDGE = "inset 0 0 0 0.5px rgba(255,255,255,0.1)";
+const ISLAND_EDGE = `inset 0 0 0 0.5px ${color.islandEdge}`;
 
-// The island's shape never leaves these: the launch dot below, the stage window above.
+// The island's shape never leaves these: the launch dot below, the largest preferred shape above.
+// The monitor's limits (lib/island/limits.ts) only ever lower every target, so a limited island
+// stays inside these bounds and inside its (equally limited) stage window.
 const SHAPE_BOUNDS = (() => {
-  const stage = stageSize();
-  return { minWidth: pillDimensions.boot.width, minHeight: pillDimensions.boot.height, maxWidth: stage.width, maxHeight: stage.height };
+  const max = maxShapeSize(NO_LIMITS);
+  return { minWidth: pillDimensions.boot.width, minHeight: pillDimensions.boot.height, maxWidth: max.width, maxHeight: max.height };
 })();
 
 interface PillShellProps {
@@ -104,20 +112,37 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // (drivenTransition.ts), so content never shows before the island has room for it, and never
   // vanishes while the island is still large.
   // ---------------------------------------------------------------------------
+  // Every shape is held to the monitor's limits (the panel shrinks; an alert or toast only can on a
+  // screen narrower than itself), so the island and its stage window never exceed the work area.
+  const limits = useIslandLimits();
   const target = useMemo<IslandSize>(() => {
     switch (view.kind) {
       case "userExpanded":
-        return expandedSize();
+        return expandedSize(limits);
       case "meetingAlert":
-        return alertIslandSize(view.alert);
+        return limitSize(alertIslandSize(view.alert), limits);
       case "ringer":
-        return ringerSize();
+        return limitSize(ringerSize(), limits);
       case "notification":
-        return notificationSize(view.notification.body !== "", !!view.notification.invite);
+        return limitSize(toastLayout(view.notification).size, limits);
       case "idle":
-        return compact.size;
+        return limitSize(compact.size, limits);
     }
-  }, [view, compact.size]);
+  }, [view, compact.size, limits]);
+
+  // The monitor's limits: asked for once at start; `display-changed` brings the new monitor's.
+  // An answer that was asked for before a newer display-changed arrived is stale and dropped.
+  const limitsSeqRef = useRef(0);
+  useEffect(() => {
+    let disposed = false;
+    const seq = limitsSeqRef.current;
+    void ipc.getIslandLimits().then((answer) => {
+      if (!disposed && seq === limitsSeqRef.current) setIslandLimits(answer);
+    });
+    return () => {
+      disposed = true;
+    };
+  }, []);
 
   // Boot: dot → morph into the compact pill → interactive. The dot is a state of its own (with
   // no content), held briefly so it is seen; from the morph on, the island follows the view
@@ -229,16 +254,30 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // ---------------------------------------------------------------------------
   // Notifications: opening the island marks everything as seen; new arrivals are announced.
   // ---------------------------------------------------------------------------
-  const { markSeen, unseen } = notifications;
+  const { markSeen, markViewed, unseen } = notifications;
   useEffect(() => {
     if (isExpanded) markSeen();
   }, [isExpanded, markSeen]);
 
+  // Closing the island is what makes the Notifications tab's unread dots history.
+  const wasExpandedRef = useRef(false);
+  useEffect(() => {
+    if (wasExpandedRef.current && !isExpanded) markViewed();
+    wasExpandedRef.current = isExpanded;
+  }, [isExpanded, markViewed]);
+
+  // A notification shown as a toast is announced politely by name ("New notification from Teams:
+  // <title>"); the toast itself never takes focus and is not an alert. Arrivals that show no toast
+  // (the island is open, or toasts wait behind a meeting alert) are announced as a count.
+  const shownNotification = view.kind === "notification" ? view.notification : null;
+  useEffect(() => {
+    if (shownNotification) announce(notificationAnnouncement(shownNotification));
+  }, [shownNotification, announce]);
   const prevUnseenRef = useRef(0);
   useEffect(() => {
-    if (unseen > prevUnseenRef.current) announce(t("notif.announce", { n: unseen - prevUnseenRef.current }));
+    if (unseen > prevUnseenRef.current && !shownNotification) announce(t("notif.announce", { n: unseen - prevUnseenRef.current }));
     prevUnseenRef.current = unseen;
-  }, [unseen, announce]);
+  }, [unseen, announce, shownNotification]);
 
   // ---------------------------------------------------------------------------
   // Closing and toggling. Whatever closes the island while the pointer is on it must also stop
@@ -272,10 +311,30 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     [view.kind, activeTab, islandState, closeAll]
   );
 
+  // A display or DPI change: take the new monitor's limits (from the event, or ask when an older
+  // backend sent none), then send the stage again whatever the queue believes it already sent.
+  const displayChanged = useCallback(
+    (fresh: IslandLimits | null) => {
+      const seq = ++limitsSeqRef.current;
+      if (fresh) {
+        setIslandLimits(fresh);
+        invalidateGeometry();
+        return;
+      }
+      invalidateGeometry();
+      void ipc.getIslandLimits().then((answer) => {
+        if (seq !== limitsSeqRef.current) return;
+        setIslandLimits(answer);
+        invalidateGeometry();
+      });
+    },
+    [invalidateGeometry]
+  );
+
   useIslandEvents({
     onToggle: toggleIsland,
     onFullscreenChanged: setFullscreen,
-    onDisplayChanged: invalidateGeometry,
+    onDisplayChanged: displayChanged,
     onForegroundChanged: foregroundChanged,
   });
 
@@ -285,6 +344,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const { handlers: gestureHandlers, contextMenu, closeContextMenu } = useDesktopGestures({
     enabled: true,
     reducedMotion,
+    // A swipe moves the strip like the arrows do: towards the side of the next tab (see above).
     onSwipeLeft: () => {
       if (isExpanded) goToTab(1);
     },
@@ -301,7 +361,11 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Escape closes whatever is presented (the panel, an alert, a toast, the ringer pill); it
+      // never deletes anything. A control that already used the key (the note box leaving
+      // itself, a confirmation cancelling) has called preventDefault or stopped the event: not ours.
       if (e.key === "Escape" && view.kind !== "idle") {
+        if (e.defaultPrevented) return;
         closeAll("escape key");
         return;
       }
@@ -313,24 +377,16 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         return;
       }
 
-      if (!isExpanded) return;
-
-      // Arrow keys navigate the tab strip. The layout is physically LTR, so Left is always "previous".
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        e.preventDefault();
-        goToTab(e.key === "ArrowLeft" ? -1 : 1);
-      } else if (e.key === "Home" || e.key === "End") {
-        e.preventDefault();
-        islandState.expand(e.key === "Home" ? TABS[0].id : TABS[TABS.length - 1].id);
-      }
-      // Tab / Shift+Tab is intentionally NOT handled: it must do normal DOM focus
-      // traversal so keyboard users can reach the controls inside the active panel.
+      // The arrows, Home and End are NOT handled here: they belong to the tablist (TabDock) and act
+      // only while a tab has focus (WAI-ARIA tabs pattern), so they never hijack a text box or a
+      // control inside the panel. Tab / Shift+Tab is not handled either: normal DOM focus traversal.
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [view.kind, isExpanded, closeAll, toggleIsland, goToTab, islandState]);
+  }, [view.kind, closeAll, toggleIsland]);
 
+  const carriesControls = view.kind === "notification" || view.kind === "meetingAlert";
   const ariaLabel = isExpanded
     ? t("island.expandedLabel", { app: APP_NAME })
     : view.kind === "meetingAlert"
@@ -355,13 +411,41 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     <>
       {/* Live regions stay mounted whatever the island shows. */}
       <ScreenReaderLiveRegions polite={politeAnnouncement} assertive={assertiveAnnouncement} />
+      {/* The pointer target: the island plus the strip of ISLAND_TOP_INSET above it (the window
+          region's "bridge" up to the screen's top edge). One element receives enter, leave and
+          click, so moving from the strip into the island is not a leave (no hover flicker) and a
+          throw against the top edge counts as a hit on the island. It is as wide as the island. */}
       <motion.div
         dir="ltr"
         className="relative cursor-pointer"
-        role={isExpanded ? "dialog" : "button"}
-        aria-label={ariaLabel}
-        aria-expanded={isExpanded ? "true" : "false"}
-        tabIndex={isExpanded ? -1 : 0}
+        data-island-hit=""
+        style={{ width, paddingTop: ISLAND_TOP_INSET }}
+        onPointerEnter={pointerEnter}
+        onPointerLeave={pointerLeave}
+        onPointerDown={gestureHandlers.onPointerDown}
+        onPointerMove={gestureHandlers.onPointerMove}
+        onPointerUp={gestureHandlers.onPointerUp}
+        onContextMenu={(e) => {
+          if (isExpanded) gestureHandlers.onContextMenu(e);
+          else e.preventDefault();
+        }}
+        // Expanded content stops its own clicks, so this only sees the collapsed island, the strip and alerts.
+        onClick={() => {
+          if (isBooting) return;
+          if (view.kind === "idle") islandState.pin();
+          else if (view.kind === "meetingAlert") closeAll("meeting alert clicked");
+          else if (view.kind === "ringer") toggleRinger(view.ringer);
+        }}
+      >
+      <motion.div
+        dir="ltr"
+        className="relative"
+        // A toast or a meeting alert carries its own buttons: the island is then a named group around
+        // them, never a button that contains buttons (and a click on it does nothing a key could not).
+        role={isExpanded ? "dialog" : carriesControls ? "group" : "button"}
+        aria-label={view.kind === "notification" ? undefined : ariaLabel}
+        aria-expanded={carriesControls ? undefined : isExpanded ? "true" : "false"}
+        tabIndex={isExpanded ? -1 : carriesControls ? undefined : 0}
         data-expanded={isExpanded ? "true" : "false"}
         data-view={view.kind}
         style={{
@@ -379,22 +463,6 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         // The launch entrance of the dot, and the release of the press feedback: no bounce.
         transition={reducedMotion ? { duration: 0.1, ease: "easeOut" } : springConfig.island}
         whileTap={view.kind === "idle" && !reducedMotion ? { scale: 0.97 } : undefined}
-        onPointerEnter={pointerEnter}
-        onPointerLeave={pointerLeave}
-        onPointerDown={gestureHandlers.onPointerDown}
-        onPointerMove={gestureHandlers.onPointerMove}
-        onPointerUp={gestureHandlers.onPointerUp}
-        onContextMenu={(e) => {
-          if (isExpanded) gestureHandlers.onContextMenu(e);
-          else e.preventDefault();
-        }}
-        // Expanded content stops its own clicks, so this only sees the collapsed island and alerts.
-        onClick={() => {
-          if (isBooting) return;
-          if (view.kind === "idle") islandState.pin();
-          else if (view.kind === "meetingAlert") closeAll("meeting alert clicked");
-          else if (view.kind === "ringer") toggleRinger(view.ringer);
-        }}
         onKeyDown={(e) => {
           if (view.kind === "idle" && (e.key === "Enter" || e.key === " ")) {
             e.preventDefault();
@@ -425,6 +493,10 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
                 key={shownKey}
                 notification={view.notification}
                 onDismiss={islandState.dismissNotification}
+                onRemove={() => {
+                  notificationHistory.remove(view.notification.id);
+                  islandState.dismissNotification();
+                }}
                 onActivate={notifications.activate}
                 onSwipeAway={() => closeAll("toast swiped away")}
               />
@@ -455,6 +527,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
             ]}
           />
         )}
+      </motion.div>
       </motion.div>
     </>
   );

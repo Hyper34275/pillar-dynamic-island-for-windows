@@ -8,6 +8,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PillShell } from "./PillShell";
+import { compact, panel } from "../../design/tokens";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -74,8 +75,8 @@ describe("island transitions", () => {
     });
     const expanded = layer("expanded")!;
     // Laid out at its final size from the first frame; the island clips it while it grows.
-    expect(expanded.style.width).toBe("404px");
-    expect(expanded.style.height).toBe("420px");
+    expect(expanded.style.width).toBe(`${panel.width}px`);
+    expect(expanded.style.height).toBe(`${panel.height}px`);
     // On every frame while the island is still small, the body and the dock are not shown at
     // all; the header (riding the top-left corner) is the first to come.
     let smallFrames = 0;
@@ -90,7 +91,7 @@ describe("island transitions", () => {
     expect(smallFrames).toBeGreaterThan(1);
     expect(layer("compact")).toBeNull();
     // At rest every part is exactly in place: no leftover offset.
-    await waitUntil(() => island().style.width === "404px" && island().style.height === "420px");
+    await waitUntil(() => island().style.width === `${panel.width}px` && island().style.height === `${panel.height}px`);
     for (const anchor of ["top-start", "center", "bottom"] as const) expect(part(anchor)!.style.transform).toBe("none");
   });
 
@@ -101,14 +102,14 @@ describe("island transitions", () => {
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
-    await waitUntil(() => layer("expanded") === null && island().style.height === "34px", 3000, record);
+    await waitUntil(() => layer("expanded") === null && island().style.height === `${compact.height}px`, 3000, record);
     expect(sizes.length).toBeGreaterThan(5);
     const compactWidth = sizes[sizes.length - 1][0];
     for (const [w, h] of sizes) {
       expect(w).toBeGreaterThanOrEqual(compactWidth);
-      expect(w).toBeLessThanOrEqual(404);
-      expect(h).toBeGreaterThanOrEqual(34);
-      expect(h).toBeLessThanOrEqual(420);
+      expect(w).toBeLessThanOrEqual(panel.width);
+      expect(h).toBeGreaterThanOrEqual(compact.height);
+      expect(h).toBeLessThanOrEqual(panel.height);
     }
     // shrinking only, frame after frame
     for (let i = 1; i < sizes.length; i++) {
@@ -205,7 +206,7 @@ describe("island transitions", () => {
     await act(async () => {
       island().click();
     });
-    await waitUntil(() => island().style.width === "404px" && island().style.height === "420px");
+    await waitUntil(() => island().style.width === `${panel.width}px` && island().style.height === `${panel.height}px`);
     expect(island().getAttribute("data-expanded")).toBe("true");
     expect(container.querySelector('[role="tab"][aria-selected="true"]')!.id).toBe("tab-settings");
   });

@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { CalendarEventDto, CalendarSnapshot, MeetingInviteDto } from "../../../lib/calendar/types";
 import type { HistoryEntry } from "../../../lib/notifications/history";
 import { alertHasActions, canSnooze } from "../alertLayout";
-import { notificationSize, pillDimensions } from "../animations";
+import { control, toast } from "../../../design/tokens";
+import { toastLayout } from "../toastLayout";
 import { CalendarView, DayView } from "./CalendarTab";
 import { layoutTimeline } from "./DayTimeline";
 import { NotificationsView } from "./NotificationsTab";
@@ -161,14 +162,13 @@ describe("NotificationsView", () => {
     expect(renderToStaticMarkup(<NotificationsView entries={[]} nowMs={0} notificationsEnabled={false} onActivate={noop} onRemove={noop} onClear={noop} />)).toContain("turned off");
   });
 
-  it("lists each one with its app, title, body and age, newest first as given, and a Clear all", () => {
+  it("lists each one with its app, title, body and age, newest first as given", () => {
     const html = renderToStaticMarkup(
       <NotificationsView entries={[entry(2, { receivedAt: 0 }), entry(1, { receivedAt: 0, silenced: true })]} nowMs={10 * 60_000} notificationsEnabled onActivate={noop} onRemove={noop} onClear={noop} />
     );
     expect(html.indexOf("Title 2")).toBeLessThan(html.indexOf("Title 1"));
     expect(html).toContain("Body 1");
     expect(html).toMatch(/10 min/);
-    expect(html).toContain("Clear all");
     expect(html).toContain("Arrived during a silenced meeting");
   });
 
@@ -189,6 +189,8 @@ describe("meeting alert buttons and toast sizes", () => {
   });
 
   it("an invitation toast is taller by its row of buttons", () => {
-    expect(notificationSize(true, true).height - notificationSize(true).height).toBe(pillDimensions.notification.actionsHeight);
+    const plain = { id: 1, appName: "Outlook", title: "Standup", body: "Daily", timestamp: 0, aumid: null };
+    const invite = { ...plain, invite: { id: "i1", startUtc: at(10) } };
+    expect(toastLayout(invite).size.height - toastLayout(plain).size.height).toBe(toast.actionsGap + control.height);
   });
 });

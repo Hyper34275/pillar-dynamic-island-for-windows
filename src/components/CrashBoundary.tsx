@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { ERROR_CODES } from "../lib/appInfo";
 import { t } from "../lib/i18n";
+import { ErrorPill } from "./Pill/ui/states";
 
 interface CrashBoundaryProps {
   children: ReactNode;
@@ -36,16 +37,7 @@ export class CrashBoundary extends Component<CrashBoundaryProps, CrashBoundarySt
       // The window is only as big as the collapsed island, so the fallback is a small pill.
       return (
         <div className="w-full flex items-start justify-center">
-          <button
-            type="button"
-            onClick={this.handleTryAgain}
-            className="h-[34px] px-4 rounded-full bg-black text-white/80 text-[12px] font-semibold flex items-center gap-2"
-            title={t("island.tryAgain")}
-            dir="ltr"
-          >
-            <span dir="auto">{t("island.unavailable")}</span>
-            <span className="text-white/40 tabular-nums">{ERROR_CODES.uiRender}</span>
-          </button>
+          <ErrorPill title={t("island.unavailable")} code={ERROR_CODES.uiRender} tooltip={t("island.tryAgain")} onPress={this.handleTryAgain} />
         </div>
       );
     }

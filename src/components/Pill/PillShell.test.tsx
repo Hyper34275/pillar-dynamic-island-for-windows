@@ -2,6 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setFixedLocale } from "../../lib/i18n";
+import { ISLAND_TOP_INSET } from "./animations";
 import { PillShell } from "./PillShell";
 import { TabBoundary } from "./TabBoundary";
 
@@ -19,6 +21,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setFixedLocale(null);
   act(() => root.unmount());
   container.remove();
   vi.useRealTimers();
@@ -83,11 +86,37 @@ describe("PillShell", () => {
     expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain("Tuesday, October 6, 2026");
     expect(container.querySelector('[role="tabpanel"]')!.textContent).not.toContain("Diagnostics");
 
+    // The arrow acts on the tab that has focus (the tablist handles it), not from anywhere.
     await act(async () => {
-      document.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      tabs[3].focus();
+      tabs[3].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true }));
     });
     expect(container.querySelector('[role="tab"][aria-selected="true"]')!.id).toBe("tab-settings");
     expect(container.querySelector('[role="tabpanel"]')!.textContent).toContain("Diagnostics");
+  });
+
+  it("keeps the dock left to right in Hebrew: the first tab is leftmost and ArrowRight goes to the next tab", async () => {
+    setFixedLocale("he");
+    await mountBooted();
+    await act(async () => {
+      island().click();
+    });
+    expect(container.querySelector('[role="tablist"]')!.getAttribute("dir")).toBe("ltr");
+    expect(container.querySelector('[data-layer="expanded"]')!.getAttribute("dir")).toBe("rtl");
+    const selected = () => container.querySelector('[role="tab"][aria-selected="true"]')!.id;
+    expect(selected()).toBe("tab-calendar");
+    const press = async (key: string) =>
+      act(async () => {
+        const tab = container.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!;
+        tab.focus();
+        tab.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      });
+    await press("ArrowRight");
+    expect(selected()).toBe("tab-notifications");
+    await press("ArrowLeft");
+    expect(selected()).toBe("tab-calendar");
+    await press("ArrowLeft"); // wraps backwards from the first tab
+    expect(selected()).toBe("tab-settings");
   });
 
   it("expands when the pointer rests on it and collapses shortly after the pointer leaves", async () => {
@@ -167,5 +196,59 @@ describe("TabBoundary", () => {
     expect(alert.textContent).toContain("Unavailable");
     expect(alert.textContent).toContain("APP-001");
     expect(container.textContent).not.toContain("secret meeting subject");
+  });
+});
+
+describe("top hit bridge", () => {
+  const hit = () => container.querySelector<HTMLElement>("[data-island-hit]")!;
+  const over = (target: Element, from: Element | null) => target.dispatchEvent(new MouseEvent("pointerover", { bubbles: true, relatedTarget: from }));
+  const out = (target: Element, to: Element | null) => target.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: to }));
+
+  it("draws the island the top inset below the page top, inside the one pointer target", async () => {
+    await mountBooted();
+    expect(hit().contains(island())).toBe(true);
+    expect(hit().style.paddingTop).toBe(`${ISLAND_TOP_INSET}px`);
+    // The island is the target's only child: the strip above it is the target's own padding.
+    expect(hit().firstElementChild).toBe(island());
+    // The island keeps its role and label; the wrapper adds none.
+    expect(island().getAttribute("role")).toBe("button");
+    expect(hit().getAttribute("role")).toBeNull();
+  });
+
+  it("counts the strip as the island: resting the pointer on it expands, a click on it opens", async () => {
+    await mountBooted();
+    await act(async () => {
+      over(hit(), null);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(130);
+    });
+    expect(island().getAttribute("data-view")).toBe("userExpanded");
+  });
+
+  it("does not flicker when the pointer moves from the strip into the island", async () => {
+    await mountBooted();
+    await act(async () => {
+      over(hit(), null); // arrives at the screen's top edge, on the strip
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    await act(async () => {
+      out(hit(), island()); // strip -> island: both are inside the one target, so React sees no leave
+      over(island(), hit());
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(70); // the hover intent kept counting from the first enter
+    });
+    expect(island().getAttribute("data-view")).toBe("userExpanded");
+  });
+
+  it("opens on a click on the strip", async () => {
+    await mountBooted();
+    await act(async () => {
+      hit().click();
+    });
+    expect(island().getAttribute("data-expanded")).toBe("true");
   });
 });

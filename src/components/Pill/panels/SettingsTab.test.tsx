@@ -72,7 +72,7 @@ afterEach(() => {
 
 const rows = () =>
   Object.fromEntries(
-    [...container.querySelectorAll("section[data-section=diagnostics] [dir=ltr].flex")]
+    [...container.querySelectorAll("section[data-section=diagnostics] .min-h-hit")]
       .map((row) => [...row.children].map((c) => c.textContent ?? ""))
       .filter((cells) => cells.length === 2)
       .map(([label, value]) => [label, value])

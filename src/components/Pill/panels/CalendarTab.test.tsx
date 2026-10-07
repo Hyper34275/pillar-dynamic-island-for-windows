@@ -76,11 +76,12 @@ describe("CalendarView", () => {
   it("puts the countdown on the caption row and the time range on the subject's row", () => {
     const html = render(connected([event("one", 25, 55, { subject: "שלום" })]));
     const card = html.slice(html.indexOf('aria-label="Next meeting"'));
-    const rows = card.split('<div class="flex items-baseline justify-between gap-3">').slice(1);
-    expect(rows[0]).toContain("Next meeting");
-    expect(rows[0]).toContain("in 25 min");
-    expect(rows[1]).toMatch(/\d{1,2}:\d{2} – \d{1,2}:\d{2}/);
-    expect(rows[1]).toContain("שלום");
+    // Caption and countdown share the first row; the subject and then the time range follow it.
+    const captionRow = card.slice(card.indexOf("Next meeting", 10), card.indexOf("<h3"));
+    expect(captionRow).toContain("in 25 min");
+    const below = card.slice(card.indexOf("<h3"));
+    expect(below).toContain("שלום");
+    expect(below).toMatch(/\d{1,2}:\d{2} – \d{1,2}:\d{2}/);
   });
 
   it("colors each meeting with its Outlook category, or the default calendar color", () => {
@@ -116,8 +117,8 @@ describe("CalendarView", () => {
 
   it("lets the empty-state texts pick their own direction, so Hebrew around \"Outlook\" is shaped right-to-left", () => {
     const html = render(WAITING_SNAPSHOT);
-    expect(html).toMatch(/<span dir="auto"[^>]*>Waiting for Outlook<\/span>/);
-    expect(html).toMatch(/<span dir="auto"[^>]*>Your meetings appear/);
+    expect(html).toMatch(/<span class="bidi[^"]*"[^>]*>Waiting for Outlook<\/span>/);
+    expect(html).toMatch(/<span class="bidi[^"]*"[^>]*>Your meetings appear/);
   });
 
   it("shows the connecting state", () => {
@@ -158,8 +159,8 @@ describe("CalendarView", () => {
     expect(html).toContain("OUTLOOK-109");
   });
 
-  it("is physically left-to-right so RTL languages cannot flip the layout", () => {
-    expect(render(connected([event("a", 10, 40)]))).toContain('dir="ltr"');
+  it("forces no direction of its own: the layout inherits the panel's (native RTL)", () => {
+    expect(render(connected([event("a", 10, 40)]))).not.toMatch(/<(div|section|ul|li)[^>]* dir="(ltr|rtl)"/); // only the time range is an LTR <bdi> run
   });
 });
 

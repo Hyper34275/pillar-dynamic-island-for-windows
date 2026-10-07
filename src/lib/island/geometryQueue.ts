@@ -36,7 +36,8 @@ export function islandFits(current: { width: number; height: number }, target: I
 }
 
 function sameSize(a: IslandGeometry | null, b: IslandGeometry): boolean {
-  return !!a && a.width === b.width && a.height === b.height && a.radius === b.radius;
+  // The stage counts too: a monitor with other limits changes it while the island's own size stays.
+  return !!a && a.width === b.width && a.height === b.height && a.radius === b.radius && a.stageWidth === b.stageWidth && a.stageHeight === b.stageHeight;
 }
 
 export function createGeometryQueue(options: GeometryQueueOptions) {

@@ -1,11 +1,12 @@
+@import "./design/fonts.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: "SF Pro Display", "Segoe UI Variable Display", "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif;
-  font-feature-settings: "ss01", "cv11";
-  letter-spacing: -0.005em;
+  /* Windows system typography = tokens.ts fontFamily.text: Hebrew from the explicit "CI Hebrew" faces
+     (fonts.css: 400 normal, 600 emphasis), Latin from Segoe UI Variable. No Apple fonts. */
+  font-family: "CI Hebrew", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -37,72 +38,177 @@ body {
   display: none;
 }
 
-.line-clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
+/* Screen-reader-only text and line clamping come from Tailwind (sr-only, line-clamp-N). */
 
-.line-clamp-3 {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-/* =============================================================================
-   Accessibility - Screen Reader Support
-   These classes provide screen reader-only content and keyboard navigation support.
-   ============================================================================= */
-
-/* Screen reader only content - visually hidden but accessible to screen readers */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border-width: 0;
-}
-
-/* Focus visible for keyboard navigation */
+/* Keyboard focus: a ring that follows each control's own radius (never reshapes it). */
 *:focus-visible {
-  outline: 2px solid rgba(255, 255, 255, 0.7);
+  outline: 2px solid var(--ci-focus);
   outline-offset: 2px;
-  border-radius: 8px;
 }
 
-/* Fade the bottom edge of scrolling panels so content dissolves into the island */
+/* A scrolling panel: its bottom edge dissolves into the island, and its scrollbar is a thin,
+   quiet thumb living in the panel's side inset (tokens.ts scrollbar): the gutter is reserved on
+   both sides, so the cards keep exactly the same bounds whether the list scrolls or not. In RTL
+   Chromium puts it on the left, as Windows does for right-to-left apps. */
 .island-scroll {
   mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 14px), transparent);
   overscroll-behavior: contain;
+  overflow-anchor: auto;
+  scrollbar-gutter: stable both-edges;
 }
-
-/* ...and give them a thin, quiet scrollbar so a long list visibly scrolls */
 .island-scroll::-webkit-scrollbar {
   display: block;
-  width: 4px;
+  width: 12px;
 }
 .island-scroll::-webkit-scrollbar-track {
   background: transparent;
+  margin-block: 8px;
 }
 .island-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
-  border-radius: 4px;
+  /* 4px visible: 4px transparent border either side of the 12px gutter. */
+  border: 4px solid transparent;
+  background-clip: padding-box;
+  background-color: rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
 }
-.island-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.32);
+.island-scroll:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.26);
+}
+.island-scroll::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.4);
 }
 
-/* High contrast mode support */
-@media (prefers-contrast: high) {
-  * {
-    border: 1px solid currentColor;
+/* Alignment follows the LAYOUT's direction: every element with a dir sets the axis its text aligns
+   to (zero specificity, so text-center & co. still win). */
+:where([dir="rtl"]) {
+  text-align: right;
+}
+:where([dir="ltr"]) {
+  text-align: left;
+}
+
+/* App/user text that may be Hebrew, English or both: an isolated run whose paragraph direction is
+   its own dir (set from its content with textDirection() in src/design/direction.ts: any Hebrew →
+   rtl, English only → ltr), while its alignment is inherited from the layout, so an English
+   sentence in a Hebrew card keeps its punctuation at its end and still lines up on the card's right
+   edge. Never use dir="auto" or a first-strong guess: "Project Alpha_v2.pptx מוכן לבדיקה" is a
+   Hebrew sentence. */
+.bidi {
+  unicode-bidi: isolate;
+}
+:where(.bidi) {
+  text-align: inherit;
+}
+
+/* A control whose visible surface is smaller than the 44px minimum hit target: an invisible
+   extension, centred, catches the pointer (tokens.ts control.hit). */
+.hit-area {
+  position: relative;
+}
+.hit-area::before {
+  content: "";
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: max(100%, 44px);
+  height: max(100%, 44px);
+  transform: translate(-50%, -50%);
+}
+
+/* High contrast. prefers-contrast: more: the colour tokens get stronger (tailwind.config.js) and
+   the --ci-outline hairline shows. Windows' own high-contrast themes (forced colours) replace every
+   colour with system colours and drop box-shadows and backgrounds, so each shape keeps its identity
+   explicitly, on its OWN radius (an outline follows border-radius and takes no layout):
+     shapes      the island, surfaces (cards, dock, groups) and controls: a 1px CanvasText / ButtonText line
+     selection   Highlight / HighlightText (selected tab, day, segment, switch) instead of a faint fill
+     marks       coloured bars / dots keep their own colour (.ci-mark); badges and progress use Highlight
+     focus       a 2px Highlight ring on the control's own radius, drawn last so nothing overrides it
+   Hooks the components carry: ci-surface, ci-action, ci-selected, ci-seg, ci-mark, ci-badge, ci-tile,
+   ci-progress, ci-link (a text-only action: underlined, no box), ci-bare (a button that is only text
+   inside a shape that already has its line). */
+@media (forced-colors: active) {
+  [data-expanded],
+  .ci-surface {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+  button:not([role="tab"]):not([role="switch"]):not(.ci-bare):not(.ci-link) {
+    border: 1px solid ButtonText;
+  }
+  .ci-link {
+    text-decoration: underline;
+  }
+  /* The thumb keeps its 4px look: its 4px transparent border would otherwise turn into a drawn box. */
+  .island-scroll::-webkit-scrollbar-thumb {
+    forced-color-adjust: none;
+    background-color: ButtonText;
+    border-color: transparent;
+  }
+  [role="switch"] {
+    outline: 1px solid ButtonText;
+    outline-offset: -1px;
+    background: ButtonFace !important;
+    forced-color-adjust: none;
+  }
+  [role="switch"] > span {
+    background: ButtonText !important;
+  }
+  [role="switch"][aria-checked="true"] {
+    background: Highlight !important;
+  }
+  [role="switch"][aria-checked="true"] > span {
+    background: HighlightText !important;
+  }
+  .ci-selected,
+  [data-tab-indicator] > div {
+    forced-color-adjust: none;
+    background: Highlight !important;
+    color: HighlightText;
+  }
+  [role="tab"][aria-selected="true"],
+  .ci-seg[aria-pressed="true"] {
+    forced-color-adjust: none;
+    color: HighlightText;
+  }
+  .ci-mark {
+    forced-color-adjust: none;
+  }
+  .ci-badge {
+    forced-color-adjust: none;
+    background: Highlight !important;
+    color: HighlightText !important;
+  }
+  .ci-tile {
+    forced-color-adjust: none;
+    background: ButtonFace !important;
+    color: ButtonText !important;
+    outline: 1px solid ButtonText;
+    outline-offset: -1px;
+  }
+  .ci-progress {
+    forced-color-adjust: none;
+  }
+  .ci-progress circle:first-child {
+    stroke: GrayText !important;
+  }
+  .ci-progress circle:last-child {
+    stroke: Highlight !important;
+  }
+  /* Tailwind's outline-none is "outline: 2px solid transparent", which forced colours turn into a
+     visible box. The dock draws its focus ring on an inner shape, the composer's card is the ring. */
+  [role="tab"],
+  .ci-field textarea {
+    outline-style: none;
+  }
+  :focus-visible:not([role="tab"]):not(textarea),
+  .ci-field:focus-within {
+    outline: 2px solid Highlight;
+  }
+  *:focus-visible {
+    outline-offset: 2px;
+  }
+  .ci-field:focus-within {
+    outline-offset: -2px;
   }
 }
 
@@ -137,4 +243,39 @@ body {
   .tour-island .tour-layer--out {
     animation-duration: 160ms !important;
   }
+}
+
+/* The island's controls (ui/controls.tsx): fill per state from --btn-bg*, an immediate press
+   (darker + 0.98, tokens.ts control.pressedScale), no bounce. Hover only where a pointer hovers. */
+.ci-action {
+  background: var(--btn-bg);
+  box-shadow: inset 0 0 0 1px var(--ci-outline);
+  transition: background-color 120ms ease-out, transform 120ms ease-out, opacity 120ms ease-out;
+}
+@media (hover: hover) {
+  .ci-action:hover:not(:disabled) {
+    background: var(--btn-bg-hover);
+  }
+}
+.ci-action:active:not(:disabled) {
+  background: var(--btn-bg-pressed);
+  transform: scale(0.98);
+  transition-duration: 0ms;
+}
+
+/* A text field living inside a card (the notes composer): the card shows the focus ring, drawn
+   inside its edge (offset -2) because the scroll box clips anything outside the first card. The
+   outline follows the card's own radius. */
+.ci-field:focus-within {
+  outline: 2px solid var(--ci-focus);
+  outline-offset: -2px;
+}
+.ci-field textarea:focus-visible {
+  outline: none;
+}
+
+/* A raised surface inside the panel (cards, dock, groups): the hairline only shows in high contrast. */
+.ci-surface {
+  background: var(--ci-surface);
+  box-shadow: inset 0 0 0 1px var(--ci-outline);
 }

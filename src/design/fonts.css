@@ -1,0 +1,41 @@
+/* =============================================================================
+   Hebrew typography (tokens.ts fontFamily puts "CI Hebrew" first).
+
+   Segoe UI Variable has no Hebrew, so Hebrew falls back to Segoe UI, which exists in 400, 600 and
+   700 only: a 500 would silently render as 400 and the Hebrew would look lighter than the Latin
+   beside it. "CI Hebrew" makes the mapping explicit. It covers ONLY the Hebrew blocks
+   (unicode-range), so Latin, digits and punctuation fall through to Segoe UI Variable.
+
+     weight 300-449  -> Segoe UI          (400, normal text)
+     weight 450-649  -> Segoe UI Semibold (600, emphasis)
+     weight 650-900  -> Segoe UI Bold     (700)
+
+   Rule: Hebrew normal = 400, Hebrew emphasis = 600.
+   No size-adjust / ascent-override: Segoe UI and Segoe UI Variable share metrics (see the
+   screenshots in the correction pass); add them here, with a comment, only if a mismatch shows.
+   The canvas measuring of the compact island and the toast uses the same stack, after
+   document.fonts has loaded these faces (useCompactLayout.preloadUiFonts).
+   ============================================================================= */
+
+@font-face {
+  font-family: "CI Hebrew";
+  font-style: normal;
+  font-weight: 300 449;
+  src: local("Segoe UI"), local("SegoeUI");
+  unicode-range: U+0590-05FF, U+FB1D-FB4F;
+}
+@font-face {
+  font-family: "CI Hebrew";
+  font-style: normal;
+  font-weight: 450 649;
+  src: local("Segoe UI Semibold"), local("SegoeUI-Semibold");
+  unicode-range: U+0590-05FF, U+FB1D-FB4F;
+}
+@font-face {
+  font-family: "CI Hebrew";
+  font-style: normal;
+  font-weight: 650 900;
+  src: local("Segoe UI Bold"), local("SegoeUI-Bold");
+  unicode-range: U+0590-05FF, U+FB1D-FB4F;
+}
+

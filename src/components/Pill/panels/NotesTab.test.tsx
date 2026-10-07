@@ -3,10 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Note } from "../../../lib/ipc";
+import { islandTyping, noteDraft } from "../../../lib/notes/typing";
 import { notePreview, NotesTab, NotesView, type NotesViewProps } from "./NotesTab";
 
 const mocks = vi.hoisted(() => ({
   openCenter: vi.fn(async (_page: string) => true),
+  islandKeyboard: vi.fn(async (_on: boolean) => true),
+  add: vi.fn(async (_text: string) => true),
+  events: new Map<string, (payload: unknown) => void>(),
   copyTextToClipboard: vi.fn(async (_text: string) => true),
   remove: vi.fn(async (_id: string) => true),
   togglePin: vi.fn(async (_id: string) => true),
@@ -18,7 +22,14 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../../lib/ipc", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../lib/ipc")>();
-  return { ...original, ipc: { ...original.ipc, openCenter: mocks.openCenter, copyTextToClipboard: mocks.copyTextToClipboard } };
+  return {
+    ...original,
+    ipc: { ...original.ipc, openCenter: mocks.openCenter, copyTextToClipboard: mocks.copyTextToClipboard, islandKeyboard: mocks.islandKeyboard },
+    onEvent: (name: string, handler: (payload: unknown) => void) => {
+      mocks.events.set(name, handler);
+      return () => mocks.events.delete(name);
+    },
+  };
 });
 
 vi.mock("../../../hooks/useNotes", () => ({
@@ -27,7 +38,7 @@ vi.mock("../../../hooks/useNotes", () => ({
     loaded: mocks.loaded,
     loadFailed: mocks.loadFailed,
     retry: mocks.retry,
-    add: vi.fn(async () => true),
+    add: mocks.add,
     update: vi.fn(async () => true),
     remove: mocks.remove,
     togglePin: mocks.togglePin,
@@ -50,7 +61,11 @@ beforeEach(() => {
   mocks.notes = [];
   mocks.loaded = true;
   mocks.loadFailed = false;
-  for (const fn of [mocks.openCenter, mocks.copyTextToClipboard, mocks.remove, mocks.togglePin, mocks.retry]) fn.mockClear();
+  for (const fn of [mocks.openCenter, mocks.copyTextToClipboard, mocks.remove, mocks.togglePin, mocks.retry, mocks.islandKeyboard, mocks.add]) fn.mockClear();
+  mocks.add.mockImplementation(async () => true);
+  mocks.events.clear();
+  islandTyping.set(false);
+  noteDraft.set("");
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -91,9 +106,10 @@ describe("NotesView", () => {
     expect(rows().map((r) => r.dataset.noteId)).toEqual(["a", "b"]);
     const text = rows()[1].querySelector<HTMLElement>("[data-note-text]")!;
     expect(text.textContent).toBe("שלום עולם");
-    expect(text.getAttribute("dir")).toBe("auto");
+    expect(text.getAttribute("dir")).toBe("rtl");
+    expect(rows()[0].querySelector<HTMLElement>("[data-note-text]")!.getAttribute("dir")).toBe("ltr");
     expect(text.className).toContain("line-clamp-3");
-    expect(text.style.unicodeBidi).toBe("plaintext");
+    expect(text.className).toContain("bidi");
   });
 
   it("shows when each note was last changed, relative to now", () => {
@@ -250,6 +266,13 @@ describe("NotesView", () => {
     expect(container.querySelector('[role="alert"]')!.textContent).toBe("Couldn't save the note");
   });
 
+  it("its empty and failed states use the shared state blocks (status / alert) and fill the tab", () => {
+    renderView(viewProps());
+    expect(container.querySelector('[data-state][role="status"]')!.className).toContain("flex-1");
+    renderView(viewProps({ loadFailed: true, onRetry: vi.fn() }));
+    expect(container.querySelector('[data-state][role="alert"]')).not.toBeNull();
+  });
+
   it("creates no timers of its own", () => {
     renderView(viewProps({ notes: [note({ id: "a" }), note({ id: "b" })], copiedId: "a" }));
     expect(vi.getTimerCount()).toBe(0);
@@ -263,21 +286,104 @@ describe("NotesTab", () => {
     });
   }
 
-  it("opens the Island Center on a new note, or on the clicked note", async () => {
+  const composer = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="New note text"]')!;
+  const buttonWithText = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent === text)!;
+  function typeInto(el: HTMLTextAreaElement, text: string) {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, text);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+  function key(el: HTMLElement, init: KeyboardEventInit) {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init });
+    el.dispatchEvent(event);
+    return event;
+  }
+
+  it("opens the Island Center's Notes page from the header and the empty state, and a clicked note on that note", async () => {
     mocks.notes = [note({ id: "abc123" })];
     await mount();
-    const newButton = [...container.querySelectorAll("button")].find((b) => b.textContent === "New note")!;
-    await act(async () => newButton.click());
-    expect(mocks.openCenter).toHaveBeenLastCalledWith("notes-new");
+    await act(async () => buttonWithText("Open in app").click());
+    expect(mocks.openCenter).toHaveBeenLastCalledWith("notes");
     await act(async () => rows()[0].click());
     expect(mocks.openCenter).toHaveBeenLastCalledWith("note:abc123");
+
+    mocks.notes = [];
+    await mount();
+    await act(async () => buttonWithText("Open in app").click());
+    expect(mocks.openCenter).toHaveBeenLastCalledWith("notes");
+    expect(mocks.openCenter).not.toHaveBeenCalledWith("notes-new");
   });
 
-  it("opens a new note from the empty state too", async () => {
+  it("writes a note inside the island: the box takes the keyboard, Ctrl+Enter saves through the store and empties it", async () => {
     await mount();
-    const newButton = [...container.querySelectorAll("button")].find((b) => b.textContent === "New note")!;
-    await act(async () => newButton.click());
-    expect(mocks.openCenter).toHaveBeenCalledWith("notes-new");
+    const box = composer();
+    expect(buttonWithText("Save")).toBeUndefined(); // an empty box is just the field
+    await act(async () => box.focus());
+    expect(mocks.islandKeyboard).toHaveBeenCalledWith(true);
+    expect(islandTyping.get()).toBe(true);
+
+    await act(async () => typeInto(box, "  "));
+    await act(async () => void key(box, { key: "Enter", ctrlKey: true }));
+    expect(mocks.add).not.toHaveBeenCalled();
+
+    await act(async () => typeInto(box, "Call Dana"));
+    expect(buttonWithText("Save").hasAttribute("disabled")).toBe(false);
+    await act(async () => void key(box, { key: "Enter", ctrlKey: true }));
+    expect(mocks.add).toHaveBeenCalledWith("Call Dana");
+    expect(composer().value).toBe("");
+    expect(container.textContent).toContain("Saved");
+  });
+
+  it("saves with the button too, and keeps the text when the store could not save it", async () => {
+    mocks.add.mockImplementation(async () => false);
+    await mount();
+    await act(async () => typeInto(composer(), "Keep me"));
+    await act(async () => buttonWithText("Save").click());
+    expect(mocks.add).toHaveBeenCalledWith("Keep me");
+    expect(composer().value).toBe("Keep me");
+    expect(container.querySelector('[role="alert"]')).toBeNull(); // empty list: no header, the text stays as the signal
+  });
+
+  it("keeps every key inside the box, and Escape leaves it and gives the keyboard back", async () => {
+    await mount();
+    const box = composer();
+    await act(async () => box.focus());
+    const outside = vi.fn();
+    window.addEventListener("keydown", outside);
+    await act(async () => void key(box, { key: "ArrowLeft" }));
+    await act(async () => void key(box, { key: "Escape" }));
+    window.removeEventListener("keydown", outside);
+    expect(outside).not.toHaveBeenCalled();
+    // The shell's Escape-collapse ignores a key that was already handled.
+    const escape = key(box, { key: "Escape" });
+    expect(escape.defaultPrevented).toBe(true);
+    expect(document.activeElement).not.toBe(box);
+    expect(mocks.islandKeyboard).toHaveBeenLastCalledWith(false);
+    expect(islandTyping.get()).toBe(false);
+  });
+
+  it("stops typing when another window took the keyboard, and keeps the draft for the next time the island opens", async () => {
+    await mount();
+    const box = composer();
+    await act(async () => box.focus());
+    await act(async () => typeInto(box, "half a thought"));
+    await act(async () => mocks.events.get("island-keyboard-ended")!(null));
+    expect(islandTyping.get()).toBe(false);
+    expect(document.activeElement).not.toBe(box);
+
+    act(() => root.unmount());
+    root = createRoot(container);
+    await mount();
+    expect(composer().value).toBe("half a thought");
+  });
+
+  it("gives the keyboard back when the tab closes while typing", async () => {
+    await mount();
+    await act(async () => composer().focus());
+    expect(islandTyping.get()).toBe(true);
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(islandTyping.get()).toBe(false);
+    expect(mocks.islandKeyboard).toHaveBeenLastCalledWith(false);
   });
 
   it("pins and deletes through the store", async () => {

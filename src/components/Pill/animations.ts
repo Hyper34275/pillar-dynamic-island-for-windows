@@ -15,7 +15,9 @@
 // how the island shows what it turned into. Correctness never depends on any of it.
 
 import type { Fade } from "../../lib/island/morph";
+import { getIslandLimits, type IslandLimits } from "../../lib/island/limits";
 import type { SpringParams } from "../../lib/island/spring";
+import { alert, card, compact as compactTokens, control, dock, panel, ringer as ringerTokens, smallExpanded, type } from "../../design/tokens";
 
 export const springConfig = {
   // The unseen indicator's pop and the launch dot's entrance (motion springs, not geometry).
@@ -57,15 +59,21 @@ export const tabSprings: { capsule: SpringParams; content: SpringParams } = {
  * (see IslandLayer), so content never floats in a corner of a large empty shape. What leaves
  * and what arrives overlap, so no frame is an empty black shape:
  *  - opening, the compact content is gone by 0.3 while the expanded header is already coming in;
- *  - closing, the expanded body holds until 0.6 and the compact content arrives from 0.42,
- *    once the shape is small enough to be read as the pill it is becoming.
+ *  - closing, the expanded body holds (fading) until 0.9 and the compact content arrives from 0.72,
+ *    once the shape is small enough to be read as the pill it is becoming. Measured in the real
+ *    WebView2 (Oct 2026): with the earlier 0.42 the date showed at 50 % in a 260x217 shape; now it
+ *    starts at ~220x140 and is at two thirds by ~200x115, and no frame drops below ~29 % content.
  */
 export const layerFade = {
-  compact: { in: [0.42, 0.95], out: 0.3 },
+  compact: { in: [0.72, 0.97], out: 0.3 },
   /** The expanded layer only times its own removal; its parts fade on `partFade`. */
-  expanded: { in: [0, 0], out: 0.6 },
-  /** Meeting alert, notification toast, ring/silent pill: the shape opens first, then the content. */
-  temporary: { in: [0.45, 0.95], out: 0.45 },
+  expanded: { in: [0, 0], out: 0.9 },
+  /**
+   * Meeting alert, notification toast, ring/silent pill: the shape opens first, then the content.
+   * A toast replacing a toast changes only the width, so the two overlap (in from 0.35, out by
+   * 0.55): measured in the real WebView2, the earlier 0.45/0.45 left one near-empty frame.
+   */
+  temporary: { in: [0.35, 0.9], out: 0.55 },
   /** Tab title and panel, on the tab content's progress. */
   tab: { in: [0.2, 0.9], out: 0.5 },
 } as const satisfies Record<string, Fade>;
@@ -77,9 +85,9 @@ export const layerFade = {
  * goes first and the body last, so the shape always has content until the compact one arrives.
  */
 export const partFade = {
-  header: { in: [0.15, 0.6], out: 0.5 },
-  body: { in: [0.35, 0.85], out: 0.6 },
-  dock: { in: [0.4, 0.9], out: 0.4 },
+  header: { in: [0.15, 0.6], out: 0.6 },
+  body: { in: [0.35, 0.85], out: 0.9 },
+  dock: { in: [0.4, 0.9], out: 0.5 },
 } as const satisfies Record<string, Fade>;
 
 /** How far (px) tab content shifts with the direction of the tab change: a hint, not a slide. */
@@ -93,53 +101,56 @@ export const bootAnimationDuration = {
   morphToPill: 500,
 };
 
-// Logical pixels: Tauri converts to physical using the window's scale factor.
+// Island geometry. Logical pixels (Tauri converts with the window's scale factor). Every number
+// comes from the design tokens (src/design/tokens.ts); this file only composes them into the
+// shapes the island morphs between.
 export const pillDimensions = {
   boot: { width: 8, height: 8, radius: 4 },
   compact: {
-    height: 34,
-    paddingX: 15,
-    /** Minimum space between the date and the weekday (the display "date"). */
-    gap: 14,
-    /** Space between the date, the clock and the weekday (the display "full"). */
-    gapFull: 10,
-    minWidth: 112,
-    /** The display "clock" holds one short label, so it may be narrower. */
-    clockMinWidth: 88,
-    maxWidth: 220,
+    height: compactTokens.height,
+    paddingX: compactTokens.paddingX,
+    /** Space between separate labels (date, clock, weekday). */
+    gap: compactTokens.gap,
+    gapFull: compactTokens.gap,
+    minWidth: compactTokens.minWidth,
+    clockMinWidth: compactTokens.clockMinWidth,
+    maxWidth: compactTokens.maxWidth,
   },
-  expanded: { width: 404, height: 420, radius: 40 },
-  /** Meeting alert: the label, the subject (1-2 lines), the time range and an optional location. */
-  alert: {
-    width: 380,
-    paddingX: 22,
-    paddingY: 16,
-    labelHeight: 14,
-    subjectLineHeight: 22,
-    detailHeight: 18,
-    /** Space between stacked rows. */
-    gap: 5,
-    maxRadius: 30,
-  },
-  /**
-   * Windows notification mirrored into the island; an invitation adds a row of answer buttons.
-   * With a body, the height holds the toast's tallest text block inside its 12px margins: app
-   * label 14 + title 20 + two body lines 36 = 70, plus 24 of margin = 94 (an invitation adds its
-   * 8px gap and 26px buttons, which the 34 of actionsHeight covers).
-   */
-  notification: { width: 372, heightWithBody: 94, height: 64, actionsHeight: 34, maxRadius: 30 },
-  /** The ring / silent pill at the start of a meeting. */
-  ringer: { width: 200, height: 48 },
-  /** Join / snooze buttons under a meeting alert. */
-  alertActions: { height: 30, gap: 10 },
-  /** The collapsed island while a meeting is about to start or running (it may be wider). */
-  compactMeeting: { maxWidth: 300 },
-  /**
-   * The unseen-notifications indicator, last in the collapsed island's row: a dot for one, a
-   * tinted capsule with the count from two (widths are fixed per state, never measured).
-   */
-  badge: { dot: 8, count: 16, countWide: 24, height: 16, gap: 8 },
+  expanded: { width: panel.width, height: panel.height, radius: panel.radius },
+  /** The ring / silent pill at the start of a meeting: the compact island's height, so it is the same object. */
+  ringer: { width: ringerTokens.width, height: ringerTokens.height },
+  /** The collapsed island while a meeting is about to start or running. */
+  compactMeeting: { maxWidth: compactTokens.maxWidth },
 } as const;
+
+// Pixel model. Every size and position in the frontend is a floating-point number of DIPs: no
+// rounding to a "nice" or even width (an even DIP is not even a whole pixel at 125%: 2 DIP is
+// 2.5 px). The only places a length is rounded up in JS are measured text widths (ceil), where
+// rounding down would clip the last glyph. Pixels are snapped ONCE, in Rust (monitors.rs), by
+// edges at the target monitor's real DPI, so the island's centre never drifts.
+
+/**
+ * Gap (DIPs) between the screen's top edge and the island. Must equal `ISLAND_TOP_INSET` in
+ * src-tauri/src/monitors.rs (a test reads that file and compares). The stage window starts at the
+ * screen's top; the island is drawn this far down inside the page, and the window region adds a
+ * bridge over the gap so a pointer thrown against the top edge still lands on the island.
+ */
+export const ISLAND_TOP_INSET = 8;
+
+/**
+ * The least height (DIPs) the panel keeps when a small screen limits it: its header, the dock
+ * and one card of the body (padding plus a headline and a body line), with the panel's own
+ * padding and gaps. Below this the panel stops being usable, so this wins over the monitor's
+ * limit (the backend still clamps the stage window to the monitor itself).
+ */
+export const PANEL_MIN_HEIGHT =
+  panel.paddingTop +
+  panel.headerHeight +
+  panel.headerGap +
+  (card.padding * 2 + type.headline.lineHeight + type.body.lineHeight) +
+  panel.dockGap +
+  dock.height +
+  panel.paddingBottom;
 
 export interface IslandSize {
   width: number;
@@ -147,6 +158,14 @@ export interface IslandSize {
   radius: number;
 }
 
+/** A shape no larger than the monitor allows (an alert or toast on a very small screen). */
+export function limitSize(size: IslandSize, limits: IslandLimits = getIslandLimits()): IslandSize {
+  const width = Math.min(size.width, limits.maxWidth);
+  const height = Math.min(size.height, limits.maxHeight);
+  return width === size.width && height === size.height ? size : { width, height, radius: Math.min(size.radius, height / 2) };
+}
+
+/** A capsule of the compact island's height around content of `contentWidth` (padding included here). */
 export function compactSize(
   contentWidth: number,
   maxWidth: number = pillDimensions.compact.maxWidth,
@@ -156,30 +175,29 @@ export function compactSize(
   return { width: Math.min(maxWidth, Math.max(minWidth, contentWidth + c.paddingX * 2)), height: c.height, radius: c.height / 2 };
 }
 
-/** Room the unseen indicator takes inside the collapsed island, gap included (0 without one). */
-export function badgeWidth(unseen: number): number {
-  const b = pillDimensions.badge;
-  if (unseen <= 0) return 0;
-  return b.gap + (unseen === 1 ? b.dot : unseen <= 9 ? b.count : b.countWide);
+/**
+ * The panel: 400x440 (tokens.panel) is the PREFERRED size. On a smaller screen it shrinks to the
+ * monitor's limits: the width to what the monitor allows, the height likewise but never below
+ * PANEL_MIN_HEIGHT. The header and the dock keep their sizes; the scrolling body absorbs the
+ * change. Without an argument it uses the shared limits (lib/island/limits.ts), which is how
+ * PanelFrame and PillShell agree.
+ */
+export function expandedSize(limits: IslandLimits = getIslandLimits()): IslandSize {
+  const { width, height, radius } = pillDimensions.expanded;
+  return { width: Math.min(width, limits.maxWidth), height: Math.min(height, Math.max(PANEL_MIN_HEIGHT, limits.maxHeight)), radius };
 }
 
-export function expandedSize(): IslandSize {
-  return { ...pillDimensions.expanded };
-}
-
-/** The meeting alert grows with its content: 1 or 2 subject lines, a location row if there is one, and a row of buttons (join, snooze) when there is one. */
+/**
+ * The meeting alert grows with its content. Rhythm (tokens.alert): context label, 4, subject (1-2
+ * lines), 4, time, 2, place (optional), 16, action row (optional); 16 padding all round.
+ */
 export function meetingAlertSize(subjectLines: 1 | 2, hasLocation: boolean, hasActions = false): IslandSize {
-  const a = pillDimensions.alert;
-  const rows = 3 + (hasLocation ? 1 : 0); // label, subject, time (+ location)
-  const actions = hasActions ? pillDimensions.alertActions.gap + pillDimensions.alertActions.height : 0;
-  const height = a.paddingY * 2 + a.labelHeight + a.subjectLineHeight * subjectLines + a.detailHeight * (rows - 2) + a.gap * (rows - 1) + actions;
-  return { width: a.width, height, radius: Math.min(a.maxRadius, height / 2) };
-}
-
-export function notificationSize(hasBody: boolean, hasActions = false): IslandSize {
-  const n = pillDimensions.notification;
-  const height = (hasBody ? n.heightWithBody : n.height) + (hasActions ? n.actionsHeight : 0);
-  return { width: n.width, height, radius: Math.min(n.maxRadius, height / 2) };
+  const p = smallExpanded.padding;
+  let height = p + type.meta.lineHeight + alert.labelGap + type.title.lineHeight * subjectLines + alert.labelGap + type.body.lineHeight;
+  if (hasLocation) height += alert.detailGap + type.body.lineHeight;
+  if (hasActions) height += alert.actionsGap + control.height;
+  height += p;
+  return { width: smallExpanded.width, height, radius: Math.min(smallExpanded.radius, height / 2) };
 }
 
 export function ringerSize(): IslandSize {

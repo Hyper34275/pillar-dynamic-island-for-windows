@@ -16,7 +16,7 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 | UI  (React 18, WebView2; src/components/Pill, src/hooks)                                     |
 |   PillShell > CompactIsland | ExpandedIsland (tabs: CALENDAR, NOTIFICATIONS, NOTES,           |
 |   ABOUT, SETTINGS)                                                                           |
-|   MeetingAlert | NotificationToast | ContextMenu       "dir=ltr" layout, dir=auto text        |
+|   MeetingAlert | NotificationToast | ContextMenu   RTL layout, tokens: src/design (DESIGN_SYSTEM) |
 +--------------+---------------------------+---------------------------+-----------------------+
                | view = selectView(state)  | t(), Intl dates           | settings, system info
 +--------------v-------------+  +----------v-------------+  +----------v-----------------------+
@@ -256,7 +256,9 @@ One owner per animated property, one target, no timers in the choreography:
   motion's frame loop, so a late frame (32 Hz in an RDP session) lands exactly where it should. Each axis stops
   at its target instead of crossing it, never leaves [launch dot, stage], and every frame is checked
   (`frameViolations`, logged once per transition). The radius is derived from how far the size has travelled.
-- **Native window**: a fixed stage (`stageSize()`, the largest island) placed once; it is never resized or
+- **Native window**: a fixed stage (`stageSize()`, the largest island within the monitor's limits, plus the
+  8 DIP top inset; it starts at the monitor's top, the island is drawn 8 DIP down, and the region adds an
+  island-wide bridge up to the screen edge) placed once; it is never resized or
   moved during a morph (a resized WebView2 window shows its previous frame at the new size, measured as a
   ~12 px sliver at the end of every close, and stalls its frame pipeline ~110 ms). Only the window region
   follows the island's resting shape: grown at once, shrunk once the animated shape fits inside it.

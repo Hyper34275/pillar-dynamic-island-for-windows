@@ -1,13 +1,20 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { useMinute } from "../../../hooks/useClock";
 import { useNotes } from "../../../hooks/useNotes";
 import { relativePast } from "../../../lib/dateFormat";
 import { t } from "../../../lib/i18n";
-import { ipc, type Note } from "../../../lib/ipc";
+import { ipc, onEvent, type Note } from "../../../lib/ipc";
+import { color, control, icon } from "../../../design/tokens";
+import { textDirection } from "../../../design/direction";
+import { islandTyping, noteDraft } from "../../../lib/notes/typing";
+import { ActionButton, RoundButton } from "../ui/controls";
 import { CopyIcon, NoteIcon, PinIcon, TrashIcon } from "../ui/icons";
-import { EmptyState, PillButton, SectionLabel, SYSTEM_COLORS } from "../ui/primitives";
+import { EmptyState, ErrorState, STATE_ICON } from "../ui/states";
+import { HeaderActionButton } from "../HeaderAction";
 
 const FLASH_MS = 1800;
+/** The same limit Rust applies (notes.rs MAX_TEXT_CHARS). */
+const MAX_NOTE_CHARS = 10_000;
 /** How long the trash button waits for its confirming second click before going back. */
 const CONFIRM_DELETE_MS = 3000;
 const OPEN_LABEL_CHARS = 60;
@@ -18,26 +25,6 @@ const OPEN_LABEL_CHARS = 60;
  */
 export function notePreview(text: string): string {
   return text.replace(/^\s+/, "").replace(/(?:[ \t]*\r?\n){2,}/g, "\n");
-}
-
-function ActionButton({ label, onClick, children, active = false }: { label: string; onClick: () => void; children: ReactNode; active?: boolean }) {
-  return (
-    <button
-      type="button"
-      className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 hover:bg-white/10 transition-colors ${
-        active ? "text-white" : "text-white/40 hover:text-white"
-      }`}
-      aria-label={label}
-      title={label}
-      onClick={(e: MouseEvent) => {
-        // The row itself opens the note; an action must not.
-        e.stopPropagation();
-        onClick();
-      }}
-    >
-      {children}
-    </button>
-  );
 }
 
 interface NoteRowProps {
@@ -86,77 +73,138 @@ function NoteRow({ note, nowMs, copied, onOpen, onTogglePin, onCopy, onRemove }:
   // siblings of the preview button, never inside it.
   return (
     <li
-      dir="ltr"
       data-note-id={note.id}
-      className="group flex flex-col gap-1 rounded-[18px] bg-white/[0.06] hover:bg-white/[0.09] pl-3.5 pr-2 pt-2.5 pb-1.5 cursor-pointer transition-colors"
+      className="group flex flex-col gap-1 ci-surface hover:bg-surface-hover rounded-surface p-card-pad cursor-pointer transition-colors"
       onClick={() => onOpen(note.id)}
     >
       <button
         type="button"
         data-note-open
         aria-label={`${t("notes.open")}: ${preview.slice(0, OPEN_LABEL_CHARS)}`}
-        className="block w-full text-left rounded-[10px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-white/50"
+        className="ci-bare block w-full text-start rounded-control"
       >
-        <span
-          className="block text-[13.5px] leading-snug text-white/90 line-clamp-3 whitespace-pre-wrap break-words pr-1"
-          dir="auto"
-          data-note-text
-          style={{ unicodeBidi: "plaintext" }}
-        >
+        <span className="bidi block text-body text-fg line-clamp-3 whitespace-pre-wrap break-words" dir={textDirection(preview)} data-note-text>
           {preview}
         </span>
       </button>
-      <div className="flex items-center gap-1.5 min-h-[28px]">
+      {/* The row is the 28px RoundButton height; the card's 12 padding sits below it, so the time baseline is pulled up 4 (-mb-1) to balance the 12 above the text. */}
+      <div className="flex items-center gap-2 -mb-1" style={{ minHeight: control.round }}>
         {note.pinned && (
-          <span className="flex-shrink-0" style={{ color: SYSTEM_COLORS.orange }} title={t("notes.pinned")} role="img" aria-label={t("notes.pinned")}>
-            <PinIcon size={12} fill="currentColor" />
+          <span className="flex-shrink-0 flex" style={{ color: color.warning }} title={t("notes.pinned")} role="img" aria-label={t("notes.pinned")}>
+            <PinIcon size={icon.small} fill="currentColor" />
           </span>
         )}
-        <span className="text-[11px] text-white/35 tabular-nums truncate" dir="auto">
-          {relativePast(note.updatedAt, nowMs)}
-        </span>
-        <span className="ml-auto flex items-center gap-0.5">
+        <span className="text-meta text-fg-tertiary tabular-nums truncate">{relativePast(note.updatedAt, nowMs)}</span>
+        <span className="ms-auto flex items-center gap-2">
           {copied && (
-            <span className="text-[11px] font-medium mr-1" style={{ color: SYSTEM_COLORS.green }} role="status" dir="auto">
+            <span className="text-meta" style={{ color: color.positive }} role="status">
               {t("notes.copied")}
             </span>
           )}
           {/* Hidden until the row is hovered or focused, but always there for keyboard and screen readers. */}
-          <span className={`flex items-center gap-0.5 transition-opacity ${copied || confirming ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}>
-            <ActionButton label={t(note.pinned ? "notes.unpin" : "notes.pin")} onClick={() => onTogglePin(note.id)} active={note.pinned}>
-              <PinIcon size={14} fill={note.pinned ? "currentColor" : "none"} />
-            </ActionButton>
-            <ActionButton label={t("notes.copy")} onClick={() => onCopy(note.id)}>
-              <CopyIcon size={14} />
-            </ActionButton>
-            {/* One button element in both states so the focus stays on it; set apart from pin and copy. */}
-            <button
-              type="button"
-              data-delete-confirming={confirming ? "true" : undefined}
-              className={`ml-2 h-7 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
-                confirming ? "px-2.5 text-[11.5px] font-semibold" : "w-7 text-white/40 hover:text-white hover:bg-white/10"
-              }`}
-              style={confirming ? { background: `color-mix(in srgb, ${SYSTEM_COLORS.red} 22%, transparent)`, color: SYSTEM_COLORS.red } : undefined}
-              aria-label={confirming ? t("notes.confirmDeleteLabel") : t("notes.delete")}
+          <span className={`flex items-center gap-2 transition-opacity ${copied || confirming ? "" : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"}`}>
+            <RoundButton
+              fill="none"
+              tint={note.pinned ? color.warning : color.fgSecondary}
+              ariaLabel={t(note.pinned ? "notes.unpin" : "notes.pin")}
+              title={t(note.pinned ? "notes.unpin" : "notes.pin")}
+              onPress={() => onTogglePin(note.id)}
+            >
+              <PinIcon size={icon.small} fill={note.pinned ? "currentColor" : "none"} />
+            </RoundButton>
+            <RoundButton fill="none" ariaLabel={t("notes.copy")} title={t("notes.copy")} onPress={() => onCopy(note.id)}>
+              <CopyIcon size={icon.small} />
+            </RoundButton>
+            {/* One button element in both states so the focus stays on it. */}
+            <RoundButton
+              grow={confirming}
+              fill={confirming ? "tint" : "none"}
+              tint={confirming ? color.destructiveText : color.fgSecondary}
+              ariaLabel={confirming ? t("notes.confirmDeleteLabel") : t("notes.delete")}
               title={confirming ? t("notes.confirmDeleteLabel") : t("notes.delete")}
-              onBlur={cancelConfirm}
-              onKeyDown={(e) => {
-                if (e.key === "Escape" && confirming) {
-                  e.stopPropagation();
-                  cancelConfirm();
-                }
-              }}
-              onClick={(e: MouseEvent) => {
-                e.stopPropagation();
-                onDelete();
+              onPress={onDelete}
+              buttonProps={{
+                "data-delete-confirming": confirming ? "true" : undefined,
+                onBlur: cancelConfirm,
+                onKeyDown: (e) => {
+                  if (e.key === "Escape" && confirming) {
+                    e.stopPropagation();
+                    cancelConfirm();
+                  }
+                },
               }}
             >
-              {confirming ? <span dir="auto">{t("notes.confirmDelete")}</span> : <TrashIcon size={14} />}
-            </button>
+              {confirming ? <span>{t("notes.confirmDelete")}</span> : <TrashIcon size={icon.small} />}
+            </RoundButton>
           </span>
         </span>
       </div>
     </li>
+  );
+}
+
+export interface NoteComposerProps {
+  value: string;
+  onChange: (text: string) => void;
+  /** Ctrl+Enter or the Save button, with text that is not blank. */
+  onSave: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  saving?: boolean;
+  /** The last note was just saved: the hint says so for a moment. */
+  justSaved?: boolean;
+  textareaRef?: Ref<HTMLTextAreaElement>;
+}
+
+/**
+ * Writing a note inside the island. Every key stays in the text box (the island's own shortcuts,
+ * Escape and the arrows, must not act while typing): Ctrl+Enter saves, Escape leaves the box.
+ */
+export function NoteComposer({ value, onChange, onSave, onFocus, onBlur, saving = false, justSaved = false, textareaRef }: NoteComposerProps) {
+  const canSave = value.trim().length > 0 && !saving;
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    e.stopPropagation();
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (canSave) onSave();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.currentTarget.blur();
+    }
+  };
+  return (
+    <div className="ci-surface ci-field rounded-surface p-card-pad flex flex-col gap-2 flex-shrink-0" data-note-composer>
+      <textarea
+        ref={textareaRef}
+        value={value}
+        rows={value ? 4 : 2}
+        maxLength={MAX_NOTE_CHARS}
+        placeholder={t("notes.placeholder")}
+        aria-label={t("notes.composerLabel")}
+        spellCheck={false}
+        dir={textDirection(value)}
+        className="bidi block w-full resize-none bg-transparent text-body text-fg placeholder:text-fg-tertiary outline-none"
+        onChange={(e) => onChange(e.target.value)}
+        // A click in a window that is not active may not move the page's focus; the press itself asks too.
+        onPointerDown={onFocus}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
+      />
+      {/* An empty box is just the field, so the list keeps the room; the row comes with the first character. */}
+      {(value || justSaved) && (
+        <div className="flex items-center gap-2">
+          <span className="text-meta text-fg-tertiary me-auto truncate" role="status">
+            {justSaved && !value ? t("notes.saved") : t("notes.saveHint")}
+          </span>
+          {value && (
+            <ActionButton variant="primary" onPress={onSave} disabled={!canSave}>
+              {t("notes.save")}
+            </ActionButton>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -178,10 +226,27 @@ export interface NotesViewProps {
   /** The list could not be read: says so, with a retry, instead of "no notes". */
   loadFailed?: boolean;
   onRetry?: () => void;
+  /** Writing inside the island (NoteComposer), shown above the list once the list is known. */
+  composer?: ReactNode;
+  /** Opens the Island Center's Notes page; with it, the header and the empty state offer that instead of "New note". */
+  onOpenApp?: () => void;
 }
 
 /** Pure rendering of the notes list (the tour renders it with mock data, no IPC). */
-export function NotesView({
+export function NotesView(props: NotesViewProps) {
+  const { notes, loading = false, loadFailed = false, composer } = props;
+  const list = <NotesList {...props} />;
+  // While the list is unknown the composer waits too: the panel shows one thing at a time.
+  if (!composer || (notes.length === 0 && (loading || loadFailed))) return list;
+  return (
+    <div className="flex flex-col gap-2 flex-1">
+      {composer}
+      {list}
+    </div>
+  );
+}
+
+function NotesList({
   notes,
   nowMs,
   onNew,
@@ -194,54 +259,36 @@ export function NotesView({
   loading = false,
   loadFailed = false,
   onRetry,
+  onOpenApp,
 }: NotesViewProps) {
-  if (loading && notes.length === 0) return <div dir="ltr" className="flex-1" aria-busy="true" />;
+  if (loading && notes.length === 0) return <div className="flex-1" aria-busy="true" />;
   if (loadFailed && notes.length === 0) {
-    return (
-      <div dir="ltr" className="flex-1 flex flex-col items-center justify-center">
-        <EmptyState icon={<NoteIcon size={22} />} title={t("notes.loadFailed")}>
-          {onRetry && (
-            <div className="mt-3">
-              <PillButton variant="tinted" className="h-[32px] px-4 text-[12.5px]" onClick={onRetry}>
-                {t("notes.retry")}
-              </PillButton>
-            </div>
-          )}
-        </EmptyState>
-      </div>
-    );
+    return <ErrorState icon={<NoteIcon size={STATE_ICON} />} title={t("notes.loadFailed")} action={onRetry ? { label: t("notes.retry"), onPress: onRetry } : undefined} />;
   }
   if (notes.length === 0) {
     return (
-      <div dir="ltr" className="flex-1 flex flex-col items-center justify-center">
-        <EmptyState icon={<NoteIcon size={22} />} title={t("notes.empty")} subtitle={t("notes.emptyHint")}>
-          <div className="mt-3">
-            <PillButton variant="tinted" className="h-[32px] px-4 text-[12.5px]" onClick={onNew}>
-              {t("notes.new")}
-            </PillButton>
-          </div>
-        </EmptyState>
-      </div>
+      <EmptyState
+        icon={<NoteIcon size={STATE_ICON} />}
+        title={t("notes.empty")}
+        hint={t("notes.emptyHint")}
+        action={{ label: t(onOpenApp ? "notes.openApp" : "notes.new"), onPress: onOpenApp ?? onNew }}
+      />
     );
   }
   return (
-    <div dir="ltr" className="flex flex-col gap-2">
-      <SectionLabel
-        trailing={
-          <PillButton variant="tinted" className="h-[26px] px-3 text-[12px]" onClick={onNew}>
-            {t("notes.new")}
-          </PillButton>
-        }
-      >
+    <div className="flex flex-col gap-2">
+      {/* The section row: label at the card text inset (12), the action at the trailing edge. */}
+      <div className="flex items-center justify-between gap-2 px-3" style={{ minHeight: control.round }}>
         {saveFailed ? (
-          <span style={{ color: SYSTEM_COLORS.orange }} role="alert">
+          <span className="text-micro" style={{ color: color.warning }} role="alert">
             {t("notes.saveFailed")}
           </span>
         ) : (
-          t("notes.list")
+          <span className="text-micro text-fg-tertiary">{t("notes.list")}</span>
         )}
-      </SectionLabel>
-      <ul className="flex flex-col gap-1.5" aria-label={t("notes.list")}>
+        <HeaderActionButton onPress={onOpenApp ?? onNew}>{t(onOpenApp ? "notes.openApp" : "notes.new")}</HeaderActionButton>
+      </div>
+      <ul className="flex flex-col gap-2" aria-label={t("notes.list")}>
         {notes.map((note) => (
           <NoteRow
             key={note.id}
@@ -259,20 +306,83 @@ export function NotesView({
   );
 }
 
-/** The island's notes: reading, pinning, copying and deleting here; writing happens in the Island Center. */
-export function NotesTab() {
-  const { notes, loaded, loadFailed, retry, remove, togglePin } = useNotes();
-  const nowMs = useMinute().getTime();
+interface Flash {
+  copiedId: string | null;
+  saveFailed: boolean;
+  justSaved: boolean;
+}
 
-  // One short-lived flag at a time ("Copied" on a note, or "couldn't save"); the timer exists only after a click.
-  const [flash, setFlash] = useState<{ copiedId: string | null; saveFailed: boolean }>({ copiedId: null, saveFailed: false });
+const NO_FLASH: Flash = { copiedId: null, saveFailed: false, justSaved: false };
+
+/**
+ * The island takes the keyboard for the composer only while its text box has focus. The window is
+ * non-activating otherwise, so the box asks the backend first (a click in it is the user's input
+ * that lets the island come forward) and gives the keyboard back when it loses focus, the tab
+ * closes or another window takes the keyboard (`island-keyboard-ended`).
+ */
+function useComposerKeyboard() {
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Between asking and the answer the activation itself moves the focus around; that is not "done typing".
+  const acquiring = useRef(false);
+
+  const release = useCallback(() => {
+    if (!islandTyping.get()) return;
+    islandTyping.set(false);
+    void ipc.islandKeyboard(false);
+  }, []);
+
+  const onFocus = useCallback(() => {
+    if (islandTyping.get() || acquiring.current) return;
+    acquiring.current = true;
+    void ipc.islandKeyboard(true).then((ok) => {
+      acquiring.current = false;
+      if (!ok) return;
+      islandTyping.set(true);
+      textareaRef.current?.focus();
+    });
+  }, []);
+
+  // When another window took the keyboard the backend has already ended it; telling it again is harmless.
+  const onBlur = useCallback(() => {
+    if (!acquiring.current) release();
+  }, [release]);
+
+  useEffect(() => {
+    const unlisten = onEvent<unknown>("island-keyboard-ended", () => {
+      islandTyping.set(false);
+      textareaRef.current?.blur();
+    });
+    return () => {
+      unlisten();
+      release();
+    };
+  }, [release]);
+
+  return { textareaRef, onFocus, onBlur };
+}
+
+/** The island's notes: writing a new one, reading, pinning, copying and deleting here; a click on a note opens it in the Island Center. */
+export function NotesTab() {
+  const { notes, loaded, loadFailed, retry, add, remove, togglePin } = useNotes();
+  const nowMs = useMinute().getTime();
+  const keyboard = useComposerKeyboard();
+  // The draft outlives the tab (the island closing unmounts it) until it is saved.
+  const [draft, setDraftState] = useState(noteDraft.get);
+  const setDraft = useCallback((text: string) => {
+    noteDraft.set(text);
+    setDraftState(text);
+  }, []);
+  const [saving, setSaving] = useState(false);
+
+  // One short-lived flag at a time ("Copied" on a note, "Saved", or "couldn't save"); the timer exists only after a click.
+  const [flash, setFlash] = useState<Flash>(NO_FLASH);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showFlash = useCallback((next: { copiedId: string | null; saveFailed: boolean }) => {
+  const showFlash = useCallback((next: Partial<Flash>) => {
     if (flashTimer.current !== null) clearTimeout(flashTimer.current);
-    setFlash(next);
+    setFlash({ ...NO_FLASH, ...next });
     flashTimer.current = setTimeout(() => {
       flashTimer.current = null;
-      setFlash({ copiedId: null, saveFailed: false });
+      setFlash(NO_FLASH);
     }, FLASH_MS);
   }, []);
   useEffect(
@@ -286,11 +396,26 @@ export function NotesTab() {
     const note = notes.find((n) => n.id === id);
     if (!note) return;
     void ipc.copyTextToClipboard(note.text).then((ok) => {
-      if (ok) showFlash({ copiedId: id, saveFailed: false });
+      if (ok) showFlash({ copiedId: id });
     });
   };
   const saved = (ok: boolean) => {
-    if (!ok) showFlash({ copiedId: null, saveFailed: true });
+    if (!ok) showFlash({ saveFailed: true });
+  };
+  const save = () => {
+    const text = draft;
+    if (!text.trim() || saving) return;
+    setSaving(true);
+    void add(text).then((ok) => {
+      setSaving(false);
+      if (!ok) {
+        showFlash({ saveFailed: true });
+        return;
+      }
+      // Only what was saved is cleared: text typed while the save was on its way stays.
+      if (noteDraft.get() === text) setDraft("");
+      showFlash({ justSaved: true });
+    });
   };
 
   return (
@@ -302,7 +427,20 @@ export function NotesTab() {
       loading={!loaded}
       loadFailed={loadFailed}
       onRetry={retry}
-      onNew={() => void ipc.openCenter("notes-new")}
+      composer={
+        <NoteComposer
+          value={draft}
+          onChange={setDraft}
+          onSave={save}
+          onFocus={keyboard.onFocus}
+          onBlur={keyboard.onBlur}
+          saving={saving}
+          justSaved={flash.justSaved}
+          textareaRef={keyboard.textareaRef}
+        />
+      }
+      onOpenApp={() => void ipc.openCenter("notes")}
+      onNew={() => keyboard.textareaRef.current?.focus()}
       onOpen={(id) => void ipc.openCenter(`note:${id}`)}
       onTogglePin={(id) => void togglePin(id).then(saved)}
       onCopy={copy}

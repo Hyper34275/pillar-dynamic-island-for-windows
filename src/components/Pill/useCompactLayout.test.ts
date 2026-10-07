@@ -53,8 +53,8 @@ describe("timeSlotWidth", () => {
   for (const display of ["full", "clock"] as const) {
     for (const [name, parts] of [["24-hour", hour24], ["12-hour", hour12]] as const) {
       it(`${display}, ${name}: fits every minute of the day, so the width never depends on the time`, () => {
-        const slot = timeSlotWidth({ display, measure, digit: "8", parts });
-        const size = CLOCK_FONT_SIZE[display];
+        const slot = timeSlotWidth({ measure, digit: "8", parts });
+        const size = CLOCK_FONT_SIZE;
         for (let minute = 0; minute < 24 * 60; minute++) {
           const shown = parts(new Date(2026, 9, 6, Math.floor(minute / 60), minute % 60));
           const width = measure(shown.digits, size) + (shown.period ? PERIOD_GAP + measure(shown.period, PERIOD_FONT_SIZE) : 0);
@@ -62,30 +62,30 @@ describe("timeSlotWidth", () => {
         }
         // And so is the whole island: its content width is the slot, whatever minute is on screen.
         const labels: CompactLabels = { date: "6.10", weekday: display === "clock" ? "" : "Tuesday", contentWidth: slot, display, timeWidth: slot };
-        expect(compactContentSize(labels, null, 0, false).width).toBe(Math.min(220, Math.max(display === "clock" ? 88 : 112, slot + 30)));
+        expect(compactContentSize(labels, null, 0, false).width).toBe(Math.min(280, Math.max(display === "clock" ? 72 : 96, slot + 24)));
       });
     }
   }
 
   it("reserves two hour digits in a 12-hour clock, so 9:59 and 12:00 give the same slot", () => {
-    const slot = timeSlotWidth({ display: "clock", measure, digit: "8", parts: hour12 });
-    const nine = measure("8:88", CLOCK_FONT_SIZE.clock);
-    const twelve = measure("88:88", CLOCK_FONT_SIZE.clock);
+    const slot = timeSlotWidth({ measure, digit: "8", parts: hour12 });
+    const nine = measure("8:88", CLOCK_FONT_SIZE);
+    const twelve = measure("88:88", CLOCK_FONT_SIZE);
     expect(slot).toBeGreaterThanOrEqual(twelve + PERIOD_GAP);
     expect(slot).toBeGreaterThan(nine);
   });
 
   it("takes the longer of the AM and PM forms for the period", () => {
     const longer = (am: string, pm: string) =>
-      timeSlotWidth({ display: "full", measure, digit: "8", parts: (date) => ({ digits: "10:00", period: date.getHours() < 12 ? am : pm }) });
+      timeSlotWidth({ measure, digit: "8", parts: (date) => ({ digits: "10:00", period: date.getHours() < 12 ? am : pm }) });
     expect(longer("AM", "PM")).toBe(longer("PM", "AM"));
     expect(longer("לפנה״צ", "PM")).toBe(longer("PM", "לפנה״צ"));
     expect(longer("AM", "לפנה״צ")).toBeGreaterThan(longer("AM", "PM"));
   });
 
   it("has no period part in a 24-hour clock", () => {
-    const slot = timeSlotWidth({ display: "full", measure, digit: "8", parts: hour24 });
-    expect(slot).toBe(measure("88:88", CLOCK_FONT_SIZE.full));
+    const slot = timeSlotWidth({ measure, digit: "8", parts: hour24 });
+    expect(slot).toBe(measure("88:88", CLOCK_FONT_SIZE));
   });
 
   it("is stable with non-Latin digits (Arabic-Indic)", () => {
@@ -95,10 +95,10 @@ describe("timeSlotWidth", () => {
     const digit = widestDigit((text) => arabic(text), "ar-EG");
     expect(digit).toMatch(/^\p{Nd}$/u);
     expect(digit).not.toMatch(/^[0-9]$/);
-    const slot = timeSlotWidth({ display: "clock", measure: arabic, digit, parts });
+    const slot = timeSlotWidth({ measure: arabic, digit, parts });
     for (let minute = 0; minute < 24 * 60; minute++) {
       const shown = parts(new Date(2026, 9, 6, Math.floor(minute / 60), minute % 60));
-      const width = arabic(shown.digits, CLOCK_FONT_SIZE.clock) + (shown.period ? PERIOD_GAP + arabic(shown.period, PERIOD_FONT_SIZE) : 0);
+      const width = arabic(shown.digits, CLOCK_FONT_SIZE) + (shown.period ? PERIOD_GAP + arabic(shown.period, PERIOD_FONT_SIZE) : 0);
       expect(width).toBeLessThanOrEqual(slot);
     }
   });

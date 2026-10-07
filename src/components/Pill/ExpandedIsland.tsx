@@ -3,9 +3,9 @@ import { useMemo, useState, type ReactNode } from "react";
 import { APP_NAME } from "../../lib/appInfo";
 import { t } from "../../lib/i18n";
 import type { NotificationStatus } from "../../lib/ipc";
-import { expandedSize, layerFade, partFade, TAB_SHIFT_PX, tabSprings } from "./animations";
+import { layerFade, TAB_SHIFT_PX, tabSprings } from "./animations";
 import { TransitionContext, useDrivenTransition, useTransitionLayer } from "./drivenTransition";
-import { IslandLayer, IslandPart } from "./IslandLayer";
+import { PANEL_TITLE_CLASS, PanelFrame, panelBodyClass } from "./PanelFrame";
 import { useSpringValue } from "./useIslandMotion";
 import { AboutTab } from "./panels/AboutTab";
 import { CalendarTab } from "./panels/CalendarTab";
@@ -43,14 +43,19 @@ function renderPanel(tab: TabId, props: Pick<ExpandedIslandProps, "notificationS
 function TabTitle({ children }: { children: ReactNode }) {
   const { opacity, isPresent } = useTransitionLayer({ fade: layerFade.tab });
   return (
-    <motion.h2
-      className="text-white text-[20px] font-bold tracking-tight leading-none"
-      dir="auto"
-      aria-hidden={isPresent ? undefined : true}
-      style={{ gridArea: "1 / 1", opacity }}
-    >
+    <motion.h2 className={PANEL_TITLE_CLASS} aria-hidden={isPresent ? undefined : true} style={{ gridArea: "1 / 1", opacity }}>
       {children}
     </motion.h2>
+  );
+}
+
+/** A tab's header action; it cross-fades with the title in the same row (a tab without one has an empty cell). */
+function TabAction({ children }: { children: ReactNode }) {
+  const { opacity, isPresent } = useTransitionLayer({ fade: layerFade.tab });
+  return (
+    <motion.div aria-hidden={isPresent ? undefined : true} style={{ gridArea: "1 / 1", opacity, pointerEvents: isPresent ? undefined : "none" }}>
+      {children}
+    </motion.div>
   );
 }
 
@@ -61,8 +66,6 @@ function TabTitle({ children }: { children: ReactNode }) {
  */
 function TabPanel({ tab, slide, children }: { tab: TabId; slide: boolean; children: ReactNode }) {
   const { opacity, offset, isPresent } = useTransitionLayer({ fade: layerFade.tab, offset: slide ? TAB_SHIFT_PX : 0 });
-  // About centres its own content; the other tabs scroll inside the panel.
-  const scrolls = tab !== "about";
   return (
     <motion.div
       data-panel={tab}
@@ -70,7 +73,7 @@ function TabPanel({ tab, slide, children }: { tab: TabId; slide: boolean; childr
       role={isPresent ? "tabpanel" : undefined}
       aria-labelledby={isPresent ? `tab-${tab}` : undefined}
       aria-hidden={isPresent ? undefined : true}
-      className={`absolute inset-0 flex flex-col px-1 ${scrolls ? "overflow-y-auto island-scroll pb-3" : "overflow-hidden"}`}
+      className={`absolute inset-0 ${panelBodyClass(tab)}`}
       style={{ opacity, x: offset, pointerEvents: isPresent ? undefined : "none" }}
     >
       <TabBoundary tab={tab}>{children}</TabBoundary>
@@ -108,44 +111,45 @@ export function ExpandedIsland({ activeTab, reducedMotion, notificationStatus, o
   const steps = useTabSteps(activeTab, activeIndex);
   const progress = useSpringValue(steps.target, tabSprings.content);
   const drivers = useMemo(() => [progress], [progress]);
-  const tabTransition = useDrivenTransition(drivers, [steps.target], activeTab, steps.direction);
+  // The content shifts towards where its tab is: the dock runs left to right, so later tabs are further right.
+  const shiftDirection = steps.direction;
+  const tabTransition = useDrivenTransition(drivers, [steps.target], activeTab, shiftDirection);
+  const inTab = (node: ReactNode) => <TransitionContext.Provider value={tabTransition}>{node}</TransitionContext.Provider>;
 
-  // The parts travel with the island's edges as it opens and closes (IslandPart): the header
-  // with the top-left corner, the body in the middle, the dock with the bottom edge.
+  const HeaderAction = config.HeaderAction;
+
+  // The parts travel with the island's edges as it opens and closes (IslandPart, in PanelFrame):
+  // the header with the top-start corner, the body in the middle, the dock with the bottom edge.
   return (
-    <IslandLayer
-      name="expanded"
-      fade={layerFade.expanded}
+    <PanelFrame
       parts
-      size={expandedSize()}
-      dir="ltr"
-      className="island-expanded flex flex-col pt-4 pb-2 px-4 cursor-default text-white"
       role="region"
       aria-label={t("island.expandedLabel", { app: APP_NAME })}
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
+      title={inTab(
+        <AnimatePresence>
+          <TabTitle key={config.id}>{t(config.labelKey)}</TabTitle>
+        </AnimatePresence>
+      )}
+      action={inTab(
+        <AnimatePresence>
+          {HeaderAction && (
+            <TabAction key={config.id}>
+              <HeaderAction />
+            </TabAction>
+          )}
+        </AnimatePresence>
+      )}
+      dock={<TabDock active={activeTab} indicator={capsule} onSelect={onSelectTab} />}
     >
-      <TransitionContext.Provider value={tabTransition}>
-        <IslandPart anchor="top-start" fade={partFade.header} className="flex items-end justify-between mb-3 px-1 flex-shrink-0">
-          <div className="grid justify-items-start">
-            <AnimatePresence>
-              <TabTitle key={config.id}>{t(config.labelKey)}</TabTitle>
-            </AnimatePresence>
-          </div>
-        </IslandPart>
-
-        <IslandPart anchor="center" fade={partFade.body} className="flex-1 min-h-0 overflow-hidden w-full relative">
-          <AnimatePresence>
-            <TabPanel key={activeTab} tab={activeTab} slide={!reducedMotion}>
-              {renderPanel(activeTab, { notificationStatus, onRequestNotificationAccess })}
-            </TabPanel>
-          </AnimatePresence>
-        </IslandPart>
-
-        <IslandPart anchor="bottom" fade={partFade.dock} className="flex-shrink-0">
-          <TabDock active={activeTab} indicator={capsule} onSelect={onSelectTab} />
-        </IslandPart>
-      </TransitionContext.Provider>
-    </IslandLayer>
+      {inTab(
+        <AnimatePresence>
+          <TabPanel key={activeTab} tab={activeTab} slide={!reducedMotion}>
+            {renderPanel(activeTab, { notificationStatus, onRequestNotificationAccess })}
+          </TabPanel>
+        </AnimatePresence>
+      )}
+    </PanelFrame>
   );
 }

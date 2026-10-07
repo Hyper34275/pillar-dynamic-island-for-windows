@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { MotionValue } from "motion/react";
 import { createGeometryQueue, islandFits } from "../../lib/island/geometryQueue";
+import { getIslandLimits, useIslandLimits, type IslandLimits } from "../../lib/island/limits";
 import { ipc, type IslandGeometry } from "../../lib/ipc";
 import { dlog } from "../../lib/debugLog";
-import { meetingAlertSize, notificationSize, pillDimensions } from "./animations";
+import { expandedSize, ISLAND_TOP_INSET, limitSize, meetingAlertSize, pillDimensions } from "./animations";
+import { toastMaxSize } from "./toastLayout";
 
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
@@ -11,19 +13,33 @@ const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : us
 export type StagedGeometry = IslandGeometry & { stageWidth: number; stageHeight: number };
 
 /**
- * The native window: a fixed stage as large as the largest island shape. It never resizes or
- * moves while the island animates (a resized WebView2 window shows its previous frame at the
- * new size and stalls its frame pipeline); the island morphs inside it and only the window
- * region (the clickable shape) follows.
+ * The largest island shape on a monitor with these limits: the panel, the alert, the biggest
+ * toast, the compact and ringer shapes, each no larger than the monitor allows. Without limits
+ * these are the preferred sizes.
  */
-export function stageSize(): { width: number; height: number } {
+export function maxShapeSize(limits: IslandLimits = getIslandLimits()): { width: number; height: number } {
   const d = pillDimensions;
-  const alert = meetingAlertSize(2, true, true);
-  const notification = notificationSize(true, true);
+  const expanded = expandedSize(limits);
+  const alert = limitSize(meetingAlertSize(2, true, true), limits);
+  const notification = limitSize(toastMaxSize(), limits);
+  const compactMax = Math.min(d.compact.maxWidth, limits.maxWidth);
   return {
-    width: Math.max(d.expanded.width, alert.width, notification.width, d.compactMeeting.maxWidth, d.compact.maxWidth, d.ringer.width),
-    height: Math.max(d.expanded.height, alert.height, notification.height, d.compact.height, d.ringer.height),
+    width: Math.max(expanded.width, alert.width, notification.width, Math.min(d.compactMeeting.maxWidth, limits.maxWidth), compactMax, Math.min(d.ringer.width, limits.maxWidth)),
+    height: Math.max(expanded.height, alert.height, notification.height, d.compact.height, d.ringer.height),
   };
+}
+
+/**
+ * The native window: a fixed stage as large as the largest island shape, plus the island's gap
+ * below the screen's top edge (the window starts AT the edge so its top strip can bridge to the
+ * island; see ISLAND_TOP_INSET). It never resizes or moves while the island animates (a resized
+ * WebView2 window shows its previous frame at the new size and stalls its frame pipeline); the
+ * island morphs inside it and only the window region (the clickable shape) follows. Built from
+ * the same limited sizes as the island's targets, so it never exceeds the monitor's work area.
+ */
+export function stageSize(limits: IslandLimits = getIslandLimits()): { width: number; height: number } {
+  const shape = maxShapeSize(limits);
+  return { width: shape.width, height: shape.height + ISLAND_TOP_INSET };
 }
 
 interface Springs {
@@ -70,11 +86,12 @@ export function usePillGeometry(target: IslandGeometry, springs: Springs): { inv
   }, [queue, springs.width, springs.height]);
 
   const { width, height, radius } = target;
+  const limits = useIslandLimits();
   useIsomorphicLayoutEffect(() => {
-    const stage = stageSize();
+    const stage = stageSize(limits);
     const geometry: StagedGeometry = { width, height, radius, stageWidth: stage.width, stageHeight: stage.height };
     queue.request(geometry);
-  }, [queue, width, height, radius]);
+  }, [queue, width, height, radius, limits]);
 
   const invalidate = useCallback(() => queue.invalidate(), [queue]);
   return { invalidate };

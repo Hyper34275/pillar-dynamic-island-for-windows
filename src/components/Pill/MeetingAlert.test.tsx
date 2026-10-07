@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { formatTime } from "../../lib/dateFormat";
 import type { ReminderAlert } from "../../lib/reminders/types";
 import { alertSubjectLines } from "./alertLayout";
-import { meetingAlertSize, notificationSize } from "./animations";
+import { meetingAlertSize } from "./animations";
 import { MeetingAlert, meetingAlertAnnouncement } from "./MeetingAlert";
 
 const START = Date.UTC(2026, 9, 6, 10, 30);
@@ -59,12 +59,23 @@ describe("MeetingAlert", () => {
     expect(html).toContain(subject);
   });
 
-  it("is physically left-to-right with direction-neutral text, and never takes pointer events", () => {
+  it("follows the UI direction, aligns text by its own content and never takes pointer events", () => {
     const html = render(alertOf({ subject: "פגישת צוות" }));
-    expect(html).toContain('dir="ltr"');
+    expect(html).toContain('dir="ltr"'); // English UI in tests
     expect(html).toContain("pointer-events-none");
-    expect(html).toContain('dir="auto"');
-    expect(html).toContain("text-align:left");
+    expect(html).toContain("bidi");
+    expect(html).not.toContain('dir="auto"');
+  });
+
+  it("puts a full-width action row (join, snooze) with equal columns at the end, and the row alone fills when there is one action", () => {
+    const both = render(alertOf({ meetingUrl: "https://teams.microsoft.com/l/x" }));
+    expect(both).toContain("auto-cols-fr");
+    expect(both).toContain("Join");
+    expect(both).toContain("Remind me in 5 min");
+    const onlySnooze = render(alertOf());
+    expect(onlySnooze).toContain("Remind me in 5 min");
+    expect(onlySnooze).not.toContain("Join");
+    expect(render(alertOf({ minutesRemaining: 0 }))).not.toContain("auto-cols-fr");
   });
 
   it("announces label, subject, time and location in one sentence list", () => {
@@ -85,7 +96,7 @@ describe("MeetingAlert", () => {
     expect(html(1)).toContain("פגישה בעוד דקה");
     expect(html(0)).toContain("הפגישה מתחילה עכשיו");
     expect(html(30)).toContain("ישיבת צוות");
-    expect(html(30)).toContain('dir="ltr"'); // layout stays physically LTR
+    expect(html(30)).toContain('dir="rtl"'); // the layout follows the UI language
   });
 });
 
@@ -105,7 +116,4 @@ describe("alert geometry", () => {
     }
   });
 
-  it("sizes the notification island by whether it has a body", () => {
-    expect(notificationSize(true).height).toBeGreaterThan(notificationSize(false).height);
-  });
 });

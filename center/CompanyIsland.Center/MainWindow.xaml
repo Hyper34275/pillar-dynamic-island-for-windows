@@ -57,16 +57,21 @@
                 CornerRadius="0" />
         </StackPanel>
 
+        <!-- Icons only; the pane opens over the page while the pointer (or keyboard focus) is on it. See MainWindow.HookPaneHover. -->
         <NavigationView
             x:Name="Nav"
             Grid.Row="1"
-            PaneDisplayMode="Left"
-            IsPaneOpen="True"
+            PaneDisplayMode="LeftCompact"
+            IsPaneOpen="False"
+            CompactPaneLength="48"
             OpenPaneLength="232"
             IsSettingsVisible="False"
             IsBackButtonVisible="Collapsed"
             IsPaneToggleButtonVisible="False"
             IsTitleBarAutoPaddingEnabled="False"
+            Loaded="OnNavLoaded"
+            PaneOpening="OnPaneOpening"
+            PaneClosing="OnPaneClosing"
             SelectionChanged="OnNavSelectionChanged">
             <NavigationView.Resources>
                 <ResourceDictionary>
@@ -119,6 +124,7 @@
             <NavigationView.PaneFooter>
                 <TextBlock
                     x:Name="VersionText"
+                    Visibility="Collapsed"
                     Margin="16,8,16,16"
                     Style="{StaticResource CaptionTextBlockStyle}"
                     Foreground="{ThemeResource TextFillColorSecondaryBrush}" />

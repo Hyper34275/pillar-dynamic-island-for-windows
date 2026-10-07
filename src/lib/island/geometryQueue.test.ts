@@ -204,3 +204,17 @@ describe("islandFits", () => {
     expect(fitsAtMs).toBeLessThan(500); // the deadline (700 ms) is never what shrinks the region
   });
 });
+
+describe("geometry queue and the stage window", () => {
+  it("sends again when only the stage changed (another monitor's limits), never for an identical request", async () => {
+    const h = harness();
+    const staged = (stageWidth: number, stageHeight: number): IslandGeometry => ({ width: 142, height: 36, radius: 18, stageWidth, stageHeight });
+    h.queue.request(staged(400, 448));
+    await h.complete();
+    h.queue.request(staged(400, 448));
+    expect(h.sent).toHaveLength(1);
+    h.queue.request(staged(400, 436));
+    expect(h.sent).toHaveLength(2);
+    expect(h.sent[1]).toMatchObject({ stageHeight: 436 });
+  });
+});

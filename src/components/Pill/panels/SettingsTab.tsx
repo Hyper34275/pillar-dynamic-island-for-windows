@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { textDirection } from "../../../design/direction";
 import { useCalendar } from "../../../hooks/useCalendar";
 import { useSettings } from "../../../hooks/useSettings";
 import { useSystemInfo } from "../../../hooks/useSystemInfo";
@@ -27,7 +28,8 @@ import {
 } from "../../../lib/ipc";
 import { t, type MessageKey } from "../../../lib/i18n";
 import type { CalendarSnapshot, CalendarStatus } from "../../../lib/calendar/types";
-import { Group, PillButton, SectionLabel, Segmented, Switch, SYSTEM_COLORS } from "../ui/primitives";
+import { ActionButton, ActionRow } from "../ui/controls";
+import { Group, SectionLabel, Segmented, Switch } from "../ui/primitives";
 
 const NONE = "—";
 const FLASH_MS = 1800;
@@ -57,25 +59,23 @@ const DISPLAY_OPTIONS: ReadonlyArray<{ id: IslandDisplay; labelKey: MessageKey }
 
 const MODE_LABEL = { classic: "about.modeClassic", new: "about.modeNew", none: "about.modeNone" } as const satisfies Record<string, MessageKey>;
 
+/** Every settings row: at least 44 high (the hit minimum), 12 inline padding (the group's text inset), 12 between its parts. */
+const ROW = "flex items-center justify-between gap-3 px-3 min-h-hit";
+
+/** A read-only fact: the label at the leading edge, the value (app / system text, bidi) at the trailing edge. */
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div dir="ltr" className="flex items-center justify-between gap-4 px-3.5 min-h-[34px] py-1.5">
-      <span className="text-[12.5px] text-white/55 flex-shrink-0" dir="auto">
-        {label}
-      </span>
-      <span className="min-w-0 text-[12.5px] font-medium text-white/90 text-right truncate tabular-nums" dir="auto" style={{ unicodeBidi: "plaintext" }}>
-        {children}
-      </span>
+    <div className={ROW}>
+      <span className="text-body text-fg flex-shrink-0">{label}</span>
+      <span dir={typeof children === "string" ? textDirection(children) : undefined} className="bidi min-w-0 text-body text-fg-secondary truncate tabular-nums">{children}</span>
     </div>
   );
 }
 
 function SwitchRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
   return (
-    <div dir="ltr" className="flex items-center justify-between gap-4 px-3.5 min-h-[40px] py-1.5">
-      <span className="text-[13px] font-medium text-white/90" dir="auto">
-        {label}
-      </span>
+    <div className={ROW}>
+      <span className="text-body text-fg">{label}</span>
       <Switch checked={checked} onChange={onChange} label={label} />
     </div>
   );
@@ -146,7 +146,7 @@ export function SettingsView({
         <SectionLabel
           trailing={
             flash === "saveFailed" ? (
-              <span className="text-[11px] font-medium" style={{ color: SYSTEM_COLORS.orange }} role="alert">
+              <span className="text-micro text-warning" role="alert">
                 {t("settings.saveFailed")}
               </span>
             ) : undefined
@@ -170,14 +170,8 @@ export function SettingsView({
             checked={settings.meetingReminderEnabled}
             onChange={() => change({ meetingReminderEnabled: !settings.meetingReminderEnabled })}
           />
-          <div
-            dir="ltr"
-            className={`flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5 transition-opacity ${settings.meetingReminderEnabled ? "" : "opacity-40 pointer-events-none"}`}
-            aria-disabled={!settings.meetingReminderEnabled}
-          >
-            <span className="text-[13px] font-medium text-white/90 flex-shrink-0" dir="auto">
-              {t("settings.reminderMinutes")}
-            </span>
+          <div className={`${ROW} transition-opacity ${settings.meetingReminderEnabled ? "" : "opacity-40 pointer-events-none"}`} aria-disabled={!settings.meetingReminderEnabled}>
+            <span className="text-body text-fg flex-shrink-0">{t("settings.reminderMinutes")}</span>
             <Segmented
               options={reminderOptions}
               value={String(settings.reminderMinutes)}
@@ -201,20 +195,17 @@ export function SettingsView({
             onChange={() => change({ notificationsEnabled: !settings.notificationsEnabled })}
           />
           {settings.notificationsEnabled && notificationStatus === "unspecified" && (
-            <div dir="ltr" className="flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5">
-              <span className="text-[12.5px] text-white/55" dir="auto">
-                {t("notif.status.unspecified")}
-              </span>
-              <PillButton className="h-[28px] px-3.5 text-[12px]" onClick={onRequestNotificationAccess}>
-                {t("notif.allow")}
-              </PillButton>
+            <div className="flex flex-col gap-2 p-3">
+              <span className="text-meta text-fg-secondary">{t("notif.status.unspecified")}</span>
+              <ActionRow>
+                <ActionButton onPress={onRequestNotificationAccess}>{t("notif.allow")}</ActionButton>
+              </ActionRow>
             </div>
           )}
-          <div dir="ltr" className="flex flex-col gap-1.5 px-3.5 py-2">
-            <span className="text-[13px] font-medium text-white/90" dir="auto">
-              {t("settings.islandDisplay")}
-            </span>
+          <div className="flex flex-col gap-2 p-3">
+            <span className="text-body text-fg">{t("settings.islandDisplay")}</span>
             <Segmented
+              size="md"
               className="w-full"
               options={displayOptions}
               value={settings.islandDisplay}
@@ -223,10 +214,8 @@ export function SettingsView({
             />
           </div>
           {monitors.length > 1 && (
-            <div dir="ltr" className="flex items-center justify-between gap-3 px-3.5 min-h-[40px] py-1.5">
-              <span className="text-[13px] font-medium text-white/90 flex-shrink-0" dir="auto">
-                {t("settings.monitor")}
-              </span>
+            <div className={ROW}>
+              <span className="text-body text-fg flex-shrink-0">{t("settings.monitor")}</span>
               <Segmented
                 options={monitors.map((monitor, index) => ({ id: monitor.id, label: monitorLabel(monitor, index) }))}
                 value={settings.monitorId ?? monitors.find((m) => m.isPrimary)?.id ?? monitors[0].id}
@@ -240,14 +229,10 @@ export function SettingsView({
 
       <section data-section="center">
         <SectionLabel>{t("settings.center")}</SectionLabel>
-        <div dir="ltr" className="flex gap-2">
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onOpenCenter}>
-            {t("settings.openCenter")}
-          </PillButton>
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onOpenTour}>
-            {t("settings.tour")}
-          </PillButton>
-        </div>
+        <ActionRow>
+          <ActionButton onPress={onOpenCenter}>{t("settings.openCenter")}</ActionButton>
+          <ActionButton onPress={onOpenTour}>{t("settings.tour")}</ActionButton>
+        </ActionRow>
       </section>
 
       <section data-section="diagnostics">
@@ -271,19 +256,15 @@ export function SettingsView({
           {diagnostics?.notificationMode && <Row label={t("about.notificationDelivery")}>{t(DELIVERY_LABEL[diagnostics.notificationMode])}</Row>}
           <Row label={t("about.recentErrors")}>{recentCodes.length > 0 ? recentCodes.join(", ") : NONE}</Row>
         </Group>
-        <div dir="ltr" className="flex gap-2 mt-2.5">
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onCopyDiagnostics}>
+        <ActionRow className="mt-2">
+          <ActionButton variant={flash === "copied" ? "primary" : flash === "failed" ? "destructive" : "neutral"} onPress={onCopyDiagnostics}>
             <span aria-live="polite">{copyLabel}</span>
-          </PillButton>
-          <PillButton className="h-[32px] px-4 text-[12.5px]" onClick={onOpenLogs}>
-            {t("about.openLogs")}
-          </PillButton>
-        </div>
+          </ActionButton>
+          <ActionButton onPress={onOpenLogs}>{t("about.openLogs")}</ActionButton>
+        </ActionRow>
       </section>
 
-      <p className="text-center text-[11px] text-white/30 pb-1" dir="auto">
-        {t("about.credit")}
-      </p>
+      <p className="bidi !text-center text-micro text-fg-tertiary">{t("about.credit")}</p>
     </div>
   );
 }

@@ -1,15 +1,19 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { textDirection } from "../../../design/direction";
+import { alert as alertTokens, color, compact, control, icon } from "../../../design/tokens";
 import { useCalendar } from "../../../hooks/useCalendar";
 import { useMinute, useToday } from "../../../hooks/useClock";
 import { dayLabel, formatTime, relativeMinutes, startOfDay } from "../../../lib/dateFormat";
 import { t, type MessageKey } from "../../../lib/i18n";
 import { useAnsweredInviteIds } from "../../../lib/calendar/inviteAnswers";
-import { eventsOfDay, useCalendarDay, type DayState } from "../../../lib/calendar/dayRange";
+import { dayCache, eventsOfDay, useCalendarDay, type DayState } from "../../../lib/calendar/dayRange";
 import { isRealMeeting, selectAllDay, selectUpcoming } from "../../../lib/calendar/select";
 import type { CalendarEventDto, CalendarSnapshot, CalendarStatus, MeetingInviteDto } from "../../../lib/calendar/types";
 import { silence, useSilenceUntil } from "../../../lib/island/silence";
 import { inviteBody } from "../../../hooks/useMeetingInvites";
-import { EmptyState, SYSTEM_COLORS } from "../ui/primitives";
+import { GROUP_CLASS } from "../ui/primitives";
+import { EmptyState, ErrorState, STATE_ICON } from "../ui/states";
+import { ActionButton, ActionRow, RoundButton } from "../ui/controls";
 import { BellFilledIcon, BellSlashIcon, CalendarIcon, VideoIcon } from "../ui/icons";
 import { InviteActions, JoinButton } from "../ui/meetingActions";
 import { ipc } from "../../../lib/ipc";
@@ -17,14 +21,37 @@ import { colorOf } from "../ui/eventColor";
 import { DayTimeline } from "./DayTimeline";
 import { addDays, WeekStrip } from "./WeekStrip";
 
-const STATUS_COPY: Record<Exclude<CalendarStatus, "connected">, { title: MessageKey; hint?: MessageKey }> = {
-  waiting: { title: "calendar.waiting", hint: "calendar.waitingHint" },
-  connecting: { title: "calendar.connecting" },
-  newOutlookOnly: { title: "calendar.newOutlook", hint: "calendar.newOutlookHint" },
-  elevationMismatch: { title: "calendar.elevation", hint: "calendar.elevationHint" },
-  unresponsive: { title: "calendar.unresponsive", hint: "calendar.unresponsiveHint" },
-  failed: { title: "calendar.failed", hint: "calendar.failedHint" },
+/**
+ * What the calendar says when it has no events to show because of its own state. "Waiting" and
+ * "connecting" are normal (an empty state); the others are things that are wrong (an error state,
+ * with the code for support). `retry`: a manual refresh helps (Outlook may simply have been busy).
+ */
+const STATUS_COPY: Record<Exclude<CalendarStatus, "connected">, { title: MessageKey; hint?: MessageKey; error: boolean; retry: boolean }> = {
+  waiting: { title: "calendar.waiting", hint: "calendar.waitingHint", error: false, retry: false },
+  connecting: { title: "calendar.connecting", error: false, retry: false },
+  newOutlookOnly: { title: "calendar.newOutlook", hint: "calendar.newOutlookHint", error: true, retry: false },
+  elevationMismatch: { title: "calendar.elevation", hint: "calendar.elevationHint", error: true, retry: false },
+  unresponsive: { title: "calendar.unresponsive", hint: "calendar.unresponsiveHint", error: true, retry: true },
+  failed: { title: "calendar.failed", hint: "calendar.failedHint", error: true, retry: true },
 };
+
+/** The state block for a calendar that cannot deliver events (any status but "connected"). */
+function StatusState({ status, errorCode, onRetry }: { status: Exclude<CalendarStatus, "connected">; errorCode: string | null; onRetry?: () => void }) {
+  const copy = STATUS_COPY[status];
+  const props = {
+    icon: <CalendarIcon size={STATE_ICON} />,
+    title: t(copy.title),
+    hint: copy.hint ? t(copy.hint) : undefined,
+  };
+  if (!copy.error) return <EmptyState {...props} />;
+  return (
+    <ErrorState
+      {...props}
+      code={errorCode ? t("calendar.code", { code: errorCode }) : undefined}
+      action={copy.retry && onRetry ? { label: t("island.tryAgain"), onPress: onRetry } : undefined}
+    />
+  );
+}
 
 /** Meetings already in progress that are listed next to the next one (a long "Busy" block must not hide it). */
 const MAX_IN_PROGRESS = 2;
@@ -33,6 +60,12 @@ const MAX_ALL_DAY = 3;
 const MAX_LISTED = 50;
 /** The regular sync reads now .. +48 h; a day inside that is never read again on demand. */
 const SYNC_HORIZON_MS = 48 * 3_600_000;
+
+/** Row geometry: 44 high (the hit minimum), a 4-wide colour bar inset 8 top and bottom, a fixed lead column. */
+const ROW_HEIGHT = control.hit;
+const ROW_BAR_WIDTH = 4;
+const ROW_BAR_HEIGHT = ROW_HEIGHT - 16;
+const LEAD_WIDTH = 48;
 
 export { colorOf, DEFAULT_EVENT_COLOR } from "../ui/eventColor";
 
@@ -44,14 +77,16 @@ function subjectOf(event: CalendarEventDto): string {
   return event.subject.trim() || t("calendar.noSubject");
 }
 
-function withDay(event: CalendarEventDto, nowMs: number, text: string): string {
+/** The range is an LTR run (start first, as written) even inside a Hebrew line; the day label stays in the flow. */
+function withDay(event: CalendarEventDto, nowMs: number, text: string): ReactNode {
   const day = dayLabel(new Date(event.startUtc), nowMs);
-  return day ? `${day}, ${text}` : text;
+  const range = <bdi dir="ltr">{text}</bdi>;
+  return day ? <>{day}, {range}</> : range;
 }
 
-/** The event's Outlook category color, as a thin vertical bar in front of it. */
-function ColorBar({ event }: { event: CalendarEventDto }) {
-  return <span className="w-[3px] self-stretch min-h-[16px] rounded-full flex-shrink-0" style={{ background: colorOf(event) }} aria-hidden="true" />;
+/** The event's Outlook category colour as a rounded bar (radius = half its width), at the row's leading edge. */
+function ColorBar({ event, height }: { event: CalendarEventDto; height: number }) {
+  return <span className="ci-mark flex-shrink-0 rounded-full" style={{ width: ROW_BAR_WIDTH, height, background: colorOf(event) }} aria-hidden="true" />;
 }
 
 /** A small round "join" button for rows. */
@@ -59,48 +94,50 @@ function JoinIcon({ event }: { event: CalendarEventDto }) {
   if (!event.meetingUrl) return null;
   const url = event.meetingUrl;
   return (
-    <button
-      type="button"
-      className="w-6 h-6 flex-shrink-0 rounded-full flex items-center justify-center hover:brightness-125"
-      style={{ color: SYSTEM_COLORS.green, background: `color-mix(in srgb, ${SYSTEM_COLORS.green} 18%, transparent)` }}
-      aria-label={t("calendar.joinAria", { subject: subjectOf(event) })}
-      onClick={(e) => {
-        e.stopPropagation();
-        void ipc.openMeetingUrl(url);
-      }}
+    <RoundButton
+      tint={color.positive}
+      fill="tint"
+      ariaLabel={t("calendar.joinAria", { subject: subjectOf(event) })}
+      onPress={() => void ipc.openMeetingUrl(url)}
     >
-      <VideoIcon size={13} strokeWidth={2.2} />
-    </button>
-  );
-}
-
-/** Ring / silent for the meeting in progress: silent holds notifications until it ends. */
-function SilenceToggle({ event, silenceUntil, nowMs }: { event: CalendarEventDto; silenceUntil: number | null; nowMs: number }) {
-  const silent = silenceUntil !== null && silenceUntil > nowMs;
-  const label = t(silent ? "calendar.unsilence" : "calendar.silence");
-  return (
-    <button
-      type="button"
-      className="w-7 h-7 flex-shrink-0 rounded-full flex items-center justify-center hover:bg-white/10"
-      style={{ color: silent ? SYSTEM_COLORS.red : "rgba(255,255,255,0.7)" }}
-      aria-label={label}
-      aria-pressed={silent}
-      title={label}
-      onClick={(e) => {
-        e.stopPropagation();
-        if (silent) silence.clear();
-        else silence.until(Date.parse(event.endUtc));
-      }}
-    >
-      {silent ? <BellSlashIcon size={15} /> : <BellFilledIcon size={14} />}
-    </button>
+      <VideoIcon size={icon.small} strokeWidth={2.2} />
+    </RoundButton>
   );
 }
 
 /**
- * The meeting that matters most. Two rows: caption and countdown on top; time range and subject
- * on one line under it (subject on the right, where a Hebrew subject starts anyway), then the
- * location and the join button. The left edge carries the event's category color.
+ * Ring / silent for the meeting in progress: silent holds notifications until it ends. It is an
+ * action-button column beside Join, so it carries the same states as ActionButton (the shared
+ * ActionButton has no pressed state, which a toggle needs for its aria-pressed).
+ */
+function SilenceToggle({ event, silenceUntil, nowMs }: { event: CalendarEventDto; silenceUntil: number | null; nowMs: number }) {
+  const silent = silenceUntil !== null && silenceUntil > nowMs;
+  const label = t(silent ? "calendar.unsilence" : "calendar.silence");
+  const Glyph = silent ? BellSlashIcon : BellFilledIcon;
+  return (
+    <ActionButton
+      variant={silent ? "destructive" : "neutral"}
+      icon={<Glyph size={control.iconSize} />}
+      ariaLabel={label}
+      pressed={silent}
+      title={label}
+      onPress={() => {
+        if (silent) silence.clear();
+        else silence.until(Date.parse(event.endUtc));
+      }}
+    >
+      {label}
+    </ActionButton>
+  );
+}
+
+/**
+ * The meeting that matters most, as a surface card (radius 18, padding 12). The category colour is
+ * a 4px rounded bar at the leading edge of the text block, 12 from the card's edge on every side
+ * (the card's own padding), so the bar is concentric with the card's curve; a dot would say less
+ * about duration/weight and lose the "this is an event of that calendar" reading. Caption and
+ * countdown share a row; then the subject (title, 2 lines), time, place; Join (and silence for a
+ * meeting in progress) fill the card's width 12 below.
  */
 function NextMeetingCard({ event, nowMs, silenceUntil }: { event: CalendarEventDto; nowMs: number; silenceUntil: number | null }) {
   const startMs = Date.parse(event.startUtc);
@@ -109,72 +146,63 @@ function NextMeetingCard({ event, nowMs, silenceUntil }: { event: CalendarEventD
   const countdown = ongoing
     ? t("calendar.endsIn", { rel: relativeMinutes((Date.parse(event.endUtc) - nowMs) / 60_000) })
     : relativeMinutes((startMs - nowMs) / 60_000);
-  const hasFooter = !!event.meetingUrl || !!event.location || ongoing;
+  const hasActions = !!event.meetingUrl || ongoing;
   return (
-    <section dir="ltr" className="relative overflow-hidden rounded-[22px] bg-white/[0.08] pl-5 pr-4 py-3.5 flex flex-col gap-2" aria-label={caption}>
-      <span className="absolute inset-y-0 left-0 w-[5px]" style={{ background: colorOf(event) }} aria-hidden="true" />
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em] text-white/45 truncate" dir="auto">
-          {caption}
-        </span>
-        <span className="flex-shrink-0 text-[12.5px] font-medium tabular-nums text-white/60" dir="auto">
-          {countdown}
-        </span>
-      </div>
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="flex-shrink-0 text-[13px] font-medium tabular-nums text-white/75 whitespace-nowrap">{withDay(event, nowMs, timeRange(event))}</span>
-        <h3
-          className="min-w-0 flex-1 text-right text-[18px] font-semibold leading-snug text-white line-clamp-2"
-          dir="auto"
-          style={{ unicodeBidi: "plaintext", overflowWrap: "anywhere" }}
-        >
-          {subjectOf(event)}
-        </h3>
-      </div>
-      {hasFooter && (
-        <div className="flex items-center justify-between gap-3 min-h-[28px]">
-          <span className="flex items-center gap-1.5 flex-shrink-0">
-            {event.meetingUrl && <JoinButton url={event.meetingUrl} subject={subjectOf(event)} />}
-            {ongoing && <SilenceToggle event={event} silenceUntil={silenceUntil} nowMs={nowMs} />}
-          </span>
+    <section className="ci-surface rounded-surface p-card-pad flex flex-col gap-3" aria-label={caption}>
+      <div className="flex gap-3">
+        <span className="ci-mark flex-shrink-0 self-stretch rounded-full" style={{ width: ROW_BAR_WIDTH, background: colorOf(event) }} aria-hidden="true" />
+        <div className="min-w-0 flex-1 flex flex-col">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-meta text-fg-tertiary truncate">{caption}</span>
+            <span className="flex-shrink-0 text-meta text-fg-secondary tabular-nums">{countdown}</span>
+          </div>
+          <h3 dir={textDirection(subjectOf(event))} className="bidi mt-1 text-title text-fg line-clamp-2 [overflow-wrap:anywhere]">{subjectOf(event)}</h3>
+          <span className="mt-1 text-body text-fg-secondary tabular-nums">{withDay(event, nowMs, timeRange(event))}</span>
           {event.location && (
-            <span className="min-w-0 text-right text-[12px] text-white/45 truncate" dir="auto" style={{ unicodeBidi: "plaintext" }}>
+            <span dir={textDirection(event.location)} className="bidi text-body text-fg-tertiary truncate" style={{ marginTop: alertTokens.detailGap }}>
               {event.location}
             </span>
           )}
         </div>
+      </div>
+      {hasActions && (
+        <ActionRow>
+          {event.meetingUrl && <JoinButton url={event.meetingUrl} subject={subjectOf(event)} />}
+          {ongoing && <SilenceToggle event={event} silenceUntil={silenceUntil} nowMs={nowMs} />}
+        </ActionRow>
       )}
     </section>
   );
 }
 
-/** A compact row: color bar, a fixed-width lead (time, "Now", "All day"), the subject, and join. */
+/** A compact row: colour bar, a fixed-width lead (time, "Now", "All day"), the subject, and join. */
 function EventRow({ event, lead, leadIsLabel = false, joinable = false }: { event: CalendarEventDto; lead: string; leadIsLabel?: boolean; joinable?: boolean }) {
   return (
-    <li dir="ltr" className="flex items-center gap-2.5 px-1 py-[3px] min-h-[28px]">
-      <ColorBar event={event} />
+    <li className="flex items-center gap-3 px-3" style={{ minHeight: ROW_HEIGHT }}>
+      <ColorBar event={event} height={ROW_BAR_HEIGHT} />
       <span
-        className={`w-[58px] flex-shrink-0 truncate whitespace-nowrap ${
-          leadIsLabel ? "text-[10.5px] font-semibold uppercase tracking-[0.06em] text-white/40" : "text-[12.5px] font-medium tabular-nums text-white/55"
-        }`}
-        dir="auto"
+        className={`flex-shrink-0 truncate whitespace-nowrap text-start ${leadIsLabel ? "text-micro text-fg-tertiary" : "text-meta text-fg-tertiary tabular-nums"}`}
+        style={{ width: LEAD_WIDTH }}
       >
         {lead}
       </span>
-      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-white/85" dir="auto" style={{ unicodeBidi: "plaintext" }}>
-        {subjectOf(event)}
-      </span>
+      <span dir={textDirection(subjectOf(event))} className="bidi min-w-0 flex-1 truncate text-body text-fg">{subjectOf(event)}</span>
       {joinable && <JoinIcon event={event} />}
     </li>
   );
 }
 
-function GroupLabel({ children }: { children: string }) {
+/** Rows of one list as one surface group (hairlines between them, inset like the rows). */
+function RowGroup({ children, label }: { children: ReactNode; label?: string }) {
   return (
-    <h4 className="px-1 pt-1 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-white/40" dir="auto">
+    <ul className={GROUP_CLASS} aria-label={label}>
       {children}
-    </h4>
+    </ul>
   );
+}
+
+function GroupLabel({ children }: { children: string }) {
+  return <h4 className="px-3 mb-1 text-micro text-fg-tertiary">{children}</h4>;
 }
 
 /** Later meetings grouped by day: "Later" for the rest of today, then "Tomorrow", then weekdays. */
@@ -187,15 +215,15 @@ function LaterList({ events, nowMs }: { events: CalendarEventDto[]; nowMs: numbe
     else groups.push({ day, events: [event] });
   }
   return (
-    <div className="flex flex-col gap-2" aria-label={t("calendar.later")} role="group">
+    <div className="flex flex-col gap-3" aria-label={t("calendar.later")} role="group">
       {groups.map((group) => (
-        <div key={group.day} className="flex flex-col gap-1">
+        <div key={group.day}>
           <GroupLabel>{dayLabel(new Date(group.day), nowMs) ?? t("calendar.later")}</GroupLabel>
-          <ul className="flex flex-col gap-0.5">
+          <RowGroup>
             {group.events.map((event) => (
               <EventRow key={event.id} event={event} lead={formatTime(new Date(event.startUtc))} joinable />
             ))}
-          </ul>
+          </RowGroup>
         </div>
       ))}
     </div>
@@ -206,20 +234,18 @@ function LaterList({ events, nowMs }: { events: CalendarEventDto[]; nowMs: numbe
 function InvitesSection({ invites, nowMs }: { invites: readonly MeetingInviteDto[]; nowMs: number }) {
   if (invites.length === 0) return null;
   return (
-    <section className="flex flex-col gap-1.5" aria-label={t("calendar.invites")}>
+    <section aria-label={t("calendar.invites")}>
       <GroupLabel>{t("calendar.invites")}</GroupLabel>
-      <ul className="flex flex-col gap-1.5">
+      <ul className="flex flex-col gap-2">
         {invites.map((invite) => (
-          <li key={invite.id} dir="ltr" className="rounded-[16px] bg-white/[0.06] px-3 py-2 flex flex-col gap-1.5">
-            <div className="flex items-baseline justify-between gap-3">
-              <span className="flex-shrink-0 text-[11.5px] tabular-nums text-white/50 truncate max-w-[55%]" dir="auto">
+          <li key={invite.id} className="ci-surface rounded-surface p-card-pad flex flex-col gap-3">
+            <div className="flex flex-col">
+              <span dir={textDirection(invite.subject.trim() || t("calendar.noSubject"))} className="bidi text-headline text-fg line-clamp-2 [overflow-wrap:anywhere]">{invite.subject.trim() || t("calendar.noSubject")}</span>
+              <span className="bidi text-meta text-fg-secondary truncate" style={{ marginTop: alertTokens.detailGap }}>
                 {inviteBody(invite, nowMs)}
               </span>
-              <span className="min-w-0 flex-1 text-right text-[13.5px] font-semibold text-white truncate" dir="auto" style={{ unicodeBidi: "plaintext" }}>
-                {invite.subject.trim() || t("calendar.noSubject")}
-              </span>
             </div>
-            <InviteActions inviteId={invite.id} height={26} />
+            <InviteActions inviteId={invite.id} />
           </li>
         ))}
       </ul>
@@ -229,12 +255,10 @@ function InvitesSection({ invites, nowMs }: { invites: readonly MeetingInviteDto
 
 function StatusLine({ status, errorCode }: { status: Exclude<CalendarStatus, "connected">; errorCode: string | null }) {
   return (
-    <div dir="ltr" className="flex items-center gap-2 px-1 text-[11.5px] text-white/50">
-      <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{ background: SYSTEM_COLORS.orange }} aria-hidden="true" />
-      <span className="truncate" dir="auto">
-        {t(STATUS_COPY[status].title)}
-      </span>
-      {errorCode && status !== "waiting" && <span className="ml-auto tabular-nums text-white/35">{errorCode}</span>}
+    <div className="flex items-center justify-center gap-2 text-meta text-fg-secondary">
+      <span className="ci-mark rounded-full flex-shrink-0" style={{ width: compact.statusDot, height: compact.statusDot, background: color.warning }} aria-hidden="true" />
+      <span className="bidi !text-center truncate">{t(STATUS_COPY[status].title)}</span>
+      {errorCode && status !== "waiting" && <span className="tabular-nums text-fg-tertiary">{errorCode}</span>}
     </div>
   );
 }
@@ -246,10 +270,12 @@ interface CalendarViewProps {
   answeredInvites?: ReadonlySet<string>;
   /** End of the current "silent" (null = ringing), for the toggle on a meeting in progress. */
   silenceUntil?: number | null;
+  /** Asks the calendar to read Outlook again (the retry of an error state). */
+  onRetry?: () => void;
 }
 
 /** Pure rendering of today from a calendar snapshot — the tab wires it to live data. Every upcoming meeting is listed; the panel scrolls. */
-export function CalendarView({ snapshot, nowMs, answeredInvites, silenceUntil = null }: CalendarViewProps) {
+export function CalendarView({ snapshot, nowMs, answeredInvites, silenceUntil = null, onRetry }: CalendarViewProps) {
   const meetings = selectUpcoming(snapshot.events, nowMs, MAX_LISTED);
   const started = meetings.filter((m) => Date.parse(m.startUtc) <= nowMs);
   const future = meetings.filter((m) => Date.parse(m.startUtc) > nowMs);
@@ -261,48 +287,39 @@ export function CalendarView({ snapshot, nowMs, answeredInvites, silenceUntil = 
   const invites = snapshot.invites.filter((invite) => !answeredInvites?.has(invite.id));
   const degraded = snapshot.status !== "connected";
   const allDayList = allDay.length > 0 && (
-    <ul className="flex flex-col gap-0.5" aria-label={t("calendar.allDay")}>
+    <RowGroup label={t("calendar.allDay")}>
       {allDay.map((event) => (
         <EventRow key={event.id} event={event} lead={t("calendar.allDay")} leadIsLabel />
       ))}
-    </ul>
+    </RowGroup>
   );
   const invitesSection = <InvitesSection invites={invites} nowMs={nowMs} />;
 
   if (!next) {
-    const copy = degraded ? STATUS_COPY[snapshot.status as Exclude<CalendarStatus, "connected">] : null;
     return (
-      <div dir="ltr" className="flex-1 flex flex-col gap-3">
+      <div className="flex-1 flex flex-col gap-2">
         {invitesSection}
         {allDayList}
-        <div className="flex-1 flex flex-col items-center justify-center">
-          <EmptyState
-            icon={<CalendarIcon size={22} />}
-            title={t(copy ? copy.title : "calendar.noEvents")}
-            subtitle={copy ? (copy.hint ? t(copy.hint) : undefined) : t("calendar.noEventsHint")}
-          >
-            {degraded && snapshot.errorCode && snapshot.status !== "waiting" && (
-              <span dir="auto" className="mt-1 text-[11px] tabular-nums text-white/35" style={{ unicodeBidi: "plaintext" }}>
-                {t("calendar.code", { code: snapshot.errorCode })}
-              </span>
-            )}
-          </EmptyState>
-        </div>
+        {degraded ? (
+          <StatusState status={snapshot.status as Exclude<CalendarStatus, "connected">} errorCode={snapshot.errorCode} onRetry={onRetry} />
+        ) : (
+          <EmptyState icon={<CalendarIcon size={STATE_ICON} />} title={t("calendar.noEvents")} hint={t("calendar.noEventsHint")} />
+        )}
       </div>
     );
   }
 
   return (
-    <div dir="ltr" className="flex flex-col gap-3">
+    <div className="flex flex-col gap-2">
       {snapshot.status !== "connected" && <StatusLine status={snapshot.status} errorCode={snapshot.errorCode} />}
       {invitesSection}
       {allDayList}
       {inProgress.length > 0 && (
-        <ul className="flex flex-col gap-0.5" aria-label={t("calendar.now")}>
+        <RowGroup label={t("calendar.now")}>
           {inProgress.map((event) => (
             <EventRow key={event.id} event={event} lead={t("calendar.now")} leadIsLabel joinable />
           ))}
-        </ul>
+        </RowGroup>
       )}
       <NextMeetingCard event={next} nowMs={nowMs} silenceUntil={silenceUntil} />
       {later.length > 0 && <LaterList events={later} nowMs={nowMs} />}
@@ -315,46 +332,48 @@ interface DayViewProps {
   /** The day's events when known, and how it is being read. */
   day: DayState | undefined;
   status: CalendarStatus;
+  /** Reads the day again (the retry of its error state). */
+  onRetry?: () => void;
 }
 
 /** Any day but today: its meetings in order, all-day ones first. Pure. */
-export function DayView({ nowMs, day, status }: DayViewProps) {
+export function DayView({ nowMs, day, status, onRetry }: DayViewProps) {
   const events = day?.events ?? null;
   if (!events) {
-    const failed = day?.state === "error";
+    // Not read yet: calm, no error. Read and failed: the calendar's own state when Outlook is the
+    // problem, else the failure of this one day, with a retry.
+    if (day?.state !== "error") return <EmptyState icon={<CalendarIcon size={STATE_ICON} />} title={t("calendar.loading")} />;
+    if (status !== "connected") return <StatusState status={status} errorCode={null} onRetry={onRetry} />;
     return (
-      <div dir="ltr" className="flex-1 flex flex-col items-center justify-center py-6">
-        <EmptyState
-          icon={<CalendarIcon size={22} />}
-          title={failed ? t(status === "connected" ? "calendar.dayFailed" : STATUS_COPY[status as Exclude<CalendarStatus, "connected">].title) : t("calendar.loading")}
-        />
-      </div>
+      <ErrorState
+        icon={<CalendarIcon size={STATE_ICON} />}
+        title={t("calendar.dayFailed")}
+        action={onRetry ? { label: t("island.tryAgain"), onPress: onRetry } : undefined}
+      />
     );
   }
   const shown = events.filter((e) => e.allDay || isRealMeeting(e) || e.busyStatus === "free");
   const allDay = shown.filter((e) => e.allDay && e.responseStatus !== "declined");
   const timed = shown.filter((e) => !e.allDay);
   if (allDay.length + timed.length === 0) {
-    return (
-      <div dir="ltr" className="flex-1 flex flex-col items-center justify-center py-6">
-        <EmptyState icon={<CalendarIcon size={22} />} title={t("calendar.dayEmpty")} />
-      </div>
-    );
+    return <EmptyState icon={<CalendarIcon size={STATE_ICON} />} title={t("calendar.dayEmpty")} />;
   }
   return (
-    <div dir="ltr" className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       {allDay.length > 0 && (
-        <ul className="flex flex-col gap-0.5" aria-label={t("calendar.allDay")}>
+        <RowGroup label={t("calendar.allDay")}>
           {allDay.map((event) => (
             <EventRow key={event.id} event={event} lead={t("calendar.allDay")} leadIsLabel />
           ))}
-        </ul>
+        </RowGroup>
       )}
-      <ul className="flex flex-col gap-0.5">
-        {timed.map((event) => (
-          <EventRow key={event.id} event={event} lead={formatTime(new Date(event.startUtc))} joinable={Date.parse(event.endUtc) > nowMs} />
-        ))}
-      </ul>
+      {timed.length > 0 && (
+        <RowGroup>
+          {timed.map((event) => (
+            <EventRow key={event.id} event={event} lead={formatTime(new Date(event.startUtc))} joinable={Date.parse(event.endUtc) > nowMs} />
+          ))}
+        </RowGroup>
+      )}
     </div>
   );
 }
@@ -387,13 +406,13 @@ export function CalendarTab() {
   }, [snapshot.events, day]);
 
   return (
-    <div dir="ltr" className="flex flex-col gap-2.5">
+    <div className="flex flex-col gap-2 flex-1">
       <WeekStrip selected={selected} today={today} busyDays={busyDays} onSelect={(d) => setPicked(d === today ? null : d)} />
       <DayTimeline events={dayEvents.filter((e) => isRealMeeting(e) || e.busyStatus === "free")} dayStartMs={selected} nowMs={nowMs} colorOf={colorOf} />
       {isToday ? (
-        <CalendarView snapshot={snapshot} nowMs={nowMs} answeredInvites={answered} silenceUntil={silenceUntil} />
+        <CalendarView snapshot={snapshot} nowMs={nowMs} answeredInvites={answered} silenceUntil={silenceUntil} onRetry={() => void ipc.calendarRefresh()} />
       ) : (
-        <DayView nowMs={nowMs} day={dayState} status={snapshot.status} />
+        <DayView nowMs={nowMs} day={dayState} status={snapshot.status} onRetry={() => dayCache.load(selected)} />
       )}
     </div>
   );

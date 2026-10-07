@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ipc, onEvent } from "../lib/ipc";
 import { isTabId, type TabId } from "../components/Pill/tabs";
+import { parseIslandLimits, type IslandLimits } from "../lib/island/limits";
 
 interface IslandEventHandlers {
   /**
@@ -9,8 +10,11 @@ interface IslandEventHandlers {
    */
   onToggle?: (tab?: TabId, show?: boolean) => void;
   onFullscreenChanged?: (fullscreen: boolean) => void;
-  /** Monitor layout or DPI changed: the native window must be re-sized and re-centred. */
-  onDisplayChanged?: () => void;
+  /**
+   * Monitor layout or DPI changed: the native window must be re-sized and re-centred. `limits` is
+   * the new target monitor's size limit from the event's payload (null from an older backend).
+   */
+  onDisplayChanged?: (limits: IslandLimits | null) => void;
   /** Another app's window became active (e.g. the user clicked the desktop, the taskbar or an app). */
   onForegroundChanged?: () => void;
 }
@@ -58,7 +62,7 @@ export function useIslandEvents(handlers: IslandEventHandlers): void {
       });
     }
     if (wantsDisplay) {
-      offs.push(onEvent<unknown>("display-changed", () => ref.current.onDisplayChanged?.()));
+      offs.push(onEvent<unknown>("display-changed", (payload) => ref.current.onDisplayChanged?.(parseIslandLimits(payload))));
     }
     if (wantsForeground) {
       offs.push(onEvent<unknown>("foreground-changed", () => ref.current.onForegroundChanged?.()));
