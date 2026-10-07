@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IslandGeometry } from "../ipc";
-import { springConfig } from "../../components/Pill/animations";
+import { islandSprings } from "../../components/Pill/animations";
 import { createGeometryQueue, FIT_SLACK_PX, islandFits } from "./geometryQueue";
+import { createIslandMotion } from "./islandMotion";
 
 const size = (width: number, height: number): IslandGeometry => ({ width, height });
 
@@ -122,7 +123,7 @@ describe("geometry queue", () => {
 
     h.queue.request(size(130, 40));
     expect(h.sent).toHaveLength(1);
-    h.advance(449);
+    h.advance(699);
     expect(h.sent).toHaveLength(1);
     h.advance(2);
     expect(h.sent).toHaveLength(2);
@@ -177,23 +178,29 @@ describe("islandFits", () => {
     expect(islandFits({ width: 404, height: 420 }, size(200, 34))).toBe(false);
   });
 
-  it("is satisfied well before the shrink deadline when the real island spring collapses", () => {
-    // Semi-implicit Euler of the island spring (animations.ts: stiffness 420, damping 32, mass 0.95).
-    const { stiffness, damping, mass } = springConfig.island;
-    const target = size(200, 34);
-    const state = { width: 404, height: 420, vw: 0, vh: 0 };
-    const dt = 1;
+  it("is satisfied well before the shrink deadline when the real island motion collapses", () => {
+    // The island's own engine and springs (animations.ts islandSprings), at 60 Hz.
+    const target = { width: 200, height: 34, radius: 17 };
+    let now = 0;
+    let queued: ((t: number) => void)[] = [];
     let fitsAtMs = -1;
-    for (let ms = 0; ms < 1000 && fitsAtMs < 0; ms += dt) {
-      for (const axis of ["width", "height"] as const) {
-        const v = axis === "width" ? "vw" : "vh";
-        const force = -stiffness * (state[axis] - target[axis]) - damping * state[v];
-        state[v] += (force / mass) * (dt / 1000);
-        state[axis] += state[v] * (dt / 1000);
-      }
-      if (islandFits(state, target)) fitsAtMs = ms;
+    const motion = createIslandMotion({
+      initial: { width: 404, height: 420, radius: 40 },
+      bounds: { minWidth: 8, minHeight: 8, maxWidth: 404, maxHeight: 420 },
+      springs: islandSprings,
+      scheduler: { now: () => now, request: (cb) => queued.push(cb), cancel: () => {} },
+      onFrame: (f) => {
+        if (fitsAtMs < 0 && islandFits(f, size(200, 34))) fitsAtMs = f.time;
+      },
+    });
+    motion.setTarget(target);
+    for (let i = 0; i < 120 && queued.length > 0; i++) {
+      now += 1000 / 60;
+      const run = queued;
+      queued = [];
+      run.forEach((cb) => cb(now));
     }
     expect(fitsAtMs).toBeGreaterThan(0);
-    expect(fitsAtMs).toBeLessThan(300);
+    expect(fitsAtMs).toBeLessThan(500); // the deadline (700 ms) is never what shrinks the region
   });
 });

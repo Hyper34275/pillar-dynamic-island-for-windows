@@ -12,6 +12,11 @@ export interface Transition {
   readonly from: readonly number[];
   /** Driver values it is heading to. */
   readonly to: readonly number[];
+  /**
+   * Which way content travels, when it is not the way the drivers go (the tab content's
+   * progress only ever counts forwards; the direction is the tab change's).
+   */
+  readonly direction?: -1 | 0 | 1;
 }
 
 const clamp01 = (n: number) => (n < 0 ? 0 : n > 1 ? 1 : n);
@@ -39,6 +44,7 @@ export function transitionProgress(transition: Transition, current: readonly num
 
 /** Which way the driver travels: +1, -1, or 0 for a transition that goes nowhere. */
 export function transitionDirection(transition: Transition): -1 | 0 | 1 {
+  if (transition.direction !== undefined) return transition.direction;
   let sum = 0;
   for (let i = 0; i < transition.to.length; i++) sum += transition.to[i] - transition.from[i];
   return sum > 0 ? 1 : sum < 0 ? -1 : 0;

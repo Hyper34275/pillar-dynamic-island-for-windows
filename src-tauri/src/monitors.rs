@@ -165,6 +165,22 @@ pub fn island_bounds(monitor: Bounds, dpi: u32, width: f64, height: f64) -> Boun
     Bounds { left: x, top: y, right: x + w, bottom: y + h }
 }
 
+/// The island's rectangle inside its stage window (window-relative physical px): horizontally
+/// centred and flush with the top, exactly where the page lays the island out. It is widened by
+/// one pixel on each side (and below) so the island's antialiased edge is never cut by the
+/// rounding of the centre, and it never leaves the window.
+pub fn island_region(window_width: i32, window_height: i32, dpi: u32, width: f64, height: f64) -> Bounds {
+    let w = to_physical(width, dpi).clamp(1, window_width.max(1));
+    let h = to_physical(height, dpi).clamp(1, window_height.max(1));
+    let left = (window_width - w) / 2;
+    Bounds {
+        left: (left - 1).max(0),
+        top: 0,
+        right: (left + w + 1).min(window_width),
+        bottom: (h + 1).min(window_height),
+    }
+}
+
 /// Corner radius in physical px for the window region, or 0 for "no region".
 pub fn region_radius(radius: f64, dpi: u32, width_px: i32, height_px: i32) -> i32 {
     let max = (width_px.min(height_px) / 2).max(0);
@@ -222,6 +238,30 @@ mod tests {
             let r = island_bounds(FHD, dpi, 404.0, 420.0);
             assert!(FHD.contains(&r));
         }
+    }
+
+    #[test]
+    fn island_region_is_centred_in_the_stage_at_every_scale() {
+        for dpi in [96, 120, 144, 168, 192] {
+            let stage = island_bounds(FHD, dpi, 404.0, 420.0);
+            for (w, h) in [(142.0, 34.0), (404.0, 420.0), (380.0, 131.0), (200.0, 48.0)] {
+                let r = island_region(stage.width(), stage.height(), dpi, w, h);
+                let island_px = to_physical(w, dpi);
+                // covers the island, with at most a pixel of slack on each side
+                assert!(r.width() >= island_px && r.width() <= island_px + 2, "dpi {dpi} {w}x{h}: {r:?}");
+                // centred: both margins differ by at most one pixel
+                let (left, right) = (r.left, stage.width() - r.right);
+                assert!((left - right).abs() <= 1, "dpi {dpi} {w}x{h}: {left} vs {right}");
+                assert_eq!(r.top, 0);
+                assert!(r.bottom <= stage.height());
+            }
+        }
+    }
+
+    #[test]
+    fn island_region_never_leaves_the_window() {
+        let r = island_region(200, 44, 96, 500.0, 500.0);
+        assert_eq!(r, Bounds { left: 0, top: 0, right: 200, bottom: 44 });
     }
 
     #[test]

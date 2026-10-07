@@ -5,15 +5,19 @@ import { TABS, type TabId } from "./tabs";
 
 interface TabDockProps {
   active: TabId;
-  /** Position of the selection highlight, in tabs (0 = first). It drives the tab transition. */
+  /**
+   * Position of the selection capsule, in tabs (0 = first): a spring that starts towards the
+   * chosen tab on the frame after the click and stops at it without swinging past.
+   */
   indicator: MotionValue<number>;
   onSelect: (id: TabId) => void;
 }
 
 /** Bottom tab strip. Roving tabindex per the WAI-ARIA tabs pattern; arrows/Home/End live in PillShell. */
 export function TabDock({ active, indicator, onSelect }: TabDockProps) {
-  // One highlight that slides between the tabs (a transform: no layout, no measuring). Each
-  // slot is exactly 1/TABS.length of the strip, so a percentage of its own width is a slot.
+  // One capsule, one identity: the same element slides between the tabs (a transform: no
+  // layout, no measuring); there is never a second highlight to cross-fade with. Each slot is
+  // exactly 1/TABS.length of the strip, so a percentage of its own width is a slot.
   const x = useTransform(indicator, (position) => `${position * 100}%`);
   return (
     <div

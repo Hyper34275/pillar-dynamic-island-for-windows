@@ -4,13 +4,19 @@
 //! it and `WS_EX_TOOLWINDOW` removes it from Alt+Tab. This app's own code never calls
 //! `SetForegroundWindow` or `set_focus`. (The single-instance plugin makes the second process
 //! call `AllowSetForegroundWindow` for the first one; the first instance never uses that right.)
-//! The only `AllowSetForegroundWindow` of its own is `outlook::open_calendar`: after a click
-//! on a meeting invitation it lets the user's own Outlook come forward, for that one click.
+//! This app's own `AllowSetForegroundWindow` calls are two: `outlook::open_calendar`, after a
+//! click on a meeting invitation, lets the user's own Outlook come forward for that one click;
+//! `center::open`, after a click on an island button or the tray item (or on the first run),
+//! lets the Island Center process come forward, naming only that process's pid (never
+//! `ASFW_ANY`). The island window itself still never takes focus.
 //!
-//! There is no global mouse hook. Instead the native window is sized *exactly* to
-//! the island (the frontend sends logical px), so no large transparent area exists
-//! that could eat clicks, and a rounded window region keeps the transparent corners
-//! from catching clicks as well.
+//! There is no global mouse hook. The native window is a fixed *stage*, as large as the
+//! largest island (the frontend sends logical px), placed once and never resized or moved
+//! while the island animates: resizing a WebView2 window shows its previous frame at the new
+//! size for a frame or two (measured: the closing island flashed as a ~12 px sliver) and
+//! stalls its frame pipeline (~110 ms). Only the window *region* follows the island: a rounded
+//! rectangle around the island's resting shape, so the transparent rest of the stage is not
+//! part of the window at all and every click there reaches the windows below.
 
 use crate::{fullscreen, monitors, settings::SettingsStore};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -18,7 +24,7 @@ use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, Window, WindowEvent};
 use windows::core::w;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ, HRGN};
+use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, KillTimer, RegisterWindowMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
@@ -31,7 +37,7 @@ pub const MAIN: &str = "main";
 
 /// Size the window starts with (mirrors `tauri.conf.json`); the frontend replaces it
 /// with its own geometry as soon as it boots.
-const INITIAL: Geometry = Geometry { width: 200.0, height: 44.0, radius: 22.0 };
+const INITIAL: Geometry = Geometry { width: 200.0, height: 44.0, radius: 22.0, stage_width: 200.0, stage_height: 44.0 };
 
 /// `wParam` of `WM_POWERBROADCAST` when the system resumed without user input.
 const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
@@ -44,17 +50,22 @@ const DELAY_DPI_MS: u32 = 30;
 const DELAY_DISPLAY_MS: u32 = 250;
 const DELAY_SLOW_MS: u32 = 1500;
 
-/// The island's last requested size in logical px.
+/// The island's last requested resting shape (the region) and the stage window around it,
+/// in logical px.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Geometry {
     width: f64,
     height: f64,
     radius: f64,
+    stage_width: f64,
+    stage_height: f64,
 }
 
 static GEOMETRY: Mutex<Geometry> = Mutex::new(INITIAL);
-/// (width, height, region radius) in physical px of the region currently applied.
-static APPLIED_REGION: Mutex<Option<(i32, i32, i32)>> = Mutex::new(None);
+/// (left, width, height, region radius) in physical px of the region currently applied.
+static APPLIED_REGION: Mutex<Option<(i32, i32, i32, i32)>> = Mutex::new(None);
+/// Window rectangle (physical px) last applied, so an unchanged stage is never moved again.
+static APPLIED_RECT: Mutex<Option<monitors::Bounds>> = Mutex::new(None);
 static APP: OnceLock<AppHandle> = OnceLock::new();
 /// Registered "TaskbarCreated" message (explorer restarted); 0 until `init`.
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
@@ -133,33 +144,33 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Apply a rounded window region so the transparent corners do not catch clicks.
-fn apply_region(hwnd: HWND, width: i32, height: i32, radius: i32) {
-    let key = Some((width, height, radius));
+/// Apply the rounded window region around the island (window-relative physical px), so the
+/// transparent rest of the stage does not catch clicks.
+fn apply_region(hwnd: HWND, region: monitors::Bounds, radius: i32) {
+    let key = Some((region.left, region.width(), region.height(), radius));
     let mut applied = lock(&APPLIED_REGION);
     if *applied == key {
         return;
     }
     unsafe {
-        if radius > 0 {
-            // CreateRoundRectRgn excludes the right/bottom edge, hence +1.
-            let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
-            // On success the system owns the region; on failure it is ours to free.
-            if SetWindowRgn(hwnd, region, true) == 0 {
-                let _ = DeleteObject(HGDIOBJ(region.0));
-                dlog!("WARN", "window", "WIN-501: SetWindowRgn failed");
-                return;
-            }
-        } else {
-            SetWindowRgn(hwnd, HRGN::default(), true);
+        // CreateRoundRectRgn excludes the right/bottom edge, hence +1. A zero radius is a
+        // plain rectangle (still a region: the stage around it must stay click-through).
+        let diameter = radius * 2;
+        let rgn = CreateRoundRectRgn(region.left, region.top, region.right + 1, region.bottom + 1, diameter, diameter);
+        // On success the system owns the region; on failure it is ours to free.
+        if SetWindowRgn(hwnd, rgn, true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(rgn.0));
+            dlog!("WARN", "window", "WIN-501: SetWindowRgn failed");
+            return;
         }
     }
     *applied = key;
 }
 
-/// Place the island for the last requested geometry on the target monitor: one atomic
-/// SetWindowPos (position, size and topmost together) so no frame ever shows the new
-/// size at the old position, then the click region.
+/// Place the stage on the target monitor and cut its region to the island. The stage is
+/// moved or resized only when it actually changes (boot, display or DPI change, monitor
+/// setting): never during an island transition. When it does, it is one atomic SetWindowPos
+/// (position, size and topmost together). Otherwise only topmost is re-asserted.
 fn place(app: &AppHandle) -> Result<(), String> {
     let window = main_window(app).ok_or_else(|| "WIN-501: main window is missing".to_string())?;
     let hwnd = hwnd_of(&window)?;
@@ -168,24 +179,30 @@ fn place(app: &AppHandle) -> Result<(), String> {
     let monitors = monitors::list();
     let target = monitors::pick(&setting, &monitors).ok_or_else(|| "WIN-503: no monitors found".to_string())?;
 
-    let rect = monitors::island_bounds(target.bounds, target.dpi, geometry.width, geometry.height);
-    unsafe {
-        SetWindowPos(
-            hwnd,
-            HWND_TOPMOST,
-            rect.left,
-            rect.top,
-            rect.width(),
-            rect.height(),
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER,
-        )
+    // An island larger than the stage (a size the frontend did not announce) still fits.
+    let stage_width = geometry.stage_width.max(geometry.width);
+    let stage_height = geometry.stage_height.max(geometry.height);
+    let rect = monitors::island_bounds(target.bounds, target.dpi, stage_width, stage_height);
+    let mut applied_rect = lock(&APPLIED_RECT);
+    let moved = *applied_rect != Some(rect);
+    let flags = if moved {
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER
+    } else {
+        SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOMOVE | SWP_NOSIZE
+    };
+    unsafe { SetWindowPos(hwnd, HWND_TOPMOST, rect.left, rect.top, rect.width(), rect.height(), flags) }
+        .map_err(|e| format!("WIN-501: placing the island failed: {e}"))?;
+    if moved {
+        dlog!("INFO", "window", "stage {}x{} at {},{}", rect.width(), rect.height(), rect.left, rect.top);
+        *applied_rect = Some(rect);
     }
-    .map_err(|e| format!("WIN-501: placing the island failed: {e}"))?;
+    drop(applied_rect);
+
+    let region = monitors::island_region(rect.width(), rect.height(), target.dpi, geometry.width, geometry.height);
     apply_region(
         hwnd,
-        rect.width(),
-        rect.height(),
-        monitors::region_radius(geometry.radius, target.dpi, rect.width(), rect.height()),
+        region,
+        monitors::region_radius(geometry.radius, target.dpi, region.width(), region.height()),
     );
     Ok(())
 }
@@ -200,6 +217,7 @@ fn reflow(app: &AppHandle) {
         }
     }
     *lock(&APPLIED_REGION) = None;
+    *lock(&APPLIED_RECT) = None;
     if let Err(e) = place(app) {
         dlog!("WARN", "window", "{}", e);
     }
@@ -333,17 +351,33 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
     }
 }
 
-/// Resize the island (logical px) and keep it top-centered on the target monitor in
-/// one SetWindowPos. `radius` (logical px, default a full pill) shapes the click
-/// region; the frontend's `animate` flag is a CSS concern and ignored. Runs on the
-/// main thread (sync command), like every other window mutation.
+/// The island's resting shape (logical px): `width` x `height` with corner `radius`
+/// (default a full pill) becomes the window region, centred at the top of the stage.
+/// `stage_width` x `stage_height` is the fixed window around every island shape; it only
+/// moves the window when it changes (older frontends without it get a stage exactly the
+/// island's size, the previous behaviour). Runs on the main thread (sync command), like
+/// every other window mutation.
 #[tauri::command]
-pub fn set_island_geometry(app: AppHandle, width: f64, height: f64, radius: Option<f64>) -> Result<(), String> {
+pub fn set_island_geometry(
+    app: AppHandle,
+    width: f64,
+    height: f64,
+    radius: Option<f64>,
+    stage_width: Option<f64>,
+    stage_height: Option<f64>,
+) -> Result<(), String> {
     if !(width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite()) {
         return Err("WIN-501: invalid island dimensions".to_string());
     }
     let radius = radius.filter(|r| r.is_finite() && *r >= 0.0).unwrap_or(height / 2.0);
-    *lock(&GEOMETRY) = Geometry { width, height, radius };
+    let stage = |v: Option<f64>, min: f64| v.filter(|s| s.is_finite() && *s > 0.0).map_or(min, |s| s.max(min));
+    *lock(&GEOMETRY) = Geometry {
+        width,
+        height,
+        radius,
+        stage_width: stage(stage_width, width),
+        stage_height: stage(stage_height, height),
+    };
     place(&app)
 }
 

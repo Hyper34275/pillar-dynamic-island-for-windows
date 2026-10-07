@@ -1,13 +1,15 @@
-import { AnimatePresence, motion, useSpring } from "motion/react";
-import { useEffect, useMemo, type ReactNode } from "react";
+import { AnimatePresence, motion } from "motion/react";
+import { useMemo, useState, type ReactNode } from "react";
 import { APP_NAME } from "../../lib/appInfo";
 import { t } from "../../lib/i18n";
 import type { NotificationStatus } from "../../lib/ipc";
-import { expandedSize, layerFade, springConfig, TAB_SHIFT_PX } from "./animations";
+import { expandedSize, layerFade, partFade, TAB_SHIFT_PX, tabSprings } from "./animations";
 import { TransitionContext, useDrivenTransition, useTransitionLayer } from "./drivenTransition";
-import { IslandLayer } from "./IslandLayer";
+import { IslandLayer, IslandPart } from "./IslandLayer";
+import { useSpringValue } from "./useIslandMotion";
 import { AboutTab } from "./panels/AboutTab";
 import { CalendarTab } from "./panels/CalendarTab";
+import { NotesTab } from "./panels/NotesTab";
 import { NotificationsTab } from "./panels/NotificationsTab";
 import { SettingsTab } from "./panels/SettingsTab";
 import { TabBoundary } from "./TabBoundary";
@@ -28,6 +30,8 @@ function renderPanel(tab: TabId, props: Pick<ExpandedIslandProps, "notificationS
       return <CalendarTab />;
     case "notifications":
       return <NotificationsTab />;
+    case "notes":
+      return <NotesTab />;
     case "about":
       return <AboutTab />;
     case "settings":
@@ -74,24 +78,45 @@ function TabPanel({ tab, slide, children }: { tab: TabId; slide: boolean; childr
   );
 }
 
+/**
+ * Where the tab content's progress spring is heading: one step further every time the tab
+ * changes, and which way the change went (the content shifts towards where its tab is). The
+ * progress only ever counts forwards: it is the cross-fade's clock, not a physical object, so a
+ * change caught mid-way never has to undo momentum first (that held a half-faded pair of
+ * panels on screen when clicks changed direction); what is on screen continues from where it
+ * is regardless. The capsule, which is a physical object, keeps its own momentum.
+ */
+function useTabSteps(activeTab: TabId, activeIndex: number): { target: number; direction: -1 | 1 } {
+  const [steps, setSteps] = useState({ tab: activeTab, index: activeIndex, target: 0, direction: 1 as -1 | 1 });
+  if (steps.tab === activeTab) return steps;
+  const next = { tab: activeTab, index: activeIndex, target: steps.target + 1, direction: (activeIndex < steps.index ? -1 : 1) as -1 | 1 };
+  setSteps(next);
+  return next;
+}
+
 export function ExpandedIsland({ activeTab, reducedMotion, notificationStatus, onRequestNotificationAccess, onSelectTab }: ExpandedIslandProps) {
   const config = TABS.find((tab) => tab.id === activeTab) ?? TABS[0];
   const activeIndex = TABS.indexOf(config);
 
-  // A tab change is one transition driven by the dock indicator: it starts moving in the frame
-  // the tab is chosen, and the outgoing/incoming title and panel fade by how far it has
-  // travelled. Indicator and content can't disagree about which tab is shown.
-  const indicator = useSpring(activeIndex, springConfig.tab);
-  useEffect(() => {
-    indicator.set(activeIndex);
-  }, [activeIndex, indicator]);
-  const drivers = useMemo(() => [indicator], [indicator]);
-  const tabTransition = useDrivenTransition(drivers, [activeIndex], activeTab);
+  // A tab change is one event with two springs started in the same frame: the capsule (one
+  // shared highlight, which moves from the old tab to the new one and is the immediate
+  // acknowledgement) and the content's progress, which the outgoing and incoming title and
+  // panel fade by. The capsule is the faster of the two, so the new content is never ahead of
+  // the selection, and the cross-fade takes as long whether the capsule travels one tab or four.
+  // Both retarget from where they are, so rapid clicks bend the motion instead of queueing it.
+  const capsule = useSpringValue(activeIndex, tabSprings.capsule, { noOvershoot: true });
+  const steps = useTabSteps(activeTab, activeIndex);
+  const progress = useSpringValue(steps.target, tabSprings.content);
+  const drivers = useMemo(() => [progress], [progress]);
+  const tabTransition = useDrivenTransition(drivers, [steps.target], activeTab, steps.direction);
 
+  // The parts travel with the island's edges as it opens and closes (IslandPart): the header
+  // with the top-left corner, the body in the middle, the dock with the bottom edge.
   return (
     <IslandLayer
       name="expanded"
       fade={layerFade.expanded}
+      parts
       size={expandedSize()}
       dir="ltr"
       className="island-expanded flex flex-col pt-4 pb-2 px-4 cursor-default text-white"
@@ -101,23 +126,25 @@ export function ExpandedIsland({ activeTab, reducedMotion, notificationStatus, o
       onPointerDown={(e) => e.stopPropagation()}
     >
       <TransitionContext.Provider value={tabTransition}>
-        <div className="flex items-end justify-between mb-3 px-1 flex-shrink-0">
+        <IslandPart anchor="top-start" fade={partFade.header} className="flex items-end justify-between mb-3 px-1 flex-shrink-0">
           <div className="grid justify-items-start">
             <AnimatePresence>
               <TabTitle key={config.id}>{t(config.labelKey)}</TabTitle>
             </AnimatePresence>
           </div>
-        </div>
+        </IslandPart>
 
-        <div className="flex-1 min-h-0 overflow-hidden w-full relative">
+        <IslandPart anchor="center" fade={partFade.body} className="flex-1 min-h-0 overflow-hidden w-full relative">
           <AnimatePresence>
             <TabPanel key={activeTab} tab={activeTab} slide={!reducedMotion}>
               {renderPanel(activeTab, { notificationStatus, onRequestNotificationAccess })}
             </TabPanel>
           </AnimatePresence>
-        </div>
+        </IslandPart>
 
-        <TabDock active={activeTab} indicator={indicator} onSelect={onSelectTab} />
+        <IslandPart anchor="bottom" fade={partFade.dock} className="flex-shrink-0">
+          <TabDock active={activeTab} indicator={capsule} onSelect={onSelectTab} />
+        </IslandPart>
       </TransitionContext.Provider>
     </IslandLayer>
   );

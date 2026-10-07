@@ -1,52 +1,89 @@
 // Motion + geometry tokens for the island: the one place its timing is decided.
 //
-// Two springs drive everything that moves: the island's size (open, close, alerts, toasts) and
-// the tab dock indicator (tab changes). Content has no clock of its own; it fades by how far its
-// driver has travelled, on the windows in `layerFade` (see lib/island/morph.ts). All springs
-// settle on their own (motion stops the frame loop at rest), and nothing here animates forever.
+// Three springs drive everything that moves, all solved in closed form every frame of motion's
+// frame loop (lib/island/spring.ts, useIslandMotion.ts): the island's shape (open, close,
+// alerts, toasts: islandSprings), the tab capsule and the tab content's progress (tabSprings).
+// Each retargets from its current position and velocity, so any interruption bends the motion
+// instead of restarting it. Content has no clock of its own: it fades by how far its driver has
+// travelled, on the windows in `layerFade` / `partFade` (lib/island/morph.ts). Every spring
+// settles on its own and stops its frame loop; nothing here animates forever, and no timer or
+// delay takes part in any of it.
 //
 // REDUCED_MOTION (OS "show animations" off): like motion's own reducedMotion="user" policy,
-// movement that only decorates (the tab content slide, the press scale, the launch pop) is
-// dropped, while the island's change of size and the cross-fades stay, since they are how the
-// island shows what it turned into. Correctness never depends on any of it: jumping the drivers
-// (MotionValue.jump) completes every transition in one frame.
+// movement that only decorates (the tab content's sideways shift, the press scale, the launch
+// pop) is dropped, while the island's change of shape and the cross-fades stay, since they are
+// how the island shows what it turned into. Correctness never depends on any of it.
 
 import type { Fade } from "../../lib/island/morph";
+import type { SpringParams } from "../../lib/island/spring";
 
 export const springConfig = {
-  // The island morph: width, height and corner radius together. Damping ratio 0.9, so it lands
-  // in ~0.28 s with under a pixel of overshoot: precise, no visible bounce.
+  // The unseen indicator's pop and the launch dot's entrance (motion springs, not geometry).
   island: {
     type: "spring" as const,
     stiffness: 400,
     damping: 36,
     mass: 1,
   },
-  // The dock indicator, which also drives the tab content crossfade: critically damped, ~0.2 s.
-  tab: {
-    type: "spring" as const,
-    stiffness: 500,
-    damping: 45,
-    mass: 1,
-  },
 };
 
 /**
- * When each kind of content fades during a transition, as fractions of the transition's
- * progress (0: the driver starts moving, 1: it has arrived). What leaves and what arrives
- * overlap, so the island is never an empty shape, and content that needs room (the expanded
- * panel) only shows once the island has grown enough to hold it.
+ * The island's width and height (Apple's response/dampingFraction). Slightly underdamped for a
+ * tight, organic landing, but the geometry engine stops each axis at its target instead of
+ * crossing it, so the window shape never overshoots. Height has a little more "mass" than
+ * width: the island widens a hair ahead of dropping open, and draws its sides in a hair ahead
+ * of lifting closed. Within a pixel of the target in ~0.35 s.
+ */
+export const islandSprings: { width: SpringParams; height: SpringParams } = {
+  width: { response: 0.3, dampingFraction: 0.92 },
+  height: { response: 0.34, dampingFraction: 0.92 },
+};
+
+/**
+ * Tab changes. The capsule (the one selection highlight) is the primary feedback: it starts on
+ * the next frame and is ~80 % of the way within 0.1 s, never swinging into the next tab. The
+ * content's cross-fade runs on its own, slightly slower progress spring that starts in the same
+ * frame, so the new content is never ahead of the capsule, and its duration does not depend on
+ * how many tabs the capsule travels.
+ */
+export const tabSprings: { capsule: SpringParams; content: SpringParams } = {
+  capsule: { response: 0.22, dampingFraction: 1 },
+  content: { response: 0.36, dampingFraction: 1 },
+};
+
+/**
+ * When each layer of island content fades, as fractions of the island's progress (0: the
+ * shape starts moving, 1: it has arrived). Every layer rides the vertical centre of the shape
+ * (see IslandLayer), so content never floats in a corner of a large empty shape. What leaves
+ * and what arrives overlap, so no frame is an empty black shape:
+ *  - opening, the compact content is gone by 0.3 while the expanded header is already coming in;
+ *  - closing, the expanded body holds until 0.6 and the compact content arrives from 0.42,
+ *    once the shape is small enough to be read as the pill it is becoming.
  */
 export const layerFade = {
-  compact: { in: [0.3, 0.85], out: 0.4 },
-  expanded: { in: [0.2, 0.75], out: 0.7 },
-  /** Meeting alert and notification toast. */
-  temporary: { in: [0.45, 0.9], out: 0.45 },
-  tab: { in: [0.15, 0.85], out: 0.45 },
+  compact: { in: [0.42, 0.95], out: 0.3 },
+  /** The expanded layer only times its own removal; its parts fade on `partFade`. */
+  expanded: { in: [0, 0], out: 0.6 },
+  /** Meeting alert, notification toast, ring/silent pill: the shape opens first, then the content. */
+  temporary: { in: [0.45, 0.95], out: 0.45 },
+  /** Tab title and panel, on the tab content's progress. */
+  tab: { in: [0.2, 0.9], out: 0.5 },
 } as const satisfies Record<string, Fade>;
 
-/** How far (px) tab content slides with the direction of the tab change. */
-export const TAB_SHIFT_PX = 8;
+/**
+ * The expanded island's parts, each riding its own edge of the shape (see IslandPart): the
+ * header with the top-left corner, the dock with the bottom edge, the body in the middle.
+ * Opening, space comes first, then the header, the body, and the dock last; closing, the dock
+ * goes first and the body last, so the shape always has content until the compact one arrives.
+ */
+export const partFade = {
+  header: { in: [0.15, 0.6], out: 0.5 },
+  body: { in: [0.35, 0.85], out: 0.6 },
+  dock: { in: [0.4, 0.9], out: 0.4 },
+} as const satisfies Record<string, Fade>;
+
+/** How far (px) tab content shifts with the direction of the tab change: a hint, not a slide. */
+export const TAB_SHIFT_PX = 6;
 
 /** Tab label colour change: as long as the indicator's visible travel, same ease-out feel. */
 export const TAB_LABEL_TRANSITION = "color 200ms cubic-bezier(0.22, 1, 0.36, 1)";
@@ -62,9 +99,13 @@ export const pillDimensions = {
   compact: {
     height: 34,
     paddingX: 15,
-    /** Minimum space between the date and the weekday. */
+    /** Minimum space between the date and the weekday (the display "date"). */
     gap: 14,
+    /** Space between the date, the clock and the weekday (the display "full"). */
+    gapFull: 10,
     minWidth: 112,
+    /** The display "clock" holds one short label, so it may be narrower. */
+    clockMinWidth: 88,
     maxWidth: 220,
   },
   expanded: { width: 404, height: 420, radius: 40 },
@@ -80,16 +121,24 @@ export const pillDimensions = {
     gap: 5,
     maxRadius: 30,
   },
-  /** Windows notification mirrored into the island; an invitation adds a row of answer buttons. */
-  notification: { width: 372, heightWithBody: 88, height: 64, actionsHeight: 34, maxRadius: 30 },
+  /**
+   * Windows notification mirrored into the island; an invitation adds a row of answer buttons.
+   * With a body, the height holds the toast's tallest text block inside its 12px margins: app
+   * label 14 + title 20 + two body lines 36 = 70, plus 24 of margin = 94 (an invitation adds its
+   * 8px gap and 26px buttons, which the 34 of actionsHeight covers).
+   */
+  notification: { width: 372, heightWithBody: 94, height: 64, actionsHeight: 34, maxRadius: 30 },
   /** The ring / silent pill at the start of a meeting. */
   ringer: { width: 200, height: 48 },
   /** Join / snooze buttons under a meeting alert. */
   alertActions: { height: 30, gap: 10 },
   /** The collapsed island while a meeting is about to start or running (it may be wider). */
   compactMeeting: { maxWidth: 300 },
-  /** The unseen-notifications count inside the collapsed island. */
-  badge: { size: 16, wide: 22, gap: 8 },
+  /**
+   * The unseen-notifications indicator, last in the collapsed island's row: a dot for one, a
+   * tinted capsule with the count from two (widths are fixed per state, never measured).
+   */
+  badge: { dot: 8, count: 16, countWide: 24, height: 16, gap: 8 },
 } as const;
 
 export interface IslandSize {
@@ -98,15 +147,20 @@ export interface IslandSize {
   radius: number;
 }
 
-export function compactSize(contentWidth: number, maxWidth: number = pillDimensions.compact.maxWidth): IslandSize {
+export function compactSize(
+  contentWidth: number,
+  maxWidth: number = pillDimensions.compact.maxWidth,
+  minWidth: number = pillDimensions.compact.minWidth
+): IslandSize {
   const c = pillDimensions.compact;
-  return { width: Math.min(maxWidth, Math.max(c.minWidth, contentWidth + c.paddingX * 2)), height: c.height, radius: c.height / 2 };
+  return { width: Math.min(maxWidth, Math.max(minWidth, contentWidth + c.paddingX * 2)), height: c.height, radius: c.height / 2 };
 }
 
-/** Room the unseen count takes inside the collapsed island (0 without one). */
+/** Room the unseen indicator takes inside the collapsed island, gap included (0 without one). */
 export function badgeWidth(unseen: number): number {
   const b = pillDimensions.badge;
-  return unseen > 0 ? b.gap + (unseen > 9 ? b.wide : b.size) : 0;
+  if (unseen <= 0) return 0;
+  return b.gap + (unseen === 1 ? b.dot : unseen <= 9 ? b.count : b.countWide);
 }
 
 export function expandedSize(): IslandSize {

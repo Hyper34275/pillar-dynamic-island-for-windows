@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion, useReducedMotion, useSpring } from "motion/react";
+import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { usePillState } from "../../hooks/usePillState";
 import { useSettings } from "../../hooks/useSettings";
 import { useMinute, useToday } from "../../hooks/useClock";
@@ -14,11 +14,11 @@ import { silence, useSilenceUntil } from "../../lib/island/silence";
 import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenReader";
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
-import { fullDate } from "../../lib/dateFormat";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
-import { bootAnimationDuration, expandedSize, notificationSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
-import { TransitionContext, useDrivenTransition } from "./drivenTransition";
+import { bootAnimationDuration, expandedSize, islandSprings, notificationSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
+import { ShellContext, TransitionContext, useDrivenTransition } from "./drivenTransition";
+import { useIslandMotion } from "./useIslandMotion";
 import type { ReminderStore } from "../../lib/reminders/types";
 import { alertIslandSize } from "./alertLayout";
 import { CompactIsland } from "./CompactIsland";
@@ -29,11 +29,17 @@ import { NotificationToast } from "./NotificationToast";
 import { RingerPill, ringerLabel } from "./RingerPill";
 import { TABS, type TabId } from "./tabs";
 import { useCompactContent, useCompactLabels } from "./useCompactLayout";
-import { usePillGeometry } from "./usePillGeometry";
+import { stageSize, usePillGeometry } from "./usePillGeometry";
 
 // Constant on purpose: an animated shadow would repaint every frame of every morph. Inset,
-// because the native window is exactly the island and would clip anything outside it.
+// because the window region is cut to the island's shape and would clip anything outside it.
 const ISLAND_EDGE = "inset 0 0 0 0.5px rgba(255,255,255,0.1)";
+
+// The island's shape never leaves these: the launch dot below, the stage window above.
+const SHAPE_BOUNDS = (() => {
+  const stage = stageSize();
+  return { minWidth: pillDimensions.boot.width, minHeight: pillDimensions.boot.height, maxWidth: stage.width, maxHeight: stage.height };
+})();
 
 interface PillShellProps {
   /** Where fired reminders are remembered; the per-user state file unless a test supplies one. */
@@ -89,11 +95,14 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   const [bootPhase, setBootPhase] = useState<"dot" | "morph">("dot");
 
   // ---------------------------------------------------------------------------
-  // Geometry: the island's own size (animated by springs) and the native window,
-  // which is exactly the island's target size (sent through the ordered resize queue).
-  // The island's size also drives every island transition: each layer of content fades by
-  // how far the size has travelled (drivenTransition.ts), so content never shows before the
-  // island has room for it, and never vanishes while the island is still large.
+  // Geometry: one owner. The view decides the shape the island should have (`shownSize`); the
+  // island motion engine (useIslandMotion) is the only thing that moves the island's width,
+  // height and radius towards it, retargeting from what is on screen. The native window is a
+  // fixed stage that never moves during a morph; only its region (the clickable shape) follows
+  // `target` through the ordered queue (usePillGeometry). The island's size also drives every
+  // island transition: each layer of content fades by how far the size has travelled
+  // (drivenTransition.ts), so content never shows before the island has room for it, and never
+  // vanishes while the island is still large.
   // ---------------------------------------------------------------------------
   const target = useMemo<IslandSize>(() => {
     switch (view.kind) {
@@ -110,14 +119,9 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     }
   }, [view, compact.size]);
 
-  const width = useSpring(pillDimensions.boot.width, springConfig.island);
-  const height = useSpring(pillDimensions.boot.height, springConfig.island);
-  const radius = useSpring(pillDimensions.boot.radius, springConfig.island);
-
-  const { invalidate: invalidateGeometry } = usePillGeometry(target, { width, height });
-
   // Boot: dot → morph into the compact pill → interactive. The dot is a state of its own (with
-  // no content); from the morph on, the island follows the view like any other transition.
+  // no content), held briefly so it is seen; from the morph on, the island follows the view
+  // like any other transition, and booting ends when that morph has landed (not on a timer).
   const isDot = isBooting && bootPhase === "dot";
   useEffect(() => {
     if (!isBooting) return;
@@ -127,10 +131,12 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       return;
     }
     const morphTimer = setTimeout(() => setBootPhase("morph"), bootAnimationDuration.dotAppear);
-    const doneTimer = setTimeout(completeBootAnimation, bootAnimationDuration.dotAppear + bootAnimationDuration.morphToPill);
+    // The latest booting may end: a hidden window (fullscreen app at launch) runs no frames,
+    // and input must not wait for the morph to be seen.
+    const deadline = setTimeout(completeBootAnimation, bootAnimationDuration.dotAppear + bootAnimationDuration.morphToPill);
     return () => {
       clearTimeout(morphTimer);
-      clearTimeout(doneTimer);
+      clearTimeout(deadline);
     };
   }, [isBooting, reducedMotion, completeBootAnimation]);
 
@@ -148,17 +154,33 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
           : "compact";
   const shownSize: IslandSize = isDot ? pillDimensions.boot : target;
 
-  // Follow the shown size (boot, expand, alert, toast, collapse, new date text). The springs
-  // continue from their current value and velocity, so a reversed or interrupted morph never
-  // restarts. Reduced motion keeps this (see REDUCED_MOTION in animations.ts).
+  // Follow the shown size (boot, expand, alert, toast, collapse, new date text). The engine
+  // continues from the current size and velocity, so a reversed or interrupted morph never
+  // restarts, and the newest target always wins. Reduced motion keeps this (see REDUCED_MOTION
+  // in animations.ts).
+  const { width, height, radius, settled } = useIslandMotion(shownSize, {
+    initial: pillDimensions.boot,
+    bounds: SHAPE_BOUNDS,
+    springs: islandSprings,
+  });
+
+  const { invalidate: invalidateGeometry } = usePillGeometry(target, { width, height });
+
+  // Interactive as soon as the morph has landed (the boot effect above holds the deadline).
   useEffect(() => {
-    width.set(shownSize.width);
-    height.set(shownSize.height);
-    radius.set(shownSize.radius);
-  }, [shownSize.width, shownSize.height, shownSize.radius, width, height, radius]);
+    if (!isBooting || isDot) return;
+    if (settled.get()) {
+      completeBootAnimation();
+      return;
+    }
+    return settled.on("change", (atRest) => {
+      if (atRest) completeBootAnimation();
+    });
+  }, [isBooting, isDot, settled, completeBootAnimation]);
 
   const islandDrivers = useMemo(() => [width, height], [width, height]);
   const islandTransition = useDrivenTransition(islandDrivers, [shownSize.width, shownSize.height], shownKey);
+  const shell = useMemo(() => ({ transition: islandTransition, width, height }), [islandTransition, width, height]);
 
   useEffect(() => {
     dlog("info", "pill", `view -> ${view.kind}${isBooting ? " (booting)" : ""}`);
@@ -235,10 +257,11 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
   );
 
   const toggleIsland = useCallback(
-    (tab?: TabId) => {
+    // `show`: a request to show the island (the Center's "show in the island"), never to close it.
+    (tab?: TabId, show = false) => {
       if (view.kind === "userExpanded") {
         if (tab && tab !== activeTab) islandState.expand(tab);
-        else closeAll("toggle");
+        else if (!show) closeAll("toggle");
         return;
       }
       if (view.kind === "meetingAlert") islandState.dismissAlert();
@@ -314,9 +337,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       ? `${meetingAlertLabel(view.alert)}. ${meetingAlertSubject(view.alert)}`
       : view.kind === "ringer"
         ? `${ringerLabel(view.ringer)}. ${view.ringer.phase === "start" ? t("ringer.hint") : ""}`
-        : compact.statusText
-          ? `${compact.statusText}. ${t("island.open")}`
-          : `${fullDate(today)}. ${t("island.open")}`;
+        : compact.ariaLabel;
 
   // A tap on the ring / silent pill switches it; silent holds notifications until the meeting ends.
   const toggleRinger = (ringer: NonNullable<typeof shownRinger>) => {
@@ -383,6 +404,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       >
         {/* One layer per kind of content. A replaced layer stays mounted (fading with the morph,
             unclickable) until it is gone, so closing never empties the island before it shrinks. */}
+        <ShellContext.Provider value={shell}>
         <TransitionContext.Provider value={islandTransition}>
           <AnimatePresence>
             {shownKey === "compact" && <CompactIsland key="compact" content={compact} />}
@@ -404,6 +426,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
                 notification={view.notification}
                 onDismiss={islandState.dismissNotification}
                 onActivate={notifications.activate}
+                onSwipeAway={() => closeAll("toast swiped away")}
               />
             )}
             {isExpanded && !isDot && (
@@ -418,6 +441,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
             )}
           </AnimatePresence>
         </TransitionContext.Provider>
+        </ShellContext.Provider>
 
         {contextMenu.isOpen && (
           <ContextMenu

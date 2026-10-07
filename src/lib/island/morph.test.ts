@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { layerFade } from "../../components/Pill/animations";
+import { layerFade, partFade } from "../../components/Pill/animations";
 import { layerFrame, transitionDirection, transitionProgress, type Fade, type LayerFrame } from "./morph";
 
 const FRESH: LayerFrame = { opacity: 0, offset: 0 };
@@ -31,11 +31,16 @@ describe("transitionProgress", () => {
     expect(transitionDirection({ from: [2], to: [1] })).toBe(-1);
     expect(transitionDirection({ from: [1], to: [1] })).toBe(0);
   });
+
+  it("uses an explicit direction over the drivers' (a progress that only counts forwards)", () => {
+    expect(transitionDirection({ from: [3], to: [4], direction: -1 })).toBe(-1);
+    expect(transitionProgress({ from: [3], to: [4], direction: -1 }, [3.5])).toBeCloseTo(0.5);
+  });
 });
 
 describe("layerFrame", () => {
   it("keeps a new layer invisible until its window opens, then makes it fully visible by the end of it", () => {
-    const fade = layerFade.expanded;
+    const fade = partFade.body;
     expect(opacityAt(fade, true, FRESH, 0)).toBe(0);
     expect(opacityAt(fade, true, FRESH, fade.in[0])).toBe(0);
     expect(opacityAt(fade, true, FRESH, fade.in[1])).toBe(1);
@@ -43,7 +48,7 @@ describe("layerFrame", () => {
   });
 
   it("fades a leaving layer to exactly 0 by its window's end, so it can be removed", () => {
-    for (const fade of Object.values(layerFade)) {
+    for (const fade of [...Object.values(layerFade), ...Object.values(partFade)]) {
       expect(opacityAt(fade, false, SHOWN, 0)).toBe(1);
       expect(opacityAt(fade, false, SHOWN, fade.out)).toBe(0);
       expect(opacityAt(fade, false, SHOWN, 1)).toBe(0);
@@ -51,7 +56,7 @@ describe("layerFrame", () => {
   });
 
   it("is monotonic: entering only ever rises, leaving only ever falls", () => {
-    for (const fade of Object.values(layerFade)) {
+    for (const fade of [...Object.values(layerFade), ...Object.values(partFade)]) {
       let rising = 0;
       let falling = 1;
       for (const p of steps()) {
@@ -84,26 +89,41 @@ describe("layerFrame", () => {
 });
 
 describe("island choreography", () => {
-  // The most visible of the two layers at every point of the transition: the island is never
-  // an empty shape, in either direction.
-  const floor = (leaving: Fade, entering: Fade) =>
-    Math.min(...steps().map((p) => Math.max(opacityAt(leaving, false, SHOWN, p), opacityAt(entering, true, FRESH, p))));
+  // The most visible thing on the island at every point of the transition: the island is never
+  // an empty shape, in either direction. The expanded island is its parts (header, body, dock).
+  const parts = Object.values(partFade);
+  const expandedAt = (entering: boolean, p: number) =>
+    Math.max(...parts.map((fade) => opacityAt(fade, entering, entering ? FRESH : SHOWN, p)));
+  const opening = (p: number) => Math.max(opacityAt(layerFade.compact, false, SHOWN, p), expandedAt(true, p));
+  const closing = (p: number) => Math.max(expandedAt(false, p), opacityAt(layerFade.compact, true, FRESH, p));
 
   it("never empties the island while opening or closing", () => {
-    expect(floor(layerFade.compact, layerFade.expanded)).toBeGreaterThan(0.25);
-    expect(floor(layerFade.expanded, layerFade.compact)).toBeGreaterThan(0.25);
+    expect(Math.min(...steps().map(opening))).toBeGreaterThan(0.25);
+    expect(Math.min(...steps().map(closing))).toBeGreaterThan(0.25);
   });
 
   it("never leaves the tab content area empty while switching tabs", () => {
-    expect(floor(layerFade.tab, layerFade.tab)).toBeGreaterThan(0.25);
+    const floor = Math.min(...steps().map((p) => Math.max(opacityAt(layerFade.tab, false, SHOWN, p), opacityAt(layerFade.tab, true, FRESH, p))));
+    expect(floor).toBeGreaterThan(0.25);
   });
 
-  it("shows the expanded panel only once the island has grown into it, and has it readable well before the end", () => {
-    expect(opacityAt(layerFade.expanded, true, FRESH, 0.2)).toBe(0);
-    expect(opacityAt(layerFade.expanded, true, FRESH, 0.5)).toBeGreaterThan(0.6);
+  it("removes the expanded layer only once its slowest part has gone", () => {
+    expect(layerFade.expanded.out).toBe(Math.max(...parts.map((fade) => fade.out)));
   });
 
-  it("keeps the expanded panel on screen through most of a close instead of dropping it at the start", () => {
-    expect(opacityAt(layerFade.expanded, false, SHOWN, 0.3)).toBeGreaterThan(0.8);
+  it("opening: space first, then the header, the body, and the dock last", () => {
+    expect(opacityAt(partFade.body, true, FRESH, 0.3)).toBe(0);
+    expect(opacityAt(partFade.body, true, FRESH, 0.65)).toBeGreaterThan(0.6);
+    expect(partFade.header.in[0]).toBeLessThan(partFade.body.in[0]);
+    expect(partFade.dock.in[1]).toBeGreaterThanOrEqual(partFade.body.in[1]);
+    // the compact content is gone before the shape is far from a pill
+    expect(opacityAt(layerFade.compact, false, SHOWN, 0.3)).toBe(0);
+  });
+
+  it("closing: the dock goes first, the body holds through most of it, and the compact content waits for a small shape", () => {
+    expect(partFade.dock.out).toBeLessThan(partFade.body.out);
+    expect(opacityAt(partFade.body, false, SHOWN, 0.25)).toBeGreaterThan(0.8);
+    // no compact date floating in a shape much larger than the pill
+    expect(opacityAt(layerFade.compact, true, FRESH, 0.42)).toBe(0);
   });
 });
