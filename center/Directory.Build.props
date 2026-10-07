@@ -1,0 +1,15 @@
+<Project>
+  <PropertyGroup>
+    <!-- Checked by scripts/check-versions.cjs against package.json / Cargo.toml / tauri.conf.json. -->
+    <Version>1.0.4</Version>
+    <Company>CompanyIsland</Company>
+    <Product>CompanyIsland Center</Product>
+    <Copyright>CompanyIsland</Copyright>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+</Project>

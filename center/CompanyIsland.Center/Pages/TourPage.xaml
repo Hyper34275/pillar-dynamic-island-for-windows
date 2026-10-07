@@ -1,0 +1,25 @@
+<Page
+    x:Class="CompanyIsland.Center.Pages.TourPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:s="using:CompanyIsland.Center.Core"
+    Background="Transparent">
+
+    <Grid x:Name="Host" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <InfoBar
+            x:Name="ProblemBar"
+            Grid.Row="0"
+            Margin="24,24,24,0"
+            Severity="Warning"
+            IsOpen="False"
+            IsClosable="False" />
+
+        <!-- The tour itself is a web page (real island components, mock data) shown from the install folder. -->
+        <WebView2 x:Name="Web" Grid.Row="1" Visibility="Collapsed" AutomationProperties.Name="{x:Bind s:Strings.NavTour}" />
+    </Grid>
+</Page>

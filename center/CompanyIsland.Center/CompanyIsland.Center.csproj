@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Island Center: a WinUI 3 app (unpackaged, self-contained, trimmed) installed next to the island.
+    Lessons from the toolchain probe: EnableMsixTooling=true is required (without it the app's .pri is missing from publish
+    and XAML crashes with 0xc000027b); the WinUI + Runtime packages are used, not the 1.8 metapackage (it adds AI/ML);
+    PublishTrimmed with TrimMode=partial works; build from a short path (deep folders break MSIX content extraction).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>CompanyIsland.Center</RootNamespace>
+    <AssemblyName>CompanyIsland.Center</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <Platform>x64</Platform>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <!-- Program.cs is our own Main (single instance + redirected launch arguments). -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
+    <!-- Everything that is serialised goes through the source-generated context in Core. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.Runtime" Version="1.8.260921001" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CompanyIsland.Center.Core\CompanyIsland.Center.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The window icon (src-tauri/icons/icon.ico) is loaded from here at run time. -->
+    <Content Include="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

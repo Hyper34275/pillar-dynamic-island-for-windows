@@ -1,0 +1,93 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+        Black with a little white (Windows 10 21H2 has no Mica/Acrylic, so plain brushes only): page #000000, cards #0B0B0B
+        with a 1 px #1AFFFFFF border, secondary text #99FFFFFF, a WHITE accent (accent buttons white with black text,
+        ToggleSwitch on = white track + black knob, selected navigation item = white with black text).
+        Merged into both the Default and the Dark theme dictionaries of App.xaml: the control defaults live in Dark.
+    -->
+
+                    <!-- Surfaces -->
+                    <SolidColorBrush x:Key="ApplicationPageBackgroundThemeBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorSecondaryBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorTertiaryBrush" Color="#FF0B0B0B" />
+                    <SolidColorBrush x:Key="SolidBackgroundFillColorQuarternaryBrush" Color="#FF0B0B0B" />
+                    <SolidColorBrush x:Key="LayerFillColorDefaultBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="LayerOnMicaBaseAltFillColorDefaultBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="CardBackgroundFillColorDefaultBrush" Color="#FF0B0B0B" />
+                    <SolidColorBrush x:Key="CardBackgroundFillColorSecondaryBrush" Color="#FF111111" />
+                    <SolidColorBrush x:Key="CardStrokeColorDefaultBrush" Color="#1AFFFFFF" />
+                    <SolidColorBrush x:Key="CardStrokeColorDefaultSolidBrush" Color="#FF1A1A1A" />
+                    <SolidColorBrush x:Key="DividerStrokeColorDefaultBrush" Color="#1AFFFFFF" />
+                    <SolidColorBrush x:Key="CenterStrongBorderBrush" Color="#33FFFFFF" />
+                    <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#99FFFFFF" />
+                    <SolidColorBrush x:Key="TextFillColorTertiaryBrush" Color="#72FFFFFF" />
+
+                    <!-- White accent -->
+                    <Color x:Key="SystemAccentColor">#FFFFFFFF</Color>
+                    <Color x:Key="SystemAccentColorLight1">#FFFFFFFF</Color>
+                    <Color x:Key="SystemAccentColorLight2">#FFFFFFFF</Color>
+                    <Color x:Key="SystemAccentColorLight3">#FFFFFFFF</Color>
+                    <Color x:Key="SystemAccentColorDark1">#FFE6E6E6</Color>
+                    <Color x:Key="SystemAccentColorDark2">#FFCCCCCC</Color>
+                    <Color x:Key="SystemAccentColorDark3">#FFB3B3B3</Color>
+                    <SolidColorBrush x:Key="AccentFillColorDefaultBrush" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="AccentFillColorSecondaryBrush" Color="#E6FFFFFF" />
+                    <SolidColorBrush x:Key="AccentFillColorTertiaryBrush" Color="#CCFFFFFF" />
+                    <SolidColorBrush x:Key="AccentFillColorDisabledBrush" Color="#28FFFFFF" />
+                    <SolidColorBrush x:Key="AccentFillColorSelectedTextBackgroundBrush" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="AccentTextFillColorPrimaryBrush" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="AccentTextFillColorSecondaryBrush" Color="#FFE6E6E6" />
+                    <SolidColorBrush x:Key="AccentTextFillColorTertiaryBrush" Color="#FFCCCCCC" />
+                    <SolidColorBrush x:Key="AccentTextFillColorDisabledBrush" Color="#5DFFFFFF" />
+                    <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="TextOnAccentFillColorSecondaryBrush" Color="#80000000" />
+                    <SolidColorBrush x:Key="TextOnAccentFillColorDisabledBrush" Color="#87FFFFFF" />
+                    <SolidColorBrush x:Key="TextOnAccentFillColorSelectedTextBrush" Color="#FF000000" />
+                    <SolidColorBrush x:Key="AccentButtonBackground" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBackgroundPointerOver" Color="#E6FFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBackgroundPressed" Color="#CCFFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBackgroundDisabled" Color="#28FFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonForeground" Color="#FF000000" />
+                    <SolidColorBrush x:Key="AccentButtonForegroundPointerOver" Color="#FF000000" />
+                    <SolidColorBrush x:Key="AccentButtonForegroundPressed" Color="#B3000000" />
+                    <SolidColorBrush x:Key="AccentButtonForegroundDisabled" Color="#87FFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrush" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrushPointerOver" Color="#E6FFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrushPressed" Color="#CCFFFFFF" />
+                    <SolidColorBrush x:Key="AccentButtonBorderBrushDisabled" Color="#28FFFFFF" />
+
+                    <!-- ToggleSwitch: on = white track + black knob -->
+                    <SolidColorBrush x:Key="ToggleSwitchFillOn" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#E6FFFFFF" />
+                    <SolidColorBrush x:Key="ToggleSwitchFillOnPressed" Color="#CCFFFFFF" />
+                    <SolidColorBrush x:Key="ToggleSwitchStrokeOn" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="ToggleSwitchStrokeOnPointerOver" Color="#E6FFFFFF" />
+                    <SolidColorBrush x:Key="ToggleSwitchStrokeOnPressed" Color="#CCFFFFFF" />
+                    <SolidColorBrush x:Key="ToggleSwitchKnobFillOn" Color="#FF000000" />
+                    <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPointerOver" Color="#FF000000" />
+                    <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPressed" Color="#FF000000" />
+
+                    <!-- Selection in text boxes: a grey highlight, white text stays readable -->
+                    <Color x:Key="TextControlSelectionHighlightColor">#FF4D4D4D</Color>
+                    <SolidColorBrush x:Key="TextControlSelectionHighlightColorBrush" Color="#FF4D4D4D" />
+
+                    
+
+                    <!-- NavigationView: black pane, selected item = white background + black text -->
+                    <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewContentBackground" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewContentGridBorderBrush" Color="#00000000" />
+                    <SolidColorBrush x:Key="NavigationViewItemBackgroundSelected" Color="#FFFFFFFF" />
+                    <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPointerOver" Color="#F2FFFFFF" />
+                    <SolidColorBrush x:Key="NavigationViewItemBackgroundSelectedPressed" Color="#E6FFFFFF" />
+                    <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPointerOver" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewItemForegroundSelectedPressed" Color="#FF000000" />
+                    <SolidColorBrush x:Key="NavigationViewSelectionIndicatorForeground" Color="#FF000000" />
+                
+</ResourceDictionary>

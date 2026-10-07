@@ -1,0 +1,110 @@
+<Page
+    x:Class="CompanyIsland.Center.Pages.SettingsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:CompanyIsland.Center.Controls"
+    xmlns:s="using:CompanyIsland.Center.Core"
+    Background="Transparent">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
+        <StackPanel Padding="24" Spacing="24" MaxWidth="1000">
+
+            <StackPanel Spacing="4">
+                <TextBlock
+                    Text="{x:Bind s:Strings.SettingsTitle}"
+                    Style="{StaticResource TitleTextBlockStyle}"
+                    AutomationProperties.HeadingLevel="Level1" />
+                <TextBlock
+                    Text="{x:Bind s:Strings.SettingsSubtitle}"
+                    Style="{StaticResource BodyTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <InfoBar x:Name="ErrorBar" Severity="Error" IsOpen="False" IsClosable="True" />
+
+            <!-- Everything below is disabled while the island is not connected. -->
+            <ContentControl x:Name="RowsPanel" HorizontalContentAlignment="Stretch" IsTabStop="False">
+            <StackPanel Spacing="24">
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SectionGeneral}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <controls:SettingRow x:Name="LaunchRow" Glyph="&#xE7E8;" Title="{x:Bind s:Strings.LaunchWithWindows}">
+                        <ToggleSwitch x:Name="LaunchToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.LaunchWithWindows}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="FullscreenRow" Glyph="&#xE740;" Title="{x:Bind s:Strings.HideInFullscreen}" Description="{x:Bind s:Strings.HideInFullscreenHint}">
+                        <ToggleSwitch x:Name="FullscreenToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.HideInFullscreen}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="MonitorRow" Glyph="&#xE7F4;" Title="{x:Bind s:Strings.Monitor}" Description="{x:Bind s:Strings.MonitorHint}" Visibility="Collapsed">
+                        <ComboBox x:Name="MonitorCombo" MinWidth="240" SelectionChanged="OnMonitorChanged" AutomationProperties.Name="{x:Bind s:Strings.Monitor}" />
+                    </controls:SettingRow>
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SectionMeetings}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <controls:SettingRow x:Name="RemindersRow" Glyph="&#xE7ED;" Title="{x:Bind s:Strings.MeetingReminders}">
+                        <ToggleSwitch x:Name="RemindersToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.MeetingReminders}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="MinutesRow" Glyph="&#xE916;" Title="{x:Bind s:Strings.ReminderMinutes}">
+                        <ComboBox x:Name="MinutesCombo" MinWidth="120" SelectionChanged="OnMinutesChanged" AutomationProperties.Name="{x:Bind s:Strings.ReminderMinutes}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="InvitesRow" Glyph="&#xE715;" Title="{x:Bind s:Strings.MeetingInvites}">
+                        <ToggleSwitch x:Name="InvitesToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.MeetingInvites}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="SilenceRow" Glyph="&#xEA8F;" Title="{x:Bind s:Strings.MeetingSilence}">
+                        <ToggleSwitch x:Name="SilenceToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.MeetingSilence}" />
+                    </controls:SettingRow>
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SectionNotifications}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <controls:SettingRow x:Name="NotificationsRow" Glyph="&#xE91C;" Title="{x:Bind s:Strings.Notifications}" Description="{x:Bind s:Strings.NotificationsHint}">
+                        <ToggleSwitch x:Name="NotificationsToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.Notifications}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="AccessRow" Glyph="&#xE72E;" Title="{x:Bind s:Strings.NotificationAccessTitle}" Visibility="Collapsed">
+                        <Button x:Name="AccessButton" Content="{x:Bind s:Strings.NotificationAllow}" Click="OnAccessClick" />
+                    </controls:SettingRow>
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SectionAppearance}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <Border
+                        Padding="16,12,16,14"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                        <StackPanel Spacing="10">
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <FontIcon Glyph="&#xE121;" FontSize="20" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="{x:Bind s:Strings.IslandDisplay}" Style="{StaticResource BodyTextBlockStyle}" />
+                                    <TextBlock Text="{x:Bind s:Strings.IslandDisplayHint}" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                </StackPanel>
+                            </Grid>
+                            <RadioButtons x:Name="DisplayChoice" MaxColumns="3" SelectionChanged="OnDisplayChanged" Margin="36,0,0,0" AutomationProperties.Name="{x:Bind s:Strings.IslandDisplay}">
+                                <RadioButton x:Name="DisplayFullButton" Tag="full" Content="{x:Bind s:Strings.DisplayFull}" />
+                                <RadioButton x:Name="DisplayClockButton" Tag="clock" Content="{x:Bind s:Strings.DisplayClock}" />
+                                <RadioButton x:Name="DisplayDateButton" Tag="date" Content="{x:Bind s:Strings.DisplayDate}" />
+                            </RadioButtons>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SectionTools}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <controls:SettingRow Glyph="&#xE838;" Title="{x:Bind s:Strings.OpenLogDir}" Description="{x:Bind s:Strings.OpenLogDirHint}">
+                        <Button x:Name="LogDirButton" Content="{x:Bind s:Strings.Open}" Click="OnOpenLogDirClick" AutomationProperties.Name="{x:Bind s:Strings.OpenLogDir}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow Glyph="&#xE946;" Title="{x:Bind s:Strings.ShowDiagnostics}" Description="{x:Bind s:Strings.ShowDiagnosticsHint}">
+                        <Button x:Name="DiagnosticsButton" Content="{x:Bind s:Strings.Open}" Click="OnShowDiagnosticsClick" AutomationProperties.Name="{x:Bind s:Strings.ShowDiagnostics}" />
+                    </controls:SettingRow>
+                </StackPanel>
+            </StackPanel>
+            </ContentControl>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

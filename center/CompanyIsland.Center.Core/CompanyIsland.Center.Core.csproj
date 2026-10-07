@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- No WinUI in here: everything the Center needs to talk to the island and to handle notes, testable on its own. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>CompanyIsland.Center.Core</RootNamespace>
+    <AssemblyName>CompanyIsland.Center.Core</AssemblyName>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="CompanyIsland.Center.Tests" />
+  </ItemGroup>
+</Project>

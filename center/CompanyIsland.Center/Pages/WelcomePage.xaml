@@ -1,0 +1,125 @@
+<Page
+    x:Class="CompanyIsland.Center.Pages.WelcomePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:CompanyIsland.Center.Pages"
+    xmlns:s="using:CompanyIsland.Center.Core"
+    Background="Transparent">
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollMode="Disabled">
+        <StackPanel Padding="24" Spacing="24" MaxWidth="1000">
+
+            <!-- Hero -->
+            <Border
+                Padding="32,28"
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="12">
+                <StackPanel Spacing="16">
+                    <!-- A little picture of the island itself: black pill, white hairline. -->
+                    <Border
+                        HorizontalAlignment="Left"
+                        Padding="18,7"
+                        Background="#FF000000"
+                        BorderBrush="#33FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="18"
+                        AutomationProperties.AccessibilityView="Raw">
+                        <StackPanel Orientation="Horizontal" Spacing="10" FlowDirection="LeftToRight">
+                            <TextBlock Text="יום ג׳ 6.10" Style="{StaticResource CaptionTextBlockStyle}" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                            <TextBlock Text="10:42" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <TextBlock Text="•" Foreground="#4DFFFFFF" VerticalAlignment="Center" />
+                            <TextBlock x:Name="MockStatusText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="#99FFFFFF" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock
+                        x:Name="HeroTitle"
+                        Text="{x:Bind s:Strings.WelcomeTitle}"
+                        Style="{StaticResource TitleLargeTextBlockStyle}"
+                        TextWrapping="Wrap"
+                        AutomationProperties.HeadingLevel="Level1" />
+                    <TextBlock
+                        x:Name="HeroIntro"
+                        Text="{x:Bind s:Strings.WelcomeIntro}"
+                        Style="{StaticResource BodyTextBlockStyle}"
+                        Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                        TextWrapping="Wrap"
+                        MaxWidth="640"
+                        HorizontalAlignment="Left" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+                        <Button
+                            x:Name="StartTourButton"
+                            Content="{x:Bind s:Strings.StartTour}"
+                            Style="{StaticResource AccentButtonStyle}"
+                            MinWidth="120"
+                            Click="OnStartTourClick" />
+                        <Button
+                            x:Name="SettingsButton"
+                            Content="{x:Bind s:Strings.ToSettings}"
+                            MinWidth="100"
+                            Click="OnSettingsClick" />
+                        <Button
+                            x:Name="FinishButton"
+                            Content="{x:Bind s:Strings.Finish}"
+                            MinWidth="80"
+                            Click="OnFinishClick" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Features -->
+            <StackPanel Spacing="12">
+                <TextBlock
+                    Text="{x:Bind s:Strings.FeaturesHeading}"
+                    Style="{StaticResource SubtitleTextBlockStyle}"
+                    AutomationProperties.HeadingLevel="Level2" />
+                <ItemsRepeater x:Name="Features" ItemsSource="{x:Bind FeatureItems}">
+                    <ItemsRepeater.Layout>
+                        <UniformGridLayout
+                            MinItemWidth="300"
+                            MinItemHeight="104"
+                            MinRowSpacing="12"
+                            MinColumnSpacing="12"
+                            ItemsStretch="Fill" />
+                    </ItemsRepeater.Layout>
+                    <ItemsRepeater.ItemTemplate>
+                        <DataTemplate x:DataType="local:FeatureItem">
+                            <Border
+                                Padding="16"
+                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8">
+                                <Grid ColumnSpacing="14">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border
+                                        Width="40"
+                                        Height="40"
+                                        VerticalAlignment="Top"
+                                        Background="#14FFFFFF"
+                                        CornerRadius="8">
+                                        <FontIcon Glyph="{x:Bind Glyph}" FontSize="18" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Spacing="3">
+                                        <TextBlock Text="{x:Bind Title}" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                                        <TextBlock
+                                            Text="{x:Bind Description}"
+                                            Style="{StaticResource CaptionTextBlockStyle}"
+                                            Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                            TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsRepeater.ItemTemplate>
+                </ItemsRepeater>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

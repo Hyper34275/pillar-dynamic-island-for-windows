@@ -1,0 +1,39 @@
+<UserControl
+    x:Class="CompanyIsland.Center.Controls.SettingRow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- A settings card: icon, title + description at the start, the control at the end. -->
+    <Border
+        x:Name="Card"
+        MinHeight="64"
+        Padding="16,10"
+        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+        BorderThickness="1"
+        CornerRadius="8">
+        <Grid ColumnSpacing="16">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <FontIcon
+                x:Name="IconHost"
+                Grid.Column="0"
+                FontSize="20"
+                VerticalAlignment="Center"
+                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock x:Name="TitleText" Style="{StaticResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                <TextBlock
+                    x:Name="DescriptionText"
+                    Style="{StaticResource CaptionTextBlockStyle}"
+                    Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                    TextWrapping="Wrap"
+                    Visibility="Collapsed" />
+            </StackPanel>
+            <ContentPresenter x:Name="ActionHost" Grid.Column="2" VerticalAlignment="Center" />
+        </Grid>
+    </Border>
+</UserControl>
