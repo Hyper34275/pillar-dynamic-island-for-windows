@@ -4,9 +4,12 @@ Audience: desktop engineering / endpoint management. Build instructions, install
 signing hook live in [INSTALLER.md](INSTALLER.md); the design contract is
 [ENTERPRISE_DESIGN.md](ENTERPRISE_DESIGN.md); the test plan is [QA_MATRIX.md](QA_MATRIX.md).
 
-CompanyIsland is a small always-on-top overlay ("island") that shows the date and weekday, and reminds the
+CompanyIsland is a small always-on-top overlay ("island") that shows the date, the time and the weekday, and reminds the
 signed-in user of upcoming **Classic Outlook** meetings. It is offline by design, runs as a standard user,
-and keeps all of its data in the user's own profile.
+and keeps all of its data in the user's own profile. Since 1.0.4 it also has user notes and a second program,
+the **Island Center** (`<install folder>\center\CompanyIsland.Center.exe`, a Windows app with Welcome, Settings,
+Notes and a guided tour), which talks only to the island on the same PC. Sections 4, 7, 9, 11 and 12 say what
+that changes for IT.
 
 Values below were checked against the repository (file names are given so you can re-check after a rebuild).
 Facts that could not be verified in the repository or on a test machine are marked **(unverified)** and are
@@ -31,7 +34,7 @@ installs nothing, before it touches WebView2 or running processes.
 |---|---|---|
 | Microsoft Edge WebView2 Runtime (Evergreen), version 111.0.1661.41 or newer | Yes | See below. |
 | Visual C++ redistributable | No | The exe is built with `+crt-static` (`src-tauri/.cargo/config.toml`). |
-| .NET, Java, Node, Outlook PIAs | No | Outlook is automated late-bound from Rust; no interop assemblies. |
+| .NET, Java, Node, Outlook PIAs | No: nothing to install on the PC | Outlook is automated late-bound from Rust; no interop assemblies. The Island Center (1.0.4) is a .NET 10 / Windows App SDK 1.8 program, but it is **self-contained**: its runtime files are inside `center\`, so no .NET runtime, no Windows App SDK and no MSIX/AppX registration is needed, and nothing machine-wide is installed or patched separately. |
 | Internet access | No | Not at install time (runtime is embedded) and not at run time. |
 | Classic Outlook | Optional | Without it the island still shows date and weekday; the Calendar tab says Outlook is not available. See section 10. |
 
@@ -102,8 +105,16 @@ Notes:
 - Exit codes: `0` success, `1603` unsupported OS (nothing installed), `2` aborted, other non-zero values are
   standard NSIS codes. A silent install that finds the app running closes it via Restart Manager; if it cannot,
   it aborts with a message on the console.
-- What is installed: `CompanyIsland.exe` (about 6.5 MiB) and `uninstall.exe`. No resource files, no DLLs, no
-  services, no scheduled tasks, no drivers, no firewall rules.
+- What is installed: `CompanyIsland.exe` (about 6.5 MiB) and `uninstall.exe` in the install folder, and, since
+  1.0.4, the folder `center\` next to them: the Island Center (`CompanyIsland.Center.exe`), its self-contained
+  .NET 10 and Windows App SDK files (DLLs, `.winmd`, `.pri`, language folders) and `center\web\` (the tour's pages).
+  About 86 MiB and 347 files in 92 folders on disk (measured on the build output for 1.0.4, not on an installed
+  copy). No DLL sits next to `CompanyIsland.exe` itself. No services, no scheduled tasks, no drivers, no firewall
+  rules, no Start menu entry or autostart value for the Center (the island opens it on demand, and once by
+  itself the first time, see section 5).
+- Installer size: about 207 MiB for 1.0.0 (section 13); 1.0.4 adds the Center's files, which the installer
+  compresses. The new size has not been measured because the 1.0.4 setup has not been built yet **(unverified)**:
+  take it from `scripts/verify-installer.ps1` on the file you deploy.
 - Registry written by setup (64-bit view):
   - `HKLM\Software\Microsoft\Windows\CurrentVersion\Run` : `CompanyIsland` = `"C:\Program Files\CompanyIsland\CompanyIsland.exe"`
   - `HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\CompanyIsland` (Add/Remove Programs entry, `DisplayVersion`, `UninstallString`)
@@ -156,8 +167,9 @@ detection rule on the exe file so the tool re-evaluates after the uninstall.
 | Interactive | Settings > Apps > CompanyIsland, or run `uninstall.exe` |
 
 Uninstall closes running instances (a polite `taskkill` without `/F`, then Tauri force-closes whatever is left
-in any session), deletes the exe, uninstaller, shortcuts and the HKLM `Run` and `Uninstall` values. It **keeps
-per-user data** (section 7). The "delete app data" checkbox of the interactive uninstaller only cleans the
+in any session), deletes the exe, uninstaller, shortcuts, the `center\` folder and the HKLM `Run` and `Uninstall`
+values. An open Island Center is closed first the same way (`taskkill /IM CompanyIsland.Center.exe`, up to
+about 5 seconds, then `/F`), otherwise it would lock its own files. It **keeps per-user data** (section 7). The "delete app data" checkbox of the interactive uninstaller only cleans the
 administrator's own `%LOCALAPPDATA%\com.companyisland.app`, which is empty.
 
 ## 5. Startup behaviour
@@ -190,11 +202,29 @@ entries **(unverified here)**; it blocks every program in that key, not only thi
 A second launch in the same Windows session does not start a second island: it tells the running one to
 toggle open and exits.
 
+**First run and the Welcome window (1.0.4).** Roughly 1.5 seconds after the island starts for a user whose
+settings do not say `onboardingDone: true`, the island opens the Island Center on its Welcome page (a normal
+window, about 1000x700, in Hebrew, with a guided tour button) and then records `onboardingDone: true` in that
+user's `settings.json`. It happens **once per user**, for a new user after the first logon and for an existing
+user after the first start following an upgrade from a version without the flag. It does not repeat at later
+logons. If the Center is not installed or cannot start, nothing is shown (`APP-030` in the log) and it is tried
+again at the next start. The Center is never started at logon by itself; afterwards it opens only when the user
+clicks "מרכז האי" in the tray menu or a button in the island. To suppress the window for a managed rollout,
+pre-create `%LOCALAPPDATA%\CompanyIsland\settings.json` containing `{"onboardingDone": true}` (other fields fall
+back to their defaults; partial files load with defaults by a unit test, the recipe itself has not been run
+**(unverified)**), or accept it as the product's first-run explanation.
+
 ## 6. Upgrade behaviour
 
 - Run the new setup over the old one (same commands). Files are replaced in place; `HKLM\...\Run` is rewritten.
 - A running instance is closed first (Restart Manager). The app is **not** restarted afterwards (unless `/R`),
   so users get it back at next logon or from the Start menu. The island is gone from the screen until then.
+  An open Island Center is closed by the installer too (asked politely, forced after about 5 seconds), so a
+  user with the Center open loses the window (an unsaved note being typed in it would be lost).
+- The first start after an upgrade from a version before 1.0.4 opens the Welcome window once per user
+  (section 5): their `settings.json` has no `onboardingDone` yet. Notes start empty; nothing else is migrated.
+- `center\` is removed and re-copied on every install and upgrade (and removed on uninstall), so no files of an
+  older Center version are left behind.
 - The downgrade check is off (`ALLOWDOWNGRADES` is `true` in the generated installer), so installing an older
   setup over a newer one is allowed.
 - Per-user data is forward compatible by design: `settings.json` is schema-versioned, unknown or invalid
@@ -210,7 +240,9 @@ never `%APPDATA%`, never the install folder).
 
 | Path | Content | Notes |
 |---|---|---|
-| `settings.json` | User settings (reminder on/off, 30-minute offset, monitor, launch with Windows, hide in fullscreen, notifications, debug logging) | Atomic write (temp file + rename). Corrupt file is kept as `settings.json.corrupt`. |
+| `settings.json` | User settings (reminder on/off, 30-minute offset, monitor, launch with Windows, hide in fullscreen, notifications, debug logging, and since 1.0.4 `onboardingDone` and `islandDisplay`) | Atomic write (temp file + rename). Corrupt file is kept as `settings.json.corrupt`. |
+| `state\notes.json` | The user's notes (1.0.4): `{"schemaVersion":1,"notes":[{id, text, createdAt, updatedAt, pinned}]}` | **User-typed content, in clear text, per user.** At most 500 notes of 10,000 characters and 16 MiB in all. Atomic write. A corrupt or oversize file is kept as `notes.json.corrupt` and the list starts empty. Never logged, never sent anywhere, **kept on uninstall**. Only the island writes it (the Center asks the island over the pipe). |
+| `EBWebView-Center\` | WebView2 profile of the Center's tour page (1.0.4) | Created the first time the Tour is shown; cache and crash dumps only; the island's own profile is `EBWebView`. |
 | `state\reminders.json` | Which reminders already fired: `eventHash\|startUtc\|reminderType` -> time fired | No meeting text. Entries older than 7 days are dropped; at most 2000 entries; files over 256 KB are quarantined as `reminders.json.corrupt`. |
 | `logs\companyisland.log` (+ `.1.log` ... `.4.log`) | Diagnostic log (section 8) | Rotates at 1 MB, 5 files kept (about 5 MB maximum). |
 | `EBWebView\` | WebView2 profile (cache, crash dumps) | The app points WebView2 here, so nothing is created under `%LOCALAPPDATA%\com.companyisland.app`. |
@@ -223,8 +255,10 @@ There is no on-disk calendar cache: events live in memory and are re-read from O
 rmdir /s /q "%LOCALAPPDATA%\CompanyIsland"
 ```
 
-To reset only the settings: delete `settings.json`. To make reminders re-fire for meetings still ahead: delete
-`state\reminders.json`. To also remove the autostart opt-out: delete the `CompanyIsland` value under the
+To reset only the settings: delete `settings.json` (this also shows the Welcome window again once). To make
+reminders re-fire for meetings still ahead: delete `state\reminders.json`. To remove only the user's notes:
+delete `state\notes.json` (and `state\notes.json.corrupt` if present); decide with the user or your data policy
+first, because notes are personal content that cannot be recovered. To also remove the autostart opt-out: delete the `CompanyIsland` value under the
 `StartupApproved\Run` key shown in section 5.
 
 If the folder cannot be created (profile on a read-only or full volume), the app keeps running with
@@ -247,7 +281,9 @@ display events. User profile paths are replaced with `%USERPROFILE%`. Control ch
 neutralized so one entry is always one line.
 
 Never logged: meeting subjects, locations, organizers, attendees, bodies, notification titles or text, e-mail
-addresses, Outlook profile names (only a hash in debug mode).
+addresses, Outlook profile names (only a hash in debug mode), and note text (1.0.4; the log has only counts such
+as `[notes] saved 12 notes`, and `[center]` lines with page names, process ids and codes; a note's id is never
+written). The Center's own error reports reach the same log as short codes through the pipe (scope `center`).
 
 "Copy diagnostics" (Settings tab, explicit click, clipboard only) is separate from the log: its first line is a one-line summary for tickets, then it contains Windows
 user (`DOMAIN\USER`), computer name, local IPv4 and adapter name, OS, build, WebView2 version, session id,
@@ -264,6 +300,18 @@ Tauri IPC. WebView2 is started with `--disable-background-networking` (plus wry'
 `msSmartScreenProtection` disabled), so the runtime does not phone home for component or safe-browsing
 updates from this app's profile. The only network-related code reads the local adapter list to show the
 local IPv4 address in the About tab; it sends nothing.
+
+The Island Center (1.0.4) changes none of this. It makes no network connection: it talks to the island over a
+**local named pipe** (`\\.\pipe\CompanyIsland.Center.<session id>.<hash of the user's SID>`) that exists only on
+that PC, is readable and writable by that user alone (a protected access list naming only the user's SID),
+refuses remote clients and refuses connections from another Windows session. There is no listening TCP or UDP
+port and no firewall rule is needed. Its tour page is local files in `center\web\`, served to the Center's
+WebView2 through a virtual host name (`tour.companyisland.invalid`, which never resolves in DNS; it is a mapping
+inside WebView2, not a network name). The page's Content-Security-Policy has `connect-src 'none'`, and the host
+cancels any navigation to another address, any new window and any download. The Center's WebView2 starts with the
+same `--disable-background-networking` argument as the island's. A traffic capture of the Center has not been done
+**(unverified)**: include `CompanyIsland.Center.exe` and its `msedgewebview2.exe` children in the 10-minute check
+above.
 
 To confirm in your environment, capture traffic for `CompanyIsland.exe` and its `msedgewebview2.exe` children
 (parent = `CompanyIsland.exe`) during a 10-minute run; the expected result is no outbound connections.
@@ -299,11 +347,12 @@ documentation, not tested here.
 | Notification access policy | If `HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy\LetAppsAccessNotifications` is `2` (force deny), notification mirroring reports `policy` / `NOTIF-202` and is off. Calendar, date and reminders are unaffected. Other Windows denials report `denied` / `NOTIF-201`. | Code (`notifications.rs`) |
 | Notification mirroring on unpackaged apps | `UserNotificationListener` often cannot subscribe for an unpackaged exe (`NOTIF-204 NotificationChanged unavailable (0x80070490)` was observed on Windows 11 25H2). The app then falls back to reading the Action Center list every 5 seconds (30 seconds after repeated failures) and `notificationMode` in diagnostics reports `polling`. | Code (`notifications.rs`) + dev-box log |
 | Autostart | `HKLM\...\Run` is a normal Run value; blocking policies for Run keys stop it. `StartupApproved` is per user and needs no policy. | Code, doc |
-| AppLocker / WDAC | The exe is **unsigned** unless you sign it (section 14). Allow by path (`%ProgramFiles%\CompanyIsland\*`; AppLocker's default "everything in Program Files" rule already covers it), by file hash (changes every build) or by publisher once signed. Setup (`CompanyIsland_..._x64-setup.exe`) runs from a temp location and may need its own allow rule. | Code, doc |
-| What is executed | One exe plus the uninstaller. **No DLL is installed next to the exe** (no side-loading surface). It loads only system DLLs and Microsoft's WebView2 runtime. | `installer.nsi` copies only `CompanyIsland.exe`; ENTERPRISE_DESIGN section 7 import-table audit |
-| WebView2 child processes | The island hosts WebView2, so it starts `msedgewebview2.exe` (browser, renderer, GPU, utility, crashpad) from the runtime folder (typically `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<version>\`). These are Microsoft-signed and **must be allowed** by AppLocker/WDAC and EDR, otherwise the island never renders. | Doc |
+| AppLocker / WDAC | The exes are **unsigned** unless you sign them (section 14). Allow by path (`%ProgramFiles%\CompanyIsland\*` covers the island and the Center; AppLocker's default "everything in Program Files" rule already covers it, but a rule that allows only `CompanyIsland.exe` does not: since 1.0.4 add `%ProgramFiles%\CompanyIsland\center\*`, in particular `CompanyIsland.Center.exe` and the DLLs beside it), by file hash (changes every build, and now covers about 350 files, so prefer path or publisher) or by publisher once signed (sign `CompanyIsland.Center.exe` and, for a WDAC publisher rule that also covers libraries, the CompanyIsland-built `CompanyIsland.Center.dll` and `CompanyIsland.Center.Core.dll` as well; the many Microsoft files in `center\` are expected to carry Microsoft's signature; the signatures of the published files have not been inspected **(unverified)**). If DLL rules are enforced, the DLLs in `center\` need to be allowed too. Setup (`CompanyIsland_..._x64-setup.exe`) runs from a temp location and may need its own allow rule. | Code, doc |
+| What is executed | The island exe (alone in the install folder with the uninstaller, **no DLL next to it**) and, since 1.0.4, `center\CompanyIsland.Center.exe`. The Center is a self-contained .NET 10 / Windows App SDK 1.8 program: it loads the DLLs from its own `center\` folder (its own `CompanyIsland.Center*.dll`, the .NET runtime and Windows App SDK libraries) plus system DLLs and Microsoft's WebView2 runtime. The WinUI libraries are Microsoft's; .NET is loaded from the same folder, never from the machine. | `installer.nsi` copies `CompanyIsland.exe` and the resource list of `center\` (347 files for 1.0.4); ENTERPRISE_DESIGN section 7 import-table audit for the island only |
+| Island Center | A second process per user session, started by the island (or by the user from `center\`), `asInvoker`, never elevated, no services, tasks or autostart of its own. Starts only after a click or once at the first run (section 5). Its parent is `CompanyIsland.exe` when the island started it (an EDR rule on "unsigned child process" sees this). It reads and writes no file of the island: it asks the island through the named pipe (section 9). | Code |
+| WebView2 child processes | The island hosts WebView2, so it starts `msedgewebview2.exe` (browser, renderer, GPU, utility, crashpad) from the runtime folder (typically `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<version>\`). The Island Center starts the same processes, with the Center as parent, while the Tour page has been shown (profile `%LOCALAPPDATA%\CompanyIsland\EBWebView-Center`). These are Microsoft-signed and **must be allowed** by AppLocker/WDAC and EDR, otherwise the island never renders (and the tour shows a message). | Doc |
 | Defender ASR | "Block executable files from running unless they meet a prevalence, age, or trusted list criterion" can block a brand-new unsigned exe: add an exclusion or sign it. "Block process creations originating from PSExec and WMI" and the Office rules ("Office applications creating child processes", etc.) are not relevant: CompanyIsland is not started from Office and uses no WMI. | Doc |
-| Child processes started | Only `explorer.exe` (absolute path from the Windows folder) for "Open logs", and the shell for activating the app behind a mirrored toast (only AUMIDs seen in toasts). The installer runs `taskkill`. | Code |
+| Child processes started | `explorer.exe` (absolute path from the Windows folder) for "Open logs", the shell for activating the app behind a mirrored toast (only AUMIDs seen in toasts), and, since 1.0.4, `<install folder>\center\CompanyIsland.Center.exe --page <page>` (absolute path, no shell; the page is one of a fixed list, a note shows as `note:<id>` with a validated id). The installer runs `taskkill`. | Code |
 | Key-logger heuristics | Raw keyboard/mouse input registration is disabled (`DeviceEventFilter::Always`), there is no global mouse or keyboard hook, and no code injection: the fullscreen detector uses out-of-context `SetWinEventHook` only (foreground / minimize / location events). | Code |
 | SmartScreen | A downloaded (mark-of-the-web) unsigned installer triggers "Windows protected your PC". Software-distribution tools do not add the mark. Signing fixes it for the publisher over time. | Doc |
 | Privileges | `asInvoker`; no services, drivers, scheduled tasks, firewall rules, or HKLM writes at run time. | Code |
@@ -314,14 +363,20 @@ documentation, not tested here.
 - **One instance per Windows session.** The single-instance mutex has no `Global\` prefix, so it is
   session-local: each interactive session (local user, Fast User Switching, RDP) runs its own island with its
   own data (`%LOCALAPPDATA%` of that user). A second launch in the same session toggles the running island.
+- **The Island Center is per user and session too.** One Center per session (a second launch hands its page to
+  the first and exits), and its pipe name contains the Windows session id and a hash of the user's SID, so two
+  users or two sessions on one PC each have their own pipe, and a session can never connect to another's (the
+  island also checks the client's session id). Another user, even an administrator, cannot open the pipe: its
+  access list names only the owner **(not yet tested with a second account, see QA_MATRIX E43)**.
 - **Outlook discovery is filtered by session and SID**: another user's Outlook on the same machine is never
   attached, and does not affect the status ("Waiting").
 - **Fast User Switching**: a disconnected session keeps its island and keeps polling for Outlook every 15 s in
   the background; the user's reminders are shown when the session is active again. (Behaviour on switch-back
   is covered by QA scenario 9, hardware needed.)
 - **RDS / VDI**: autostart works through the HKLM `Run` key. In non-persistent VDI the profile is recreated, so
-  `settings.json` and `reminders.json` are lost unless the profile solution (FSLogix, UPD) roams
-  `%LOCALAPPDATA%\CompanyIsland`; roaming `EBWebView` is not needed and can be excluded. Many concurrent
+  `settings.json`, `reminders.json` and the user's notes (`state\notes.json`) are lost, and the Welcome window
+  shows again at every new profile, unless the profile solution (FSLogix, UPD) roams
+  `%LOCALAPPDATA%\CompanyIsland`; roaming `EBWebView` and `EBWebView-Center` is not needed and can be excluded. Many concurrent
   sessions each run an island plus WebView2 processes: size memory accordingly **(unverified, see QA matrix)**.
 
 ## 13. Known limitations
@@ -335,8 +390,13 @@ documentation, not tested here.
   The window is non-activating (`WS_EX_NOACTIVATE`) and hidden from Alt+Tab: it never takes keyboard focus.
 - Notification mirroring is best effort (section 11) and can be off by policy.
 - No auto-update. Roll out new versions by running the new setup.
-- Installer is about 207 MiB because it carries the WebView2 runtime. Unsigned by default.
-- Hebrew and English UI strings; other languages get English text with locale-correct dates.
+- Installer is about 207 MiB (1.0.0) because it carries the WebView2 runtime, and 1.0.4 adds the Island Center's
+  files (about 86 MiB uncompressed on disk). Unsigned by default.
+- Hebrew and English UI strings; other languages get English text with locale-correct dates. The island and the
+  Island Center always show Hebrew.
+- Notes are plain text in the user's profile, with no encryption, sync or backup; roaming profiles or FSLogix
+  containers carry them with `%LOCALAPPDATA%\CompanyIsland` (section 12), otherwise they exist on one PC only.
+- The Island Center has not been run on Windows 10 21H2 or at a display scale above 100% (QA_MATRIX E44, E45).
 
 ## 14. Code signing recommendation
 
@@ -344,7 +404,10 @@ Sign **all three** artifacts so AppLocker/WDAC publisher rules, SmartScreen and 
 `CompanyIsland.exe`, `uninstall.exe` and the setup `.exe`. Tauri signs all three when a certificate is
 configured under `bundle.windows` in `src-tauri/tauri.conf.json` (`certificateThumbprint` + `digestAlgorithm`
 + `timestampUrl`, or a `signCommand`); see [INSTALLER.md](INSTALLER.md) "Code signing" for the exact keys.
-Nothing is signed or configured today, on purpose.
+Nothing is signed or configured today, on purpose. Since 1.0.4 there is a fourth thing to sign for a publisher
+rule: `center\CompanyIsland.Center.exe` (plus the two `CompanyIsland.Center*.dll` if DLL rules are enforced). Tauri's
+signing step does not cover bundle resources, so it has to be done on `center/publish/` before the setup is built
+(INSTALLER.md "Code signing") **(unverified)**.
 
 | Choice | Recommendation |
 |---|---|
@@ -361,6 +424,8 @@ Before the pilot
 - [ ] Target PCs: 64-bit, Windows 10 build 19044+ or Windows 11. Fleet uses **Classic** Outlook (not New Outlook).
 - [ ] Decide signing: sign the three artifacts, or add AppLocker/WDAC and Defender exclusions for the unsigned build.
 - [ ] Allow `msedgewebview2.exe` (Microsoft-signed) in AppLocker/WDAC/EDR if application control is on.
+- [ ] Allow the Island Center: `%ProgramFiles%\CompanyIsland\center\*` (path rule) or its publisher once signed; it is a second exe with about 350 files (section 11).
+- [ ] Tell users about the Welcome window that opens once at the first start after install or upgrade, and that notes they write are kept in their profile (`state\notes.json`, section 7).
 - [ ] Decide autostart default (HKLM `Run`, on) and whether to pre-set per-user opt-outs.
 - [ ] Check `LetAppsAccessNotifications` policy if toast mirroring is wanted (value 2 turns it off).
 - [ ] Confirm no policy forces Outlook to run elevated or as a different user than the desktop user.
@@ -374,11 +439,12 @@ Package and deploy
 
 After install (per pilot user, after next logon)
 
-- [ ] Island visible at the top centre; shows `d/M` and the weekday; no UAC prompt; not elevated in Task Manager (Details > Elevated = No).
+- [ ] Island visible at the top centre; shows `d/M`, the time and the weekday; no UAC prompt; not elevated in Task Manager (Details > Elevated = No).
+- [ ] The Welcome window of the Island Center opened once (about 2 seconds after the island started) and does not open again at the next logon; `<install folder>\center\CompanyIsland.Center.exe` exists; the tray item "מרכז האי" opens it; the Notes tab and the Center's Notes page show the same notes.
 - [ ] With Classic Outlook running: Calendar tab shows meetings; Settings tab (diagnostics) shows Outlook "Running", mode "Classic Outlook".
 - [ ] Meeting 30 minutes ahead produces one alert, once.
-- [ ] No outbound traffic from `CompanyIsland.exe` / its WebView2 children.
-- [ ] Logs exist in `%LOCALAPPDATA%\CompanyIsland\logs`; no meeting text in them.
+- [ ] No outbound traffic from `CompanyIsland.exe`, `CompanyIsland.Center.exe` and their WebView2 children.
+- [ ] Logs exist in `%LOCALAPPDATA%\CompanyIsland\logs`; no meeting text and no note text in them.
 - [ ] Help desk knows: Settings tab > "Copy diagnostics" for tickets; error codes in ARCHITECTURE.md section 8; per-user wipe command (section 7).
 
 Operations
@@ -408,5 +474,11 @@ machine with Classic Outlook before broad rollout ([QA_MATRIX.md](QA_MATRIX.md))
 - `UserNotificationListener` on Windows 10 21H2 for an unpackaged exe (observed on Windows 11 25H2 only).
 - The `MeetingStatus` read that hides canceled meetings (read-only number; failures are tolerated) has not been
   run against a real Outlook.
+- The Island Center (1.0.4): it has not been run on Windows 10 21H2, at a display scale above 100%, or from an
+  installed copy against the real island's pipe in a recorded QA run; the 1.0.4 installer has not been built, so
+  its real size, the exact file list under `center\`, the closing of an open Center on upgrade and uninstall, and
+  the publisher signatures of the files in `center\` are unchecked; no traffic capture of the Center exists; the
+  pipe's refusal of another user, session or remote client rests on the access list and a code check, not on a
+  test with a second account (QA_MATRIX E33 to E46).
 - The installer's own wizard text for Hebrew falls back to English (the Tauri build warns that the custom
   installer messages are not translated); the app itself is localised.

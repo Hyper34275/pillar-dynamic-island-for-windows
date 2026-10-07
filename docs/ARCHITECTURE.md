@@ -14,7 +14,8 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 ```
 +----------------------------------------------------------------------------------------------+
 | UI  (React 18, WebView2; src/components/Pill, src/hooks)                                     |
-|   PillShell > CompactIsland | ExpandedIsland (tabs: CALENDAR, ABOUT, SETTINGS)                |
+|   PillShell > CompactIsland | ExpandedIsland (tabs: CALENDAR, NOTIFICATIONS, NOTES,           |
+|   ABOUT, SETTINGS)                                                                           |
 |   MeetingAlert | NotificationToast | ContextMenu       "dir=ltr" layout, dir=auto text        |
 +--------------+---------------------------+---------------------------+-----------------------+
                | view = selectView(state)  | t(), Intl dates           | settings, system info
@@ -49,8 +50,17 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 |  system.rs     computer / user / OS / WebView2 / local IPv4 (event-driven cache)                   |
 |  diagnostics.rs + calendar_diag.rs   privacy-safe snapshot and recent error-code ring (10)         |
 |  debug_log.rs  rotating log, scrubbing, panic hook, clean-exit marker                              |
-|  paths.rs, settings.rs, reminder_state.rs, autostart.rs                    (per-user persistence) |
+|  paths.rs, settings.rs, reminder_state.rs, autostart.rs, notes.rs          (per-user persistence) |
 |  window.rs, monitors.rs, fullscreen.rs, tray.rs, clipboard.rs                    (Win32 shell)     |
+|  center.rs     open the Island Center (navigate event, or start center\CompanyIsland.Center.exe)   |
+|  center_ipc.rs named-pipe server for the Center (tokio tasks; DACL, session check, JSON lines)    |
++----------------------------^---------------------------------------------------------------------+
+                             | \\.\pipe\CompanyIsland.Center.<session>.<sidhash>  (local, this user only)
++----------------------------v---------------------------------------------------------------------+
+| Island Center  center/  (WinUI 3, C# / .NET 10, a second process: <install>\center\*.exe)         |
+|   CompanyIsland.Center.Core: IslandClient (hello, requests by id, events, reconnect), models,      |
+|   note helpers, Hebrew strings          Pages: Welcome | Settings | Notes | Tour (WebView2)         |
+|   Tour page = tour.html (React, mock data, no IPC) served from center\web\ by a virtual host       |
 +--------------------------------------------------------------------------------------------------+
 ```
 
@@ -68,6 +78,10 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 | Diagnostics | Privacy-safe status + last 10 error codes; "Copy diagnostics" text | `src-tauri/src/diagnostics.rs`, `src/lib/diagnostics.ts` |
 | Logging | One rotating file, one line per entry, scrubbed; UI forwards through `write_logs` | `src-tauri/src/debug_log.rs`, `src/lib/debugLog.ts`, `logger.ts` |
 | Settings | Typed, validated, schema-versioned store; autostart opt-out | `src-tauri/src/settings.rs`, `autostart.rs`, `src/hooks/useSettings.ts` |
+| Notes | The island's Notes tab (list, pin, copy, delete) over a store with optimistic updates; Rust sanitises and is the only writer of `state\notes.json`; both the island's page and the Center save through the same `notes::save` | `src-tauri/src/notes.rs`, `src/lib/notes/store.ts`, `src/hooks/useNotes.ts`, `src/components/Pill/panels/NotesTab.tsx` |
+| Center bridge (Rust) | Opens the Center (navigate event to a connected one, else starts the exe) and serves it over a named pipe: commands in, `settings-changed` / `notes-changed` / `navigate` out | `src-tauri/src/center.rs`, `center_ipc.rs` |
+| Island Center | A WinUI 3 app (second process): Welcome, Settings, Notes, Tour pages; a client of the pipe only, it never reads or writes the island's files | `center/CompanyIsland.Center`, `center/CompanyIsland.Center.Core` |
+| Tour | The 12-step guided tour: the island's real components with mock data, no IPC, shown in the Center's locked-down WebView2 | `tour.html`, `src/tour/*`, `center/.../Pages/TourPage.xaml.cs` |
 
 ### 1.1 Why in-process Rust COM and not a sidecar
 
@@ -87,6 +101,24 @@ island. A separate .NET (VSTO / interop) sidecar was considered and rejected:
 - Trade-off accepted: a COM fault that takes the process down would take the island with it. The worker
   runs under panic catching and a watchdog, and a sidecar would only move that crash to another process.
 
+### 1.2 The Island Center is not that sidecar
+
+Since 1.0.4 the product does ship a .NET program, and the reasoning above still holds because it is a different
+thing: a user-facing window, not a bridge to Outlook.
+
+- **Why a second process at all**: the island is non-activating and has no text input by design (ENTERPRISE_DESIGN
+  section 0, Focus). Notes, a settings page and a first-run explanation need a normal window with a keyboard.
+  The user chose a real WinUI 3 app (2026-10-06) over putting a text box into the island.
+- **What it may do**: ask the island for settings and notes and change them, ask it to open the island on a tab,
+  report a code, all over one local pipe (protocol in ENTERPRISE_DESIGN section 1, "Island Center pipe"). It
+  never touches Outlook, the calendar, Windows notifications, `settings.json` or `notes.json`, and makes no
+  network connection.
+- **If it is missing or dies**: the island is unaffected (`APP-030` when an open fails, `APP-031` when the pipe
+  cannot be served). Nothing in the island waits for the Center.
+- **Cost**: about 86 MiB more in the install folder (self-contained .NET 10 + Windows App SDK 1.8, trimmed),
+  one more exe and a folder of DLLs to allow-list (DEPLOYMENT section 11), and the installer must close it
+  before it replaces files (`installer-hooks.nsh`).
+
 ## 2. Thread model
 
 | Thread | Created by | Runs | Notes |
@@ -101,6 +133,9 @@ island. A separate .NET (VSTO / interop) sidecar was considered and rejected:
 | Notification threads | `notifications::start` / `spawn_sync` | `companyisland-notif-init` / `-sync` (short-lived): query access, subscribe or start the poller | `NotificationChanged` handlers run on WinRT callback threads and are wrapped in `catch` |
 | `companyisland-notif-poll` | `notifications` when `NotificationChanged` cannot be subscribed (typical for an unpackaged exe) | Reads the Action Center every 5 s (30 s after 3 failures), forwards only unseen ids; stops through a channel | Reports `notificationMode = polling` |
 | `startup` thread | `lib.rs` setup | `settings::sync_autostart` (registry) then `fullscreen::start` | Keeps registry work off the UI thread |
+| Center pipe tasks (tokio runtime, `tauri::async_runtime`) | `center_ipc::start` from setup | One accept task (`accept_loop`) creating pipe instances (at most 4), and per client one task reading lines and one writing them (queue of 256 lines; a client that falls behind is dropped) | Async only: file and Win32 work (settings, notes, monitors, log folder, `showIsland`) is handed to the blocking pool, never run on the reactor. Requests of one connection run one after another. A creation failure (name taken) logs `APP-031` and ends the task; the island carries on |
+| `companyisland-onboarding` | `lib.rs` setup, only while `onboardingDone` is false | Sleeps 1.5 s, `center::open("welcome")`, on success `mark_onboarding_done` | Short-lived. A failed open is logged and retried at the next start |
+| Center process (separate exe) | `center::open` (`Command::spawn`, absolute path, not waited on) or the user | WinUI 3 UI thread (STA, `DispatcherQueue`); a pool task for the pipe client and its 3 s reconnect loop; WebView2 processes only while the Tour page has been shown | One per user session (`AppInstance.FindOrRegisterForKey`): a second launch redirects its arguments to the first on its own thread and exits. Its WebView2 uses `EBWebView-Center`, not the island's profile |
 | Network change callbacks | Windows (`NotifyIpInterfaceChange`, `NotifyUnicastIpAddressChange`) | Invalidate the cached IPv4 selection | Nothing polls |
 | Webview JS thread | WebView2 | React, reminder engine timer (one timer, <= 60 s sleeps), clock store (minute aligned) | No per-second timers while collapsed and idle |
 
@@ -135,8 +170,9 @@ unwinding across the boundary. Panics are also logged with a (scrubbed) backtrac
    `onFire(alert)`. Late reminders (PC was asleep, Outlook attached late): fire with the real minutes
    remaining if the meeting has not started and at least 1 minute is left, otherwise mark skipped.
 7. **Island**: `showAlert` dispatches `ALERT_SHOW`; the reducer makes `meetingAlert` the view (priority 3,
-   preempting a toast, queuing behind another alert); the shell resizes the native window through the ordered
-   geometry queue (`set_island_geometry`); the alert counts down 8 s (paused while hovered or while a
+   preempting a toast, queuing behind another alert); the island's shape springs to the alert's size inside
+   the fixed stage window, and the window region follows through the ordered geometry queue
+   (`set_island_geometry`); the alert counts down 8 s (paused while hovered or while a
    fullscreen app hides the island) and then `ALERT_DONE` restores whatever the user had open.
 8. **After a restart**: the fired set is loaded before anything is scheduled, so nothing fires twice.
 
@@ -210,6 +246,30 @@ Hover or a fullscreen-hidden island pauses the countdown.
 | key already fired | nothing (restart-safe) |
 | reminders disabled in settings | nothing scheduled; picked up when enabled |
 
+### 4.4 Island motion (`src/lib/island/islandMotion.ts`, `src/components/Pill/useIslandMotion.ts`)
+
+One owner per animated property, one target, no timers in the choreography:
+
+- **Shape** (width, height, corner radius): only the island motion engine writes it. The view decides the
+  target; `setTarget` (in a layout effect of the commit that changed the view) retargets from the current
+  size and velocity, last writer wins. Two closed-form springs (`islandSprings`, `spring.ts`) are stepped by
+  motion's frame loop, so a late frame (32 Hz in an RDP session) lands exactly where it should. Each axis stops
+  at its target instead of crossing it, never leaves [launch dot, stage], and every frame is checked
+  (`frameViolations`, logged once per transition). The radius is derived from how far the size has travelled.
+- **Native window**: a fixed stage (`stageSize()`, the largest island) placed once; it is never resized or
+  moved during a morph (a resized WebView2 window shows its previous frame at the new size, measured as a
+  ~12 px sliver at the end of every close, and stalls its frame pipeline ~110 ms). Only the window region
+  follows the island's resting shape: grown at once, shrunk once the animated shape fits inside it.
+- **Content**: every layer is laid out at its final size, centred, riding the shape's vertical centre; its
+  opacity is a function of the shape's progress (`layerFade`). The expanded island's parts ride their own
+  edges (`IslandPart`: header with the top-left corner, body in the middle, dock with the bottom edge) and
+  fade on `partFade`.
+- **Tabs**: one capsule (a spring on the slot index that never swings past its slot) and one content progress
+  spring, started in the same frame; the content's cross-fade (`layerFade.tab`) follows the progress, which is
+  slower than the capsule, so content never runs ahead of the selection.
+- Diagnostics: set `window.__ISLAND_TRACE__ = []` (DevTools) to record every frame of the shape
+  (time, transition, size, radius, velocity, progress, settled, target).
+
 ## 5. File map
 
 ```
@@ -218,10 +278,11 @@ src/
   components/CrashBoundary.tsx
   components/Pill/        PillShell, CompactIsland, ExpandedIsland, MeetingAlert, NotificationToast,
                           ContextMenu, TabDock, TabBoundary, tabs.ts, animations.ts, alertLayout.ts,
-                          usePillGeometry.ts, useCompactLayout.ts, panels/{CalendarTab,DayTimeline,WeekStrip,NotificationsTab,AboutTab,SettingsTab},
-                          RingerPill, IslandLayer, ui/{meetingActions,eventColor}
+                          usePillGeometry.ts, useCompactLayout.ts, panels/{CalendarTab,DayTimeline,WeekStrip,NotificationsTab,NotesTab,AboutTab,SettingsTab},
+                          RingerPill, IslandLayer (+ IslandPart), drivenTransition.ts, useIslandMotion.ts,
+                          ui/{meetingActions,eventColor}
   hooks/                  useIslandState, usePillState, useIslandEvents, useCalendar, useReminders,
-                          useSettings, useSystemInfo, useNotifications, useMeetingInvites, useMeetingSilence, useClock,
+                          useSettings, useSystemInfo, useNotifications, useMeetingInvites, useMeetingSilence, useClock, useNotes,
                           useScreenReader, useDesktopGestures, useCrashRecovery
   lib/appInfo.ts          product constants (name, identifier, version)
   lib/i18n.ts             string tables en/he, t(), detectLocale, isRtl, plurals, setFixedLocale/getWordTag
@@ -232,12 +293,25 @@ src/
                           normalize.ts, select.ts, types.ts, dayRange.ts (on-demand days), meetingStatus.ts,
                           inviteAnswers.ts
   lib/reminders/          engine.ts, store.ts, types.ts
-  lib/island/             state.ts, timing.ts, geometryQueue.ts, compactLayout.ts, morph.ts, silence.ts
+  lib/island/             state.ts, timing.ts, geometryQueue.ts, compactLayout.ts, morph.ts, silence.ts,
+                          spring.ts (closed-form spring), islandMotion.ts (the one owner of the island's shape)
   lib/notifications/      history.ts (this session's notifications, memory only)
+  lib/notes/              store.ts (createNotesStore, sortNotes, newNoteId), store.test.ts
+  tour/                   main.tsx, TourApp.tsx, TourStage.tsx, steps.tsx, crossFade.tsx, compact.ts, mockData.ts,
+                          host.ts (messages to the Center's WebView2), params.ts, tour.css, tour.test.tsx
+tour.html                 second Vite page (CSP meta, connect-src 'none'); built into dist/ next to index.html
+center/                   Island Center (WinUI 3), versioned by center/Directory.Build.props
+  CompanyIsland.Center/       WinExe: Program.cs (single instance), App, MainWindow (navigation, title bar, disconnected bar),
+                              Pages/{Welcome,Settings,Notes,Tour}Page, Services/{CenterModel,NoteViewModel}, Theme/CenterTheme.xaml,
+                              Controls/SettingRow, app.manifest (asInvoker, PerMonitorV2), Assets/icon.ico
+  CompanyIsland.Center.Core/  pipe name, IslandClient, models + source-generated JSON context, NoteOps, CenterPage, Strings (Hebrew)
+  CompanyIsland.Center.Tests/ xunit: Core and IslandClient against an in-process fake pipe server
+  publish/                    build output (gitignored): the folder installed as <install>\center\
 src-tauri/
   tauri.conf.json         product, window (transparent, no decorations, non-focusable), CSP, NSIS bundle
   windows-app.manifest    asInvoker, PerMonitorV2, Common-Controls v6, long paths
-  installer-hooks.nsh     OS gate (1603), HKLM Run value, pre-uninstall close
+  tauri.installer.conf.json   merged only by `npm run build:installer`: beforeBuildCommand builds the web app and the Center, bundle.resources maps center/publish to <install>\center
+  installer-hooks.nsh     OS gate (1603), HKLM Run value, pre-install and pre-uninstall close of the island and of CompanyIsland.Center.exe
   capabilities/default.json   core:event:allow-listen / allow-unlisten only
   .cargo/config.toml      +crt-static
   src/lib.rs              builder, plugins (single-instance, core plugin: log + state), command table, WebView2 args
@@ -247,16 +321,26 @@ src-tauri/
   src/calendar_diag.rs, diagnostics.rs
   src/notifications.rs, system.rs, monitors.rs, window.rs, fullscreen.rs, tray.rs, clipboard.rs
   src/paths.rs, settings.rs, reminder_state.rs, autostart.rs, debug_log.rs, rt.rs
+  src/notes.rs            notes.json: sanitize, canonical order, load / save, commands notes_load / notes_save
+  src/center.rs           valid_page, open (navigate or spawn), command open_center
+  src/center_ipc.rs       pipe name + DACL, accept loop, per-connection protocol, Hub (broadcast, navigate)
 docs/                     ENTERPRISE_DESIGN, INSTALLER, DEPLOYMENT, QA_MATRIX, ARCHITECTURE
-scripts/                  check-versions.cjs, verify-installer.ps1, make-icon.ps1
+scripts/                  check-versions.cjs (four versions), build-center.cjs, verify-installer.ps1, make-icon.ps1
 ```
 
 IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open_log_dir`, `get_settings`,
 `update_settings`, `calendar_get_snapshot`, `calendar_refresh`, `reminder_state_load`, `reminder_state_save`,
 `set_island_geometry`, `get_monitors`, `get_fullscreen_state`, `get_system_info`, `get_format_locale`, `get_diagnostics`,
 `copy_text_to_clipboard`, `notifications_get_status`, `notifications_request_access`, `activate_notification`,
-`activate_app_by_aumid`, `outlook_open_calendar`, `outlook_respond_invite`, `open_meeting_url`, `calendar_get_range`. Events (Rust to JS): `calendar-snapshot`, `notification-received`,
-`notification-status`, `settings-changed`, `fullscreen-changed`, `display-changed`, `island-toggle`, `foreground-changed`.
+`activate_app_by_aumid`, `outlook_open_calendar`, `outlook_respond_invite`, `open_meeting_url`, `calendar_get_range`, `notes_load`, `notes_save`,
+`open_center`. Events (Rust to JS): `calendar-snapshot`, `notification-received`,
+`notification-status`, `settings-changed`, `fullscreen-changed`, `display-changed`, `island-toggle`, `foreground-changed`, `notes-changed`.
+
+Pipe commands (Rust to the Center, not Tauri IPC; `center_ipc.rs`; details in ENTERPRISE_DESIGN section 1): `hello`,
+`getSettings`, `updateSettings`, `notesLoad`, `notesSave`, `getMonitors`, `getNotificationStatus`,
+`requestNotificationAccess`, `openLogDir`, `showIsland`, `log`. Pipe events: `settings-changed`, `notes-changed`
+(every client that said hello), `navigate` (Center clients only). The page cannot call the pipe and the Center cannot
+call Tauri IPC: they meet only in Rust (`settings::apply_patch`, `notes::save`, `window::show`).
 
 ## 6. Security and hardening summary
 
@@ -272,6 +356,24 @@ IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open
   AUMIDs the app has itself seen (allow-list of 64) and validated against shell metacharacters.
 - External programs are started by absolute path (`explorer.exe` from the Windows known folder).
 - WebView2 profile under `%LOCALAPPDATA%\CompanyIsland\EBWebView`, `--disable-background-networking`.
+- Center pipe: `\\.\pipe\CompanyIsland.Center.<session>.<sidhash>` is created with a protected DACL
+  (`D:P(A;;GA;;;<user SID>)`: this user only, not Administrators), `PIPE_REJECT_REMOTE_CLIENTS`, a first-instance
+  flag (a name that already exists means `APP-031` and no server, so a squatter cannot be served) and at most 4
+  instances. Each connection must come from the island's own Windows session (`GetNamedPipeClientSessionId`),
+  must say `hello` (protocol 1) before anything else, and is limited to 16 MiB per line. Only a fixed list of
+  commands exists, arguments are validated, `showIsland` accepts only the five tab names, `log` messages are
+  clipped to 300 characters. The client uses `PipeOptions.CurrentUserOnly`. Nothing is logged from request or
+  response bodies.
+- Foreground: the island's `AllowSetForegroundWindow` calls are for one named pid each (the user's Outlook after
+  a click on an invitation; the Center's pid after a click on an island button or the tray item, or at the first
+  run); never `ASFW_ANY`. `navigate` is only sent after that grant.
+- Island Center process: `asInvoker`, started by absolute path (`<dir of CompanyIsland.exe>\center\...`), no shell,
+  no arguments except `--page <valid page>` (validated by `center::valid_page` before it is passed).
+- Tour host (the Center's WebView2): the page's own CSP forbids every connection (`connect-src 'none'`); the host
+  maps `tour.companyisland.invalid` to `center\web\` only, cancels any navigation to another origin, new windows,
+  downloads and permission requests, turns off dev tools, the context menu, the status bar, zoom, browser
+  accelerator keys, autofill and error pages, ignores page messages from another host, and accepts only
+  `navigate` (to welcome, settings or notes) and `done`. Its profile (`EBWebView-Center`) is separate from the island's.
 
 ## 7. Settings
 
@@ -279,7 +381,12 @@ IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open
 `launchWithWindows` (true), `hideInFullscreen` (true), `meetingReminderEnabled` (true), `reminderMinutes`
 (30, clamped 0-120; the UI offers 5/10/15/30), `monitorId` (null = primary; otherwise a zero-based index as a
 string, missing monitor falls back to primary), `notificationsEnabled` (true), `meetingSilencePrompt` (true; the ring / silent pill at a meeting's start), `meetingInvitesEnabled` (true; off
-means the Inbox is not read at all, picked up at the next sync), `debugLogging` (false). A change emits `settings-changed`; `launchWithWindows` writes the HKCU StartupApproved
+means the Inbox is not read at all, picked up at the next sync), `debugLogging` (false), `onboardingDone` (false; set
+to true by the island itself once the Center's Welcome page was opened at the first run, so an older file without the
+key shows it once; the Center's Settings page has no control for it) and `islandDisplay` (`full` | `clock` | `date`,
+default `full`, anything else becomes `full`; chosen in the island's Settings tab or the Center). A change (from the
+island's page or from the Center over the pipe, which both end in `settings::apply_patch`) emits the Tauri event
+`settings-changed` and the same pipe event, so each side redraws; `launchWithWindows` writes the HKCU StartupApproved
 value; `debugLogging` switches the log level; `monitorId` re-places the island; `hideInFullscreen`
 re-evaluates fullscreen; `notificationsEnabled` starts or stops delivery.
 
@@ -294,8 +401,11 @@ failed to start`, process exits with code 1).
 | Code | Meaning | Raised by | User-visible effect | Typical action |
 |---|---|---|---|---|
 | APP-001 | Unhandled panic caught, a background command task failed, UI render error in a tab, or the app failed to start | `debug_log::catch`, panic hook, `rt::run_blocking`, `TabBoundary`, `lib.rs` | A tab shows "Unavailable / Try again"; the rest keeps working | Collect the log; report |
-| APP-002 | Settings or reminder state could not be written / data folder unavailable | `settings.rs`, `reminder_state.rs` | Settings kept in memory only; reminders may repeat after a restart | Check profile volume and permissions |
-| APP-003 | Settings or reminder file corrupt or unreadable | `settings.rs`, `reminder_state.rs` | Defaults / empty set; bad file kept as `*.corrupt` | Delete or inspect `*.corrupt` |
+| APP-002 | Settings, reminder state or notes could not be written / data folder unavailable (also: the notes file would exceed 16 MiB) | `settings.rs`, `reminder_state.rs`, `notes.rs` | Settings kept in memory only; reminders may repeat after a restart; a note change is reverted and the Notes tab / Center says it could not be saved | Check profile volume and permissions |
+| APP-003 | Settings, reminder or notes file corrupt or unreadable | `settings.rs`, `reminder_state.rs`, `notes.rs` | Defaults / empty set / no notes; bad file kept as `*.corrupt` | Delete or inspect `*.corrupt` (`notes.json.corrupt` holds the user's notes: do not delete without asking) |
+| APP-030 | Island Center missing (`center\CompanyIsland.Center.exe` not next to the island) or could not be started; also the first-run thread could not start | `center.rs`, `lib.rs` | The Center button / tray item does nothing; the first-run Welcome is retried at the next start | Reinstall; check that application control allows `center\CompanyIsland.Center.exe` |
+| APP-031 | Center connection: the pipe could not be created (name taken), cannot listen again or accept, a connection was refused (another session), a client is too slow, a request line is too long, or a protocol error (`hello required`, unsupported protocol, unknown command, invalid arguments) | `center_ipc.rs` | The Center shows "the island is not running" or an error bar; the island is unaffected | Informational; collect the log if the Center never connects |
+| APP-032 | `open_center` with a page name that is not `welcome`, `tour`, `settings`, `notes`, `notes-new` or `note:<valid id>` | `center.rs` | Nothing opens | Report (a bug, not a user error) |
 | APP-020 | A Join click with a link the island did not find itself, or no handler could open it | `outlook.rs` (`open_meeting_url`) | Nothing opens | Check the default browser / Teams install |
 | APP-010 | Log folder unavailable or cannot be opened | `debug_log.rs`, `paths.rs` | No log file; "Open logs" fails | Check `%LOCALAPPDATA%\CompanyIsland\logs` |
 | OUTLOOK-101 | Outlook not running (informational) | `calendar.rs` | "Waiting for Outlook" | Start Classic Outlook |
@@ -338,7 +448,17 @@ failed to start`, process exits with code 1).
    Computer / User / Outlook: Connected|Waiting for Outlook|Connection Failed (Internal Error: CODE) / Calendar /
    Cached events / Notifications: Available|Restricted by policy ...`), followed by every field including
    `Notification delivery: events|polling|none` and the recent error codes.
-8. No network: no telemetry, no update check, no cloud calls.
+8. No network: no telemetry, no update check, no cloud calls. The Island Center and its Tour make none either
+   (the Tour is local files behind a WebView2 virtual host; its page cannot connect anywhere).
+9. Notes (1.0.4) are the one persisted piece of user-typed content: `state\notes.json`, per user, at most 500 notes
+   of 10,000 characters and 16 MiB, atomic writes, a corrupt file quarantined as `notes.json.corrupt` (`APP-003`).
+   Note text never appears in a log, in diagnostics, in the pipe's `log` command (the Center sends codes and names
+   only) or in the Center's own error reports; logs hold counts only ("saved 12 notes", "repaired notes on load: 3
+   -> 2"), and an `open_center` log line names the page kind (`note`), never the note id. Notes are kept when the
+   product is uninstalled, like all per-user data.
+10. The pipe carries only what the user asked for in the Center (settings, notes, monitors, notification status,
+    `showIsland`, `openLogDir`) and nothing else; request and response bodies are never logged. The Tour has no IPC
+    (no pipe, no Tauri bridge) and no network, and shows invented sample data.
 
 ## 10. Extending
 

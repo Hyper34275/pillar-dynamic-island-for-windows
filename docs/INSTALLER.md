@@ -5,24 +5,35 @@ signed-in standard user, never elevated, and never writes HKLM.
 
 ## Building
 
-Requirements: Windows x64, Node.js 18+, Rust (MSVC toolchain). The build machine needs internet
-**once**: Tauri downloads the NSIS toolchain and the WebView2 Evergreen Standalone x64 installer
-(`webviewInstallMode: offlineInstaller`), which is then embedded in the installer so target PCs need
-no internet.
+Requirements: Windows x64, Node.js 18+, Rust (MSVC toolchain), and since 1.0.4 the .NET 10 SDK (`dotnet`) for the
+Island Center. The build machine needs internet **once**: Tauri downloads the NSIS toolchain and the WebView2
+Evergreen Standalone x64 installer (`webviewInstallMode: offlineInstaller`), which is then embedded in the
+installer so target PCs need no internet, and `dotnet publish` restores the Center's NuGet packages
+(`Microsoft.WindowsAppSDK.WinUI` 1.8 and `Microsoft.WindowsAppSDK.Runtime` 1.8). Build from a short folder path:
+a deep one breaks the MSIX content extraction of the Windows App SDK packages.
 
 ```bash
 npm install
-npm run build:installer      # checks versions, then `tauri build`
+npm run build:installer      # checks the four versions, then `tauri build --config src-tauri/tauri.installer.conf.json`
 ```
+
+`src-tauri/tauri.installer.conf.json` is merged into `tauri.conf.json` only by this script. It sets
+`build.beforeBuildCommand` to `npm run build && npm run build:center` (the web build, which also produces
+`dist/tour.html`, then `scripts/build-center.cjs`: `dotnet publish` of `center/CompanyIsland.Center` in Release,
+self-contained and trimmed, into `center/publish/`, with `onnxruntime.dll`, `DirectML.dll` and the `.pdb` files
+removed and `dist/` copied to `center/publish/web/`) and maps `bundle.resources` `../center/publish` to `center`
+under the install folder. A plain `cargo test` or `tauri dev` never needs the publish folder. `build-center.cjs`
+fails early when `dist/tour.html` is missing or a file name contains `$`, a double quote or a backtick (they would
+break the NSIS `File` lines).
 
 Output: `src-tauri/target/release/bundle/nsis/CompanyIsland_<version>_x64-setup.exe`.
 
 ```powershell
-powershell -File scripts/verify-installer.ps1 <path-to-setup.exe>   # size, SHA256, PE type, file name
+powershell -File scripts/verify-installer.ps1 <path-to-setup.exe>   # size, SHA256, PE type, file name, Island Center in the payload
 ```
 
-The version must be identical in `package.json`, `src-tauri/Cargo.toml` and
-`src-tauri/tauri.conf.json`; `scripts/check-versions.cjs` (the `prebuild:installer` hook) enforces it.
+The version must be identical in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` and
+`center/Directory.Build.props` (`<Version>`); `scripts/check-versions.cjs` (the `prebuild:installer` hook) enforces it.
 The NSIS stub itself is a 32-bit PE even though the payload is x64; that is normal for Tauri.
 
 `@tauri-apps/api`, `@tauri-apps/cli` and the `tauri` crate must share the same major.minor (currently
@@ -55,9 +66,17 @@ installed. Other non-zero codes are standard NSIS codes (`2` = aborted).
   `src-tauri/src/autostart.rs`.
 - Never writes HKCU (it would be the administrator's hive). Each user can opt out of autostart in the
   app or Task Manager; that only writes the user's own `StartupApproved\Run` value.
-- Uninstall: asks `CompanyIsland.exe` to close (`taskkill`, no `/F`; elevated, this only reaches the
-  uninstaller's own session), then Tauri force-closes any remaining instance in any session, removes
-  files, shortcuts and the `Run` value.
+- Installs the Island Center into `<install folder>\center\` (about 347 files, 86 MiB on disk: the
+  self-contained WinUI 3 app and its runtime, `center\web\` for the tour). Tauri's own running-app check only
+  watches `CompanyIsland.exe`, so `NSIS_HOOK_PREINSTALL` and `NSIS_HOOK_PREUNINSTALL` call a function
+  (`CompanyIslandStopCenter`, and an `un.` copy for the uninstaller) that asks `CompanyIsland.Center.exe` to
+  close (`taskkill /IM`, no `/F`), polls `tasklist` every 0.5 s for up to 5 s, then forces it (`taskkill /F`). An
+  open Center would otherwise lock its files during an upgrade or uninstall.
+- Uninstall: closes the Center (above), asks `CompanyIsland.exe` to close (`taskkill`, no `/F`; elevated, this
+  only reaches the uninstaller's own session), then Tauri force-closes any remaining instance in any session,
+  removes files (the `center\` files are deleted one by one from the install script's resource list, then the
+  folders when empty), shortcuts and the `Run` value. A file that an older version installed and the current one
+  no longer lists stays behind with its folder.
 
 ### Per-user data is kept
 
@@ -68,8 +87,9 @@ profiles. To wipe it, run per user (logon script or as that user):
 rmdir /s /q "%LOCALAPPDATA%\CompanyIsland"
 ```
 
-That folder holds settings, reminder state, logs and the WebView2 profile (`EBWebView`; the app points
-WebView2 there, so nothing is created under `%LOCALAPPDATA%\com.companyisland.app`). The uninstaller's
+That folder holds settings, reminder state, the user's notes (`state\notes.json`, since 1.0.4), logs and the
+WebView2 profiles (`EBWebView`, and `EBWebView-Center` for the Center's tour; the app points WebView2 there, so
+nothing is created under `%LOCALAPPDATA%\com.companyisland.app`). The uninstaller's
 "delete app data" checkbox only cleans the administrator's own `%LOCALAPPDATA%\com.companyisland.app`,
 which is empty.
 
@@ -86,7 +106,13 @@ Nothing is signed; no certificate settings exist in `tauri.conf.json` on purpose
 `bundle.windows` either `certificateThumbprint` (+ `digestAlgorithm: "sha256"`, `timestampUrl`) or a
 `signCommand` (for example `{ "cmd": "signtool", "args": ["sign", "/fd", "sha256", "/a", "%1"] }`).
 Tauri then signs `CompanyIsland.exe`, the uninstaller and the installer. Unsigned installers trigger
-SmartScreen and may be blocked by AppLocker/WDAC policies.
+SmartScreen and may be blocked by AppLocker/WDAC policies. The Island Center's files travel as bundle
+resources, which the Tauri bundler copies as they are **(unverified: not tried with a certificate)**: to have
+`center\CompanyIsland.Center.exe` (and `CompanyIsland.Center.dll`, `CompanyIsland.Center.Core.dll`) signed, sign
+them in `center/publish/` after `scripts/build-center.cjs` and before the bundler runs. Nothing does that today.
+
+The Center has its own manifest (`center/CompanyIsland.Center/app.manifest`): `asInvoker`, Windows 10/11
+compatibility, PerMonitorV2 DPI.
 
 ## Placeholders to change when the real company name is known
 
