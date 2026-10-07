@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <!-- Checked by scripts/check-versions.cjs against package.json / Cargo.toml / tauri.conf.json. -->
-    <Version>1.0.6</Version>
+    <Version>1.0.7</Version>
     <Company>CompanyIsland</Company>
     <Product>CompanyIsland Center</Product>
     <Copyright>CompanyIsland</Copyright>
