@@ -337,6 +337,12 @@ function useComposerKeyboard() {
     void ipc.islandKeyboard(true).then((ok) => {
       acquiring.current = false;
       if (!ok) return;
+      // The tab closed while the island was taking the keyboard (its cleanup had nothing to release
+      // yet): give it back now rather than leave the window active with no text box.
+      if (!textareaRef.current) {
+        void ipc.islandKeyboard(false);
+        return;
+      }
       islandTyping.set(true);
       textareaRef.current?.focus();
     });

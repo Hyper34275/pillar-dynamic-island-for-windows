@@ -1,5 +1,9 @@
 //! The island window: non-activating styles, placement, display-change handling and show/hide.
 //!
+//! The window has no frame: a WS_POPUP with no caption or system menu (`frameless_style`), and
+//! activation changes never repaint a non-client area (`WM_NCACTIVATE`), so Windows never draws a
+//! title bar over the island.
+//!
 //! The window never takes focus: `WS_EX_NOACTIVATE` keeps clicks from activating
 //! it and `WS_EX_TOOLWINDOW` removes it from Alt+Tab. This app's own code never calls
 //! `SetForegroundWindow` or `set_focus`. (The single-instance plugin makes the second process
@@ -40,9 +44,10 @@ use windows::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, CreateRoundRectRg
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, KillTimer, RegisterWindowMessageW, SetTimer, SetWindowLongPtrW, SetWindowPos,
-    GWL_EXSTYLE, HWND_TOPMOST, SPI_SETDESKWALLPAPER, SPI_SETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER,
-    SWP_NOSIZE, SWP_NOZORDER, STYLESTRUCT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY, WM_POWERBROADCAST,
-    WA_INACTIVE, WM_ACTIVATE, WM_SETTINGCHANGE, WM_STYLECHANGING, WM_TIMER, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, SPI_SETDESKWALLPAPER, SPI_SETWORKAREA, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, STYLESTRUCT, WM_DISPLAYCHANGE, WM_DPICHANGED, WM_NCDESTROY, WM_POWERBROADCAST,
+    WA_INACTIVE, WM_ACTIVATE, WM_NCACTIVATE, WM_SETTINGCHANGE, WM_STYLECHANGING, WM_TIMER, WS_CAPTION, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 
 pub const MAIN: &str = "main";
@@ -124,6 +129,20 @@ fn forced_ex_style() -> u32 {
     }
 }
 
+/// The island has no frame of any kind: tao builds the style of an "undecorated" window as
+/// WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX (measured on the live window: 0x14CB0000)
+/// and only hides the caption by making the non-client area zero-sized in WM_NCCALCSIZE. The caption
+/// is still there for user32, which paints it itself (the window region turns DWM's frame off)
+/// straight over the client area: when a note's text box took or gave back the keyboard (the window
+/// activating or deactivating, the island collapsing), a white tool-window title bar
+/// ("CompanyIsland" and an X) flashed at the top of the stage. A WS_POPUP without those bits has no
+/// caption, system menu or sizing frame; the activation repaint is refused in `subclass_proc`
+/// (WM_NCACTIVATE). tao rewrites GWL_STYLE from its flags on every flag change (show/hide,
+/// focusable, topmost) and never reads the bits back, so this is forced into every write.
+fn frameless_style(style: u32) -> u32 {
+    (style & !(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0) | WS_POPUP.0
+}
+
 fn main_window(app: &AppHandle) -> Option<Window> {
     app.get_webview_window(MAIN).map(|w| w.as_ref().window())
 }
@@ -152,11 +171,9 @@ const DWMWCP_DONOTROUND: u32 = 1;
 /// `DWMWA_COLOR_NONE`: no border at all.
 const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
 
-/// The island is a shape of its own: ask DWM for no frame treatment at all. tao keeps WS_CAPTION |
-/// WS_SYSMENU on the HWND of an "undecorated" window (it only makes the non-client area zero-sized
-/// in WM_NCCALCSIZE; measured on the live window: style 0x14CB0000), and on Windows 11 DWM applies
-/// its frame look to such a window: a 1 px border in the system border colour and rounded-corner
-/// clipping. Neither belongs to a black silhouette (the border reads as a bright outline on a
+/// The island is a shape of its own: ask DWM for no frame treatment at all. On Windows 11 DWM
+/// applies its frame look to a top-level window (and tao's undecorated window had WS_CAPTION until
+/// `frameless_style`): a 1 px border in the system border colour and rounded-corner clipping. Neither belongs to a black silhouette (the border reads as a bright outline on a
 /// dark wallpaper, the rounding as a second, different, corner under the island's own). Border
 /// colour NONE and corner preference DO-NOT-ROUND remove both; on Windows 10 the attributes do
 /// not exist and the call just fails, which is the right answer there too.
@@ -172,6 +189,11 @@ fn remove_dwm_frame(hwnd: HWND) {
 fn apply_non_activating(hwnd: HWND) -> Result<(), String> {
     remove_dwm_frame(hwnd);
     unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let wanted = frameless_style(style as u32) as isize;
+        if wanted != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, wanted);
+        }
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         let wanted = style | forced_ex_style() as isize;
         if wanted != style {
@@ -399,6 +421,20 @@ unsafe extern "system" fn subclass_proc(
             let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
             styles.styleNew |= forced_ex_style();
         }
+        // The same rewrite puts tao's caption bits back into the style: keep them out, so neither
+        // a title change, a frame recalculation nor the system menu has a title bar to draw.
+        WM_STYLECHANGING if wparam.0 as i32 == GWL_STYLE.0 => {
+            let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
+            styles.styleNew = frameless_style(styles.styleNew);
+        }
+        // The island has no non-client area, so an activation change has nothing to repaint there.
+        // With the window region DWM does not draw this window's frame (DWMWA_NCRENDERING_ENABLED
+        // is false), user32 does, and a window *created* with a caption (tao always creates one)
+        // still gets one painted over its client area on WM_NCACTIVATE after the style lost
+        // WS_CAPTION (measured in a replica of this window: the white "CompanyIsland" bar on every
+        // activation change; none with lParam -1). lParam -1 is DefWindowProc's documented "do not
+        // repaint the non-client area"; tao still sees the message and tracks focus as before.
+        WM_NCACTIVATE => return DefSubclassProc(hwnd, msg, wparam, LPARAM(-1)),
         // Another window became active while a note was being typed: the island gives the
         // keyboard back. Queued, so the style is not rewritten inside the activation itself.
         WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE && KEYBOARD.load(Ordering::Acquire) => {
@@ -633,6 +669,21 @@ mod tests {
             assert!(!is_tray_settings(WM_SETTINGCHANGE, 0x13, lp(&name)));
             assert!(!is_tray_settings(WM_DISPLAYCHANGE, 0, lp(&name)));
         }
+    }
+
+    #[test]
+    fn the_island_style_has_no_caption_to_paint() {
+        // tao's undecorated, non-resizable, visible window as measured on the live island.
+        let tao = 0x14CB_0000;
+        let style = frameless_style(tao);
+        assert_eq!(style & WS_CAPTION.0, 0);
+        assert_eq!(style & (WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0, 0);
+        // WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS
+        assert_eq!(style, 0x9400_0000);
+        // Stable: forcing it again (every later tao rewrite) changes nothing.
+        assert_eq!(frameless_style(style), style);
+        // A hidden window stays hidden.
+        assert_eq!(frameless_style(tao & !0x1000_0000), 0x8400_0000);
     }
 
     #[test]
