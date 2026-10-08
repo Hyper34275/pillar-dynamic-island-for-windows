@@ -50,7 +50,9 @@ pub enum SearchMode {
     Hidden,
     Icon,
     Box,
-    /// Value missing or something else: fail closed (no anchor, the hotkey still works).
+    /// Value missing or something else. Windows 10 leaves the value out while the box is shown with
+    /// its default setting (seen on a real 21H2 PC), so this anchors only when the box itself is
+    /// measured as a real box (size checks in `anchored`); otherwise the hotkey still works.
     Unknown,
 }
 
@@ -137,7 +139,9 @@ fn inflate(r: Bounds, by: i32) -> Bounds {
 }
 
 fn anchored(i: &Inputs) -> Option<Layout> {
-    if !i.anchor_supported || i.mode != SearchMode::Box {
+    // Hidden and Icon are explicit user choices: no box to sit on. Box, or no value at all (the
+    // Windows 10 default), go on to the measured rectangle, which must look like a real box.
+    if !i.anchor_supported || matches!(i.mode, SearchMode::Hidden | SearchMode::Icon) {
         return None;
     }
     let edge = match i.edge {
@@ -309,8 +313,8 @@ mod tests {
     }
 
     #[test]
-    fn mode_other_than_box_is_not_anchored() {
-        for mode in [SearchMode::Hidden, SearchMode::Icon, SearchMode::Unknown] {
+    fn hidden_or_icon_mode_is_not_anchored() {
+        for mode in [SearchMode::Hidden, SearchMode::Icon] {
             let mut i = inputs(monitor(0, 0, 96, true));
             i.mode = mode;
             assert!(!compute_layout(&i).anchored, "{mode:?}");
@@ -320,6 +324,47 @@ mod tests {
         assert_eq!(SearchMode::from_registry(Some(0)), SearchMode::Hidden);
         assert_eq!(SearchMode::from_registry(Some(7)), SearchMode::Unknown);
         assert_eq!(SearchMode::from_registry(None), SearchMode::Unknown);
+    }
+
+    /// Measured on a real Windows 10 Enterprise 21H2 (19044) PC: 1920x1200 at 96 DPI, taskbar at the
+    /// bottom 40 px high, TrayDummySearchControl a direct child of Shell_TrayWnd at
+    /// [48,1160 - 392,1200] (344x40), and NO SearchboxTaskbarMode value in the registry.
+    #[test]
+    fn real_windows_10_21h2_box_without_registry_value_is_anchored_flush() {
+        let m = MonitorGeom {
+            bounds: b(0, 0, 1920, 1200),
+            work: b(0, 0, 1920, 1160),
+            dpi: 96,
+            primary: true,
+        };
+        let i = Inputs {
+            mode: SearchMode::from_registry(None),
+            edge: Some(Edge::Bottom),
+            search_rect: Some(b(48, 1160, 392, 1200)),
+            monitors: vec![m],
+            anchor_supported: true,
+            autohide: false,
+        };
+        let l = compute_layout(&i);
+        assert!(l.anchored);
+        assert_eq!(l.window, b(48, 1160, 392, 1200), "exactly the Windows search box");
+        assert_eq!(l.region_radius_px, 0);
+        assert_eq!(l.button, Some(b(392 - 6 - 24, 1168, 392 - 6, 1192)));
+        let st = l.to_state(false);
+        assert!(st.anchored && (st.width - 344.0).abs() < 0.5 && (st.height - 40.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn a_missing_value_with_no_real_box_is_not_anchored() {
+        let mut i = inputs(monitor(0, 0, 96, true));
+        i.mode = SearchMode::Unknown;
+        // Windows 11 / icon-only shells report the control as 0x0
+        let r = i.search_rect.unwrap();
+        i.search_rect = Some(b(r.left, r.top, r.left, r.top));
+        assert!(!compute_layout(&i).anchored);
+        // a 48 px icon-sized control is not a box either
+        i.search_rect = Some(b(r.left, r.top, r.left + 48, r.bottom));
+        assert!(!compute_layout(&i).anchored);
     }
 
     #[test]
