@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMotionValue, usePresence, type MotionValue } from "motion/react";
-import { layerFrame, transitionDirection, transitionProgress, type Fade, type LayerFrame, type Transition } from "../../lib/island/morph";
+import { layerFrame, transitionDirection, transitionProgress, type Fade, type LayerStart, type Transition } from "../../lib/island/morph";
 
 /** A transition as its layers see it: where it started and where it goes, plus the live driver values. */
 export interface DrivenTransition {
@@ -42,10 +42,17 @@ export const LayerContext = createContext<LayerInfo | null>(null);
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 /**
- * The transition `drivers` are making towards `target`. A new one begins, from wherever the
- * drivers are at that instant, whenever `key` (what is shown) or `target` changes. It is decided
- * during render, so the very commit that mounts a new layer already knows that layer starts
- * the transition invisible: no frame can show it ahead of the container.
+ * The transition `drivers` are making towards `target`. A new one begins whenever `key` (what is
+ * shown) or `target` changes. It is decided during render, so the very commit that mounts a new
+ * layer already knows that layer starts the transition invisible: no frame can show it ahead of
+ * the container.
+ *
+ * Its path is measured from where the PREVIOUS transition was heading (that shape is what the
+ * layers on screen belong to), not from wherever the drivers happen to be. At rest the two are the
+ * same. Caught half way (the island reversed 60 ms into opening), the new transition's progress
+ * already stands part of the way along the path back, and the layers' fades begin there
+ * (morph.ts LayerStart.p): the content leaves and arrives against the shape's actual size, so an
+ * interruption cannot leave a large shape between two owners with nothing in it.
  */
 export function useDrivenTransition(
   drivers: readonly MotionValue<number>[],
@@ -57,7 +64,7 @@ export function useDrivenTransition(
   const [state, setState] = useState(() => ({ id, transition: { from: target, to: target, direction } as Transition }));
   let current = state;
   if (state.id !== id) {
-    current = { id, transition: { from: drivers.map((driver) => driver.get()), to: target, direction } };
+    current = { id, transition: { from: state.transition.to, to: target, direction } };
     setState(current);
   }
   const { transition } = current;
@@ -74,15 +81,16 @@ function useDrivenFade(driven: DrivenTransition, entering: boolean, fade: Fade, 
   const opacity = useMotionValue(0);
   const shift = useMotionValue(0);
 
-  const startRef = useRef<{ transition: Transition; entering: boolean; frame: LayerFrame } | null>(null);
+  const startRef = useRef<{ transition: Transition; entering: boolean; frame: LayerStart } | null>(null);
   const previous = startRef.current;
   if (!previous || previous.transition !== driven.transition || previous.entering !== entering) {
     startRef.current = {
       transition: driven.transition,
       entering,
-      frame: previous
-        ? { opacity: opacity.get(), offset: shift.get() }
-        : { opacity: 0, offset: transitionDirection(driven.transition) * offset },
+      frame: {
+        ...(previous ? { opacity: opacity.get(), offset: shift.get() } : { opacity: 0, offset: transitionDirection(driven.transition) * offset }),
+        p: transitionProgress(driven.transition, driven.drivers.map((driver) => driver.get())),
+      },
     };
   }
 

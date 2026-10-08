@@ -78,18 +78,61 @@ export interface LayerFrame {
   offset: number;
 }
 
+/** What a layer showed when its fade began, and how far its transition had already travelled then. */
+export interface LayerStart extends LayerFrame {
+  /**
+   * The transition's progress at that moment (0 when it began from rest, the default). A
+   * transition interrupted half way (a reversal) is measured along its whole path, not from where
+   * it was caught, so its progress already stands part of the way along; the windows below then
+   * begin there instead of lying in the past (a leaving layer would vanish at once, an arriving
+   * one would jump in), which left an empty shape between the two owners.
+   */
+  p?: number;
+}
+
+/**
+ * The shortest stretch of progress an interrupted transition gives a fade that began part of the
+ * way along it: enough that the hand-over takes a few frames instead of one.
+ */
+export const MIN_FADE_SPAN = 0.2;
+
+/**
+ * How much progress an interrupted transition lets the layer that was leaving (it may have been
+ * the owner a moment ago, readable) fall before a layer that was not visible starts to arrive:
+ * measured at the point the transition was caught, so the two are never both readable.
+ */
+export const INTERRUPT_ARRIVAL_DELAY = 0.06;
+
+/** Below this a layer caught by an interruption is not what the screen shows (the bar the tests and the trace call readable). */
+export const READABLE_START = 0.35;
+
 /**
  * A layer's frame at progress `p`. `start` is what it showed when the transition began, so a
  * layer caught mid-fade by a new transition continues from there instead of jumping. Entering
  * layers settle at fully visible and offset 0; leaving ones fade to nothing while moving to
  * `exitOffset`. A layer that is already partly visible (it was leaving and came back) starts
  * rising at once rather than waiting for its fade-in window.
+ *
+ * When `start.p` is above 0 (the transition was interrupted part-way) the windows begin no earlier
+ * than it and last at least MIN_FADE_SPAN (never past 1): the same ownership rules, from where
+ * the transition actually is. There:
+ *  - a layer that is only faintly visible (below READABLE_START: it was on its way out, not the
+ *    owner) holds that opacity until its own window opens instead of rising at once: whatever
+ *    owns the screen is still leaving, and it must not become readable beside it;
+ *  - a layer that was not visible at all starts INTERRUPT_ARRIVAL_DELAY after the transition
+ *    was caught (never before its own window), so the leaving owner has fallen below readable
+ *    before it arrives.
  */
-export function layerFrame(fade: Fade, entering: boolean, start: LayerFrame, exitOffset: number, p: number): LayerFrame {
+export function layerFrame(fade: Fade, entering: boolean, start: LayerStart, exitOffset: number, p: number): LayerFrame {
+  const p0 = clamp01(start.p ?? 0);
+  const floor = p0 > 0 ? Math.min(1, p0 + MIN_FADE_SPAN) : 0;
   if (entering) {
-    const t = easeOut(span(p, start.opacity > 0 ? 0 : fade.in[0], fade.in[1]));
+    const rises = start.opacity >= READABLE_START || (start.opacity > 0 && p0 <= 0);
+    const from = rises ? p0 : p0 > 0 ? Math.min(Math.max(fade.in[0], start.opacity > 0 ? p0 : p0 + INTERRUPT_ARRIVAL_DELAY), 0.9) : fade.in[0];
+    const to = p0 > 0 ? Math.min(1, Math.max(fade.in[1], floor, from + 0.1)) : fade.in[1];
+    const t = easeOut(span(p, from, to));
     return { opacity: lerp(start.opacity, 1, t), offset: lerp(start.offset, 0, t) };
   }
-  const t = span(p, 0, fade.out);
+  const t = span(p, p0, Math.max(fade.out, floor));
   return { opacity: start.opacity * (1 - easeIn(t)), offset: lerp(start.offset, exitOffset, easeOut(t)) };
 }

@@ -31,10 +31,10 @@ import type { SpringParams } from "../../lib/island/spring";
 import { useSpringValue } from "./useIslandMotion";
 
 /** Where on the handoff's progress the screen changes owner. */
-export const TOAST_HANDOFF = 0.32;
+export const TOAST_HANDOFF = 0.29;
 
-/** The leaving payload is gone by 0.34; the arriving one starts just before (0.27: no empty instant, both faint at the crossing) and is fully in by 0.8. */
-export const toastPayloadFade: Fade = { in: [0.27, 0.8], out: 0.34 };
+/** The leaving payload is gone by 0.36; the arriving one starts just before (0.22: no empty instant, both ~0.29 at the crossing, never both readable) and is fully in by 0.75. */
+export const toastPayloadFade: Fade = { in: [0.22, 0.75], out: 0.36 };
 
 /**
  * The handoff's clock: critically damped (no bounce), about as quick as the shell's own width

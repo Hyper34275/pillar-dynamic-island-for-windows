@@ -125,6 +125,126 @@ describe("compact ↔ expanded ownership", () => {
   });
 });
 
+/** The longest run of consecutive frames in which a shape taller than `above` px shows almost nothing. */
+function longestEmptyRun(records: IslandFrameRecord[], above = 60, below = 0.3) {
+  let run = 0;
+  let longest = 0;
+  for (const f of records) {
+    if (Math.max(f.compactOpacity, f.expandedOpacity, f.toastOpacity) < below && f.shellHeight > above && f.presentationProgress < 0.999) longest = Math.max(longest, ++run);
+    else run = 0;
+  }
+  return longest;
+}
+
+/** The first frame whose transition progress has reached `p`. */
+const atProgress = (records: IslandFrameRecord[], p: number) => records.find((f) => f.presentationProgress >= p - 1e-9) ?? records[records.length - 1];
+
+describe("content follows the shape's progress (0 / 20 / 40 / 60 / 80 / 100 %)", () => {
+  it("opening: the pill's content leaves, the header takes the top row, then the body and the dock; ends with the panel alone", async () => {
+    await mount();
+    await click(island().closest("[data-island-hit]")!);
+    await frames(60);
+    const records = trace().splice(0);
+    const at = (p: number) => atProgress(records, p);
+    expect(at(0).compactOpacity).toBe(1);
+    expect(at(0).expandedOpacity).toBe(0);
+    // 20 %: the pill's content is nearly gone, the header has begun, the body has not
+    expect(at(0.2).compactOpacity).toBeLessThan(0.5);
+    expect(at(0.2).bodyOpacity).toBe(0);
+    // 40 %: the pill's content is gone, the header is readable, the body is just starting
+    expect(at(0.4).compactOpacity).toBe(0);
+    expect(at(0.4).headerOpacity).toBeGreaterThan(0.6);
+    // 60 %: the body is established
+    expect(at(0.6).bodyOpacity).toBeGreaterThan(0.2);
+    // 80 %, 100 %: everything of the panel, nothing of the pill
+    expect(at(0.8).bodyOpacity).toBeGreaterThan(0.8);
+    expect(at(1).headerOpacity).toBe(1);
+    expect(at(1).bodyOpacity).toBe(1);
+    expect(at(1).dockOpacity).toBe(1);
+    expect(at(1).compactOpacity).toBe(0);
+    expect(check(records).violations).toEqual([]);
+  });
+
+  it("closing: the header leaves first, the body holds, the pill's content arrives in the last quarter; ends with the pill alone", async () => {
+    await mount();
+    await click(island().closest("[data-island-hit]")!);
+    await frames(60);
+    trace().splice(0);
+    act(() => void document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await frames(60);
+    const records = trace().splice(0);
+    const at = (p: number) => atProgress(records, p);
+    expect(at(0.2).bodyOpacity).toBeGreaterThan(0.8);
+    expect(at(0.2).compactOpacity).toBe(0);
+    // 60 %: the header is gone from the top row, the body still holds
+    expect(at(0.6).headerOpacity).toBe(0);
+    expect(at(0.6).bodyOpacity).toBeGreaterThan(0.3);
+    // 80 %: the hand-over: the body is faint, the pill's content is coming in, never both readable
+    expect(at(0.8).bodyOpacity).toBeLessThan(0.35);
+    expect(at(0.8).compactOpacity).toBeGreaterThan(0);
+    expect(at(0.8).compactOpacity).toBeLessThan(0.6);
+    expect(at(1).compactOpacity).toBe(1);
+    expect(at(1).expandedOpacity).toBe(0);
+    expect(check(records).violations).toEqual([]);
+    // the content never drops below ~0.25 while the shape is large (no near-empty black shell)
+    expect(check(records).floor).toBeGreaterThan(0.2);
+  });
+});
+
+describe("a transition reversed part-way keeps one owner and never shows an empty shape", () => {
+  it.each([40, 60, 100, 160, 220])("opening reversed %s ms in: the hand-over is measured along the shape's whole path", async (at) => {
+    await mount();
+    await click(island().closest("[data-island-hit]")!);
+    await frames(Math.round(at / 16.7));
+    act(() => void document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await frames(50);
+    const records = trace().splice(0);
+    const result = check(records);
+    expect(result.violations).toEqual([]);
+    // Before the fix a reversal at 60 ms left a shell of 70-200 px with nothing in it for ~5 frames.
+    expect(longestEmptyRun(records)).toBeLessThanOrEqual(1);
+    expect(result.floor).toBeGreaterThan(0.2);
+    expect(island().dataset.view).toBe("idle");
+    expect(records[records.length - 1].compactOpacity).toBe(1);
+    expect(records[records.length - 1].expandedOpacity).toBe(0);
+  });
+
+  it.each([60, 120, 200])("closing reversed %s ms in: the panel comes back, never two readable owners, never empty", async (at) => {
+    await mount();
+    await click(island().closest("[data-island-hit]")!);
+    await frames(60);
+    trace().splice(0);
+    act(() => void document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await frames(Math.round(at / 16.7));
+    await click(island().closest("[data-island-hit]")!);
+    await frames(60);
+    const records = trace().splice(0);
+    const result = check(records);
+    expect(result.violations).toEqual([]);
+    expect(longestEmptyRun(records)).toBeLessThanOrEqual(1);
+    expect(result.floor).toBeGreaterThan(0.2);
+    expect(island().dataset.view).toBe("userExpanded");
+    const last = records[records.length - 1];
+    expect([last.headerOpacity, last.bodyOpacity, last.dockOpacity, last.compactOpacity]).toEqual([1, 1, 1, 0]);
+  });
+
+  it("open → close → open within 200 ms ends open, the last request wins, and the shape stays inside its bounds", async () => {
+    await mount();
+    await click(island().closest("[data-island-hit]")!);
+    await frames(3);
+    act(() => void document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    await frames(4);
+    await click(island().closest("[data-island-hit]")!);
+    await frames(60);
+    const records = trace().splice(0);
+    expect(island().dataset.view).toBe("userExpanded");
+    expect(check(records).violations).toEqual([]);
+    expect(Math.min(...records.map((f) => f.shellHeight))).toBeGreaterThanOrEqual(compactTokens.height - 0.5);
+    expect(Math.max(...records.map((f) => f.shellHeight))).toBeLessThanOrEqual(panel.height + 0.5);
+    expect(longestEmptyRun(records)).toBeLessThanOrEqual(1);
+  });
+});
+
 describe("tab spam inside the open island", () => {
   it.each([16.7, 31.2])("7 clicks in ~450 ms: ≤ 2 tab layers, one readable title, the last target wins (%s ms frames)", async (step) => {
     await mount();

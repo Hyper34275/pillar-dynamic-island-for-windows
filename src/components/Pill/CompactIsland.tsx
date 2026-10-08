@@ -16,6 +16,13 @@ import { PERIOD_GAP, type CompactContent } from "./useCompactLayout";
 // =============================================================================
 
 /**
+ * The ring advances with the minute: the arc eases to its new length (one element, the shell does
+ * not move or rebuild) instead of stepping. Reduced motion zeroes it (index.css), the value is
+ * the same either way.
+ */
+const RING_STEP: CSSProperties = { transition: "stroke-dasharray 240ms cubic-bezier(0.22, 1, 0.36, 1)" };
+
+/**
  * A meeting in progress: the status dot becomes a progress ring in the same leading slot, in the
  * meeting's colour (clockwise from 12 o'clock, like a clock). Progress gets a slot of its own
  * (tokens.progress.ring) instead of an extra bar, so the text row stays centred in the 36px pill
@@ -28,7 +35,7 @@ function ProgressRing({ value, tint }: { value: number; tint: string }) {
   return (
     <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true" className="ci-progress flex-shrink-0" style={{ transform: "rotate(-90deg)" }}>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color.track} strokeWidth={stroke} />
-      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tint} strokeWidth={stroke} strokeLinecap="round" strokeDasharray={`${c * Math.min(1, Math.max(0, value))} ${c}`} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={tint} strokeWidth={stroke} strokeLinecap="round" strokeDasharray={`${c * Math.min(1, Math.max(0, value))} ${c}`} style={RING_STEP} />
     </svg>
   );
 }

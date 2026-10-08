@@ -32,11 +32,12 @@ import type { TabId } from "./tabs";
 
 /**
  * When a tab's page fades, as fractions of the content's progress. The outgoing page is gone
- * by 0.35 (it loses the screen early, with an ease-in that keeps it readable only briefly); the
- * incoming one is invisible until 0.3 and readable by 0.75. The windows touch, they do not
- * overlap: measured over a transition the two are never both above ~0.2 opacity.
+ * by 0.38 (it loses the screen early, with an ease-in that keeps it readable only briefly); the
+ * incoming one is invisible until 0.26 and fully in by 0.7. They cross at ~0.27 opacity each
+ * (never both readable, and the panel area never dips below ~0.27: it was 0.12, a visible
+ * blink); the incoming page is readable by ~0.4 of the content's progress.
  */
-export const tabFade = { in: [0.3, 0.75], out: 0.35 } as const satisfies Fade;
+export const tabFade = { in: [0.26, 0.7], out: 0.38 } as const satisfies Fade;
 
 /**
  * The content progress spring (critically damped: no overshoot). The reduced profile is tighter

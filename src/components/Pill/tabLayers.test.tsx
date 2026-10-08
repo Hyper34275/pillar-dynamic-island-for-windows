@@ -171,7 +171,7 @@ describe("tab layers: the hook", () => {
         );
         const a = audit(frames);
         expect(a.maxLayers).toBeLessThanOrEqual(2);
-        expect(a.maxMin).toBeLessThan(0.3);
+        expect(a.maxMin).toBeLessThan(0.35);
         // A page that survives a click shows exactly what it showed: no restart, no jump. (Between
         // frames the outgoing page may drop a lot at once: its fade is short on purpose.)
         for (const join of joins) {
@@ -224,9 +224,10 @@ describe("tab layers: the hook", () => {
     expect(frames[frames.length - 1].layers).toHaveLength(1);
   });
 
-  it("the fade windows hand over: the outgoing page is gone by 0.35 before the incoming one is half readable", () => {
-    expect(tabFade.out).toBeLessThanOrEqual(0.35);
-    expect(tabFade.in[0]).toBeGreaterThanOrEqual(0.3 - 1e-9);
+  it("the fade windows hand over: the outgoing page is gone by 0.4 and the incoming one starts just before, crossing at about 0.27 each", () => {
+    expect(tabFade.out).toBeLessThanOrEqual(0.4);
+    expect(tabFade.in[0]).toBeGreaterThanOrEqual(tabFade.out - 0.15);
+    expect(tabFade.in[0]).toBeLessThan(tabFade.out);
     expect(tabFade.in[1]).toBeLessThanOrEqual(0.75 + 1e-9);
   });
 });

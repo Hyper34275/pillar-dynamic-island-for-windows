@@ -66,8 +66,10 @@ export const islandSpringsReduced: { width: SpringParams; height: SpringParams }
  *  - no near-empty shape: the gap between the last owner fading and the next arriving is a few
  *    hundredths of progress (one frame at most);
  *  - no tiny compact content inside a large shape: closing, the compact content only arrives in
- *    the last ~20 % of the morph (the shape is then within a few dozen px of the pill), while the
- *    panel's body holds until then (masked between the header and dock rows, see IslandPart);
+ *    the last ~25 % of the morph (the shape is then within ~100 px of the pill), while the
+ *    panel's body holds until then (masked between the header and dock rows, see IslandPart); the
+ *    body leaves a little after the compact content starts (0.9 vs 0.74), so the hand-over never
+ *    dips below ~0.25 of the island's content (lib/island/morph.test.ts keeps that floor);
  *  - opening, the compact content is gone by a quarter of the way, the header takes the top row
  *    (from the leading edge), the body establishes itself once there is room, the dock settles last.
  * Which window a layer ARRIVES on depends on what it replaces (entryFade): the compact content
@@ -76,9 +78,9 @@ export const islandSpringsReduced: { width: SpringParams; height: SpringParams }
  */
 export const layerFade = {
   /** Compact content: after the open panel (the default), arriving late; leaving early when anything opens. */
-  compact: { in: [0.78, 0.98], out: 0.25 },
+  compact: { in: [0.74, 0.97], out: 0.25 },
   /** The expanded layer only times its own removal (the slowest part's `out`); its parts fade on `partFade`. */
-  expanded: { in: [0, 0], out: 0.86 },
+  expanded: { in: [0, 0], out: 0.9 },
   /**
    * Meeting alert, notification toast, ring/silent pill: the shape opens first, then the content;
    * they leave by half way, as the compact content arrives (entryFade.compact.fromTemporary).
@@ -94,13 +96,13 @@ export const layerFade = {
 export const entryFade = {
   compact: {
     fromExpanded: layerFade.compact,
-    fromTemporary: { in: [0.42, 0.9], out: layerFade.compact.out },
+    fromTemporary: { in: [0.36, 0.9], out: layerFade.compact.out },
   },
   temporary: {
-    /** Toast / alert / ring pill opening from the pill: the compact content is gone by 0.25, the toast takes over from 0.2. */
-    fromCompact: { in: [0.2, 0.8], out: layerFade.temporary.out },
+    /** Toast / alert / ring pill opening from the pill: the compact content is gone by 0.25, the toast takes over from 0.15. */
+    fromCompact: { in: [0.15, 0.8], out: layerFade.temporary.out },
     /** A meeting alert over the open panel: the panel's body holds until 0.84, so the alert waits for it. */
-    fromExpanded: { in: [0.76, 0.98], out: layerFade.temporary.out },
+    fromExpanded: { in: [0.7, 0.98], out: layerFade.temporary.out },
   },
 } as const satisfies Record<string, Record<string, Fade>>;
 
@@ -117,14 +119,14 @@ export function arrivalFade(kind: "compact" | "temporary", origin: IslandOrigin)
  * The expanded island's parts, each riding its own edge of the shape (see IslandPart): the
  * header with the top / leading corner, the body right under it (masked above the dock, with a
  * slight scale from its top that supports its fade), the dock with the bottom edge. Opening: the
- * header takes the top row first (0.2); once there is room the body and the dock arrive together
+ * header takes the top row first (0.16); once there is room the body and the dock arrive together
  * (the dock covers the body's only cut line, at its bottom). Closing: the header leaves the top
  * row first, the dock holds a little longer (covering the body's cut while the body is still
  * readable), and the body goes last, handing over to the compact content at ~0.8.
  */
 export const partFade = {
-  header: { in: [0.2, 0.6], out: 0.5 },
-  body: { in: [0.4, 0.85], out: 0.84 },
+  header: { in: [0.16, 0.56], out: 0.5 },
+  body: { in: [0.4, 0.85], out: 0.9 },
   dock: { in: [0.4, 0.85], out: 0.6 },
 } as const satisfies Record<string, Fade>;
 
