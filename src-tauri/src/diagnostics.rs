@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 const MAX_RECENT: usize = 10;
 /// Code families of docs/ENTERPRISE_DESIGN.md §3.
-const CODE_PREFIXES: [&str; 5] = ["APP", "OUTLOOK", "NOTIF", "NET", "WIN"];
+const CODE_PREFIXES: [&str; 8] = ["APP", "OUTLOOK", "NOTIF", "NET", "WIN", "MAIL", "FILES", "APPS"];
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -142,6 +142,9 @@ mod tests {
         assert_eq!(code_in("APP-001 panic caught"), Some("APP-001"));
         assert_eq!(code_in("WIN-503 monitor enumeration failed"), Some("WIN-503"));
         assert_eq!(code_in("NET-301"), Some("NET-301"));
+        assert_eq!(code_in("MAIL-105 mailbox timed out"), Some("MAIL-105"));
+        assert_eq!(code_in("FILES-101 index unavailable"), Some("FILES-101"));
+        assert_eq!(code_in("(APPS-104)"), Some("APPS-104"));
         // the first code wins
         assert_eq!(code_in("NET-301 after OUTLOOK-102"), Some("NET-301"));
     }
@@ -153,6 +156,8 @@ mod tests {
         assert_eq!(code_in("OUTLOOK-1020 too long"), None);
         assert_eq!(code_in("OUTLOOK-10 too short"), None);
         assert_eq!(code_in("XOUTLOOK-102"), None);
+        assert_eq!(code_in("MAIL-10 too short"), None);
+        assert_eq!(code_in("EMAIL-101"), None);
         assert_eq!(code_in("plain message"), None);
         assert_eq!(code_in(""), None);
     }
