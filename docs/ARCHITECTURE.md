@@ -465,6 +465,10 @@ failed to start`, process exits with code 1).
 10. The pipe carries only what the user asked for in the Center (settings, notes, monitors, notification status,
     `showIsland`, `openLogDir`) and nothing else; request and response bodies are never logged. The Tour has no IPC
     (no pipe, no Tauri bridge) and no network, and shows invented sample data.
+11. Windows Sticky Notes (section 11) are read, never written: their text reaches the Notes tab and smart search
+    (memory only) and is never logged. The one place it touches disk is a temporary copy of `plum.sqlite` (and its
+    `-wal`) in `%LOCALAPPDATA%\CompanyIsland\sticky-tmp\`, deleted as soon as the read ends (a leftover of a crash,
+    older than 10 minutes, is removed at the next read).
 
 ## 10. Extending
 
@@ -541,8 +545,8 @@ happens in the Sticky Notes app, which a click opens.
    On the development machine the app is installed (4.0.6104.0) but `LocalState` is empty (never used), so the
    real-database path is covered by a fixture built with the same `winsqlite3.dll` in the tests.
 2. **How it is read.** No SQLite crate. `winsqlite3.dll` (in `System32` on Windows 10 and 11) is loaded with
-   `LoadLibraryExW(LOAD_LIBRARY_SEARCH_SYSTEM32)` and five or six entry points are bound (`open_v2`, `prepare_v2`,
-   `step`, `column_*`, `finalize`, `close`). The live file is never opened: `plum.sqlite` and `plum.sqlite-wal` (where the newest
+   `LoadLibraryExW(LOAD_LIBRARY_SEARCH_SYSTEM32)` and ten entry points are bound (`sqlite3_open_v2`, `close`, `prepare_v2`,
+   `step`, `finalize`, `column_text` / `column_bytes` / `column_int64` / `column_type`, `busy_timeout`). The live file is never opened: `plum.sqlite` and `plum.sqlite-wal` (where the newest
    notes are) are copied to `%LOCALAPPDATA%\CompanyIsland\sticky-tmp\<pid>-<n>\`, the copy is opened with
    `SQLITE_OPEN_READONLY`, read, closed and deleted (a copy older than 10 minutes left by a crash is removed at the
    next read). The `-shm` is not copied: SQLite rebuilds the WAL index from the copied `-wal`, which a stale copy
