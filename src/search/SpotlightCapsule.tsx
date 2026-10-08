@@ -25,9 +25,9 @@ export type SpotlightCapsuleProps = {
 const BASE_PERIOD_S = 12;
 
 /**
- * "Aurora capsule": the spotlight variant of the search bar. Always dark ink, a 1 px iridescent rim
- * that drifts, a soft coloured under-glow inside the window margin and a breathing spark.
- * Three composited layers at most: the rim (transform), the under-glow (opacity), the spark (transform).
+ * The spotlight variant of the search bar: a black-and-white capsule with a hairline rim whose white
+ * highlight drifts, a soft coloured halo hugging it inside the window margin, and a breathing spark.
+ * Three composited layers at most: the rim (transform), the halo (opacity), the spark (transform).
  */
 export function SpotlightCapsule({ bar, glow, mode, hidden, rtl, hasText, input, keysLabel, statusText, onBackground }: SpotlightCapsuleProps) {
   const rimRef = useRef<HTMLDivElement | null>(null);
@@ -79,15 +79,13 @@ export function SpotlightCapsule({ bar, glow, mode, hidden, rtl, hasText, input,
     "--sp-ink-bottom": spotlight.inkBottom,
     "--sp-cyan": g.cyan,
     "--sp-violet": g.violet,
-    "--sp-indigo": g.indigo,
     "--sp-magenta": g.magenta,
-    "--sp-pink": g.softPink,
     "--sp-error": g.error,
   } as CSSProperties;
 
   return (
     <div className="sp-root" style={vars} data-state={glow} data-mode={mode} data-moving={animating ? "on" : "off"} dir={rtl ? "rtl" : "ltr"}>
-      <div className="sp-glow" aria-hidden="true" />
+      <div className="sp-halo" aria-hidden="true" />
       <div
         className="sp-capsule"
         onMouseDown={(e) => {
@@ -123,16 +121,14 @@ export function SpotlightCapsule({ bar, glow, mode, hidden, rtl, hasText, input,
   );
 }
 
-/** The AI sparkle: one large four-point star and a small companion, in the glow hues. */
+/** The AI sparkle: one large four-point star and a small companion, in white like the rest of the capsule. */
 function SparkMark() {
   return (
     <svg width="28" height="28" viewBox="0 0 26 26" focusable="false">
       <defs>
         <linearGradient id="sp-spark" x1="2" y1="24" x2="24" y2="2" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor={g.cyan} />
-          <stop offset="0.5" stopColor={g.indigo} />
-          <stop offset="0.8" stopColor={g.magenta} />
-          <stop offset="1" stopColor={g.softPink} />
+          <stop offset="0" stopColor="#A8A8AE" />
+          <stop offset="1" stopColor="#FFFFFF" />
         </linearGradient>
       </defs>
       <path
@@ -140,7 +136,7 @@ function SparkMark() {
         fill="url(#sp-spark)"
         d="M11 3c.6 4.6 2.4 7.4 7 8-4.6.6-6.4 3.4-7 8-.6-4.6-2.4-7.4-7-8 4.6-.6 6.4-3.4 7-8z"
       />
-      <path className="sp-star" fill={g.softPink} d="M20 15c.3 2.3 1.2 3.7 3.5 4-2.3.3-3.2 1.7-3.5 4-.3-2.3-1.2-3.7-3.5-4 2.3-.3 3.2-1.7 3.5-4z" />
+      <path className="sp-star" fill="#C8C8CD" d="M20 15c.3 2.3 1.2 3.7 3.5 4-2.3.3-3.2 1.7-3.5 4-.3-2.3-1.2-3.7-3.5-4 2.3-.3 3.2-1.7 3.5-4z" />
     </svg>
   );
 }
