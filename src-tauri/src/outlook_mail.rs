@@ -199,7 +199,9 @@ const DISCOVERY_BUDGET_MS: u64 = 8_000;
 const GRACE_SECS: u64 = 5;
 const DISCOVERY_CACHE_SECS: u64 = 600;
 const QUARANTINE_SECS: u64 = 900;
-const KEY_CAP: usize = 500;
+/// assistant::store keeps 20 queries and a mail search returns up to 100 hits: every card still
+/// shown must keep its key (two short strings each).
+const KEY_CAP: usize = 2000;
 const MAX_NAME_CHARS: usize = 120;
 
 /// Table DATE columns are UTC (live probe, see the module header). Item properties are local.
@@ -478,18 +480,22 @@ pub(crate) enum WorkUnit {
     Expand { mailbox: String },
     /// Tier 2: one folder, by its ids (kept only in memory, inside the cursor).
     Folder { mailbox: String, entry: String, store: String, name: String },
+    /// The rest of a folder a unit stopped in (row cap, deadline): the first `skip` table rows
+    /// were already read. Keeps the tier of the unit it continues.
+    Continue { mailbox: String, entry: String, store: String, name: String, skip: usize, tier: u8 },
 }
 
 impl WorkUnit {
     pub fn mailbox(&self) -> &str {
         match self {
-            WorkUnit::Special { mailbox, .. } | WorkUnit::Expand { mailbox } | WorkUnit::Folder { mailbox, .. } => mailbox,
+            WorkUnit::Special { mailbox, .. } | WorkUnit::Expand { mailbox } | WorkUnit::Folder { mailbox, .. } | WorkUnit::Continue { mailbox, .. } => mailbox,
         }
     }
 
     pub fn tier(&self) -> u8 {
         match self {
             WorkUnit::Special { .. } => 1,
+            WorkUnit::Continue { tier, .. } => *tier,
             _ => 2,
         }
     }
@@ -499,10 +505,21 @@ impl WorkUnit {
             WorkUnit::Special { mailbox, folder } => format!("S|{mailbox}|{folder}"),
             WorkUnit::Expand { mailbox } => format!("X|{mailbox}"),
             WorkUnit::Folder { mailbox, entry, store, name } => format!("F|{mailbox}|{entry}|{store}|{name}"),
+            WorkUnit::Continue { mailbox, entry, store, name, skip, tier } => format!("C|{mailbox}|{entry}|{store}|{skip}|{tier}|{name}"),
         }
     }
 
     pub fn decode(s: &str) -> Option<WorkUnit> {
+        if let Some(rest) = s.strip_prefix("C|") {
+            let mut it = rest.splitn(6, '|');
+            let mailbox = it.next()?.to_string();
+            let entry = it.next()?.to_string();
+            let store = it.next()?.to_string();
+            let skip = it.next()?.parse().ok()?;
+            let tier = it.next()?.parse().ok()?;
+            let name = it.next().unwrap_or("").to_string();
+            return Some(WorkUnit::Continue { mailbox, entry, store, name, skip, tier });
+        }
         let mut it = s.splitn(5, '|');
         match it.next()? {
             "S" => {
@@ -555,6 +572,9 @@ pub(crate) struct UnitResult {
     pub hits: Vec<MailHit>,
     /// New units for the front of the queue (tier 2 folders found by an Expand).
     pub follow: Vec<WorkUnit>,
+    /// The rest of the unit's own folder: queued behind every pending unit of the same tier, so
+    /// the other folders of the tier are not starved by one big folder.
+    pub resume: Vec<WorkUnit>,
     /// The mailbox failed (code): its remaining units are dropped, the others go on.
     pub mailbox_error: Option<&'static str>,
     /// Outlook is busy / gone: the whole call ends.
@@ -620,6 +640,10 @@ pub(crate) fn drive(
         }
         // A tier that is complete and already enough: stop before starting the next one.
         if progress.hits.len() >= limit {
+            // The rest of a folder is only read when the first pass left room for more.
+            if matches!(unit, WorkUnit::Continue { .. }) {
+                break;
+            }
             if let Some(prev_tier) = progress.last_tier {
                 if unit.tier() > prev_tier {
                     break;
@@ -636,6 +660,10 @@ pub(crate) fn drive(
         progress.hits.extend(result.hits);
         for u in result.follow.into_iter().rev() {
             progress.pending.push_front(u);
+        }
+        for u in result.resume {
+            let at = progress.pending.iter().position(|p| p.tier() > u.tier()).unwrap_or(progress.pending.len());
+            progress.pending.insert(at, u);
         }
         if let Some(code) = result.mailbox_error {
             progress.fail_mailbox(unit.mailbox(), code);
@@ -810,6 +838,29 @@ impl Drop for BusyGuard {
     }
 }
 
+/// Set while a free/busy worker thread is alive. The thread can stay blocked inside Outlook after
+/// the caller gave up (OUTLOOK-109), so this is owned by the worker, not by the caller: a retry is
+/// refused until the blocked call returns instead of stacking another thread behind it.
+static FREEBUSY_WORKER: AtomicBool = AtomicBool::new(false);
+
+struct WorkerFlag(&'static AtomicBool);
+
+impl WorkerFlag {
+    fn acquire(flag: &'static AtomicBool) -> Result<WorkerFlag, String> {
+        if flag.swap(true, Ordering::AcqRel) {
+            Err("OUTLOOK-105: another mail operation is running".into())
+        } else {
+            Ok(WorkerFlag(flag))
+        }
+    }
+}
+
+impl Drop for WorkerFlag {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 fn clamp_budget(ms: u64) -> u64 {
     if ms == 0 {
         DEFAULT_BUDGET_MS
@@ -927,6 +978,127 @@ const COL_FROM: i32 = 3;
 const COL_RECEIVED: i32 = 4;
 const COL_READ: i32 = 5;
 
+/// One table row that passed the date / unread re-checks.
+#[derive(Debug, Clone)]
+pub(crate) struct ScanRow {
+    pub entry: String,
+    pub received: Option<DateTime<Utc>>,
+    pub subject: String,
+    pub from: String,
+    pub read: bool,
+}
+
+/// Rows of a (sorted) message table, read one by one.
+pub(crate) trait RowSource {
+    fn at_end(&mut self) -> ComResult<bool>;
+    /// Move to the next row; false when there is none.
+    fn advance(&mut self) -> ComResult<bool>;
+    /// EntryID and received time of the current row.
+    fn head(&mut self) -> ComResult<(String, Option<DateTime<Utc>>)>;
+    /// Subject, sender and read flag of the current row.
+    fn tail(&mut self) -> ComResult<(String, String, bool)>;
+}
+
+pub(crate) struct Scan {
+    pub rows: Vec<ScanRow>,
+    /// Table rows consumed so far, including the `skip` ones (the next continuation's `skip`).
+    pub consumed: usize,
+    /// The end of the table or the `since` boundary was reached: nothing more to read.
+    pub finished: bool,
+}
+
+/// Read up to ROWS_PER_UNIT matching rows. The date and unread bounds are re-checked here
+/// whatever the DASL filter did (its date format is locale sensitive). Rows those checks reject
+/// are not counted toward MAX_ROWS_SCANNED (a query by date or unread only would never get past
+/// the newest rows otherwise); only the deadline bounds that walk.
+pub(crate) fn scan_rows(src: &mut dyn RowSource, spec: &FilterSpec, sorted: bool, skip: usize, clock: &dyn Clock, deadline_ms: u64) -> ComResult<Scan> {
+    let mut out = Scan { rows: Vec::new(), consumed: 0, finished: false };
+    while out.consumed < skip {
+        if clock.now_ms() >= deadline_ms {
+            return Ok(out);
+        }
+        if src.at_end()? || !src.advance()? {
+            out.finished = true;
+            return Ok(out);
+        }
+        out.consumed += 1;
+    }
+    let mut scanned = 0usize;
+    loop {
+        if out.rows.len() >= ROWS_PER_UNIT || scanned >= MAX_ROWS_SCANNED || clock.now_ms() >= deadline_ms {
+            return Ok(out);
+        }
+        if src.at_end()? || !src.advance()? {
+            out.finished = true;
+            return Ok(out);
+        }
+        out.consumed += 1;
+        let (entry, received) = src.head()?;
+        if entry.is_empty() {
+            continue;
+        }
+        // The table is sorted newest first, so older than `since` ends it.
+        if let (Some(since), Some(r)) = (spec.since, received) {
+            if r < since {
+                if sorted {
+                    out.finished = true;
+                    return Ok(out);
+                }
+                continue;
+            }
+        }
+        if let (Some(until), Some(r)) = (spec.until, received) {
+            if r >= until {
+                continue;
+            }
+        }
+        let (subject, from, read) = src.tail()?;
+        if spec.unread_only && read {
+            continue;
+        }
+        scanned += 1;
+        out.rows.push(ScanRow { entry, received, subject, from, read });
+    }
+}
+
+struct TableRows {
+    table: Dispatch,
+    row: Option<Dispatch>,
+}
+
+impl TableRows {
+    fn cell(&mut self, n: i32) -> ComResult<Option<windows::core::VARIANT>> {
+        match self.row.as_mut() {
+            Some(row) => optional(row.call("Item", vec![com::variant_from_i32(n)])),
+            None => Ok(None),
+        }
+    }
+}
+
+impl RowSource for TableRows {
+    fn at_end(&mut self) -> ComResult<bool> {
+        bool_prop(&mut self.table, "EndOfTable")
+    }
+
+    fn advance(&mut self) -> ComResult<bool> {
+        self.row = self.table.call_object("GetNextRow", Vec::new())?;
+        Ok(self.row.is_some())
+    }
+
+    fn head(&mut self) -> ComResult<(String, Option<DateTime<Utc>>)> {
+        let entry = self.cell(COL_ENTRY)?.as_ref().and_then(com::variant_string).unwrap_or_default();
+        let received = self.cell(COL_RECEIVED)?.as_ref().and_then(com::variant_date).and_then(table_date);
+        Ok((entry, received))
+    }
+
+    fn tail(&mut self) -> ComResult<(String, String, bool)> {
+        let subject = self.cell(COL_SUBJECT)?.as_ref().and_then(com::variant_string).unwrap_or_default();
+        let from = self.cell(COL_FROM)?.as_ref().and_then(com::variant_string).unwrap_or_default();
+        let read = self.cell(COL_READ)?.as_ref().and_then(com::variant_bool).unwrap_or(true);
+        Ok((subject, from, read))
+    }
+}
+
 struct OutlookRunner<'a> {
     session: Dispatch,
     spec: &'a FilterSpec,
@@ -949,7 +1121,10 @@ impl OutlookRunner<'_> {
     }
 
     /// Search one folder. `store_id` is the folder's store (for the key map).
-    fn search_folder(&mut self, mailbox: &str, folder: &mut Dispatch, store_id: &str, name: &str, deadline_ms: u64) -> ComResult<Vec<MailHit>> {
+    /// `skip` rows were already read by an earlier unit; `tier` is the unit's tier (kept by the
+    /// continuation it may leave behind).
+    #[allow(clippy::too_many_arguments)]
+    fn search_folder(&mut self, mailbox: &str, folder: &mut Dispatch, store_id: &str, name: &str, deadline_ms: u64, skip: usize, tier: u8) -> ComResult<(Vec<MailHit>, Option<WorkUnit>)> {
         let body = self.instant.get(mailbox).copied().unwrap_or(false);
         let mut attempts: Vec<(bool, bool)> = Vec::new();
         if body {
@@ -998,68 +1173,48 @@ impl OutlookRunner<'_> {
         }
         let sorted = table.call("Sort", vec![com::variant_from_str("[ReceivedTime]"), com::variant_from_bool(true)]).is_ok();
 
+        let scan = scan_rows(&mut TableRows { table, row: None }, self.spec, sorted, skip, self.clock, deadline_ms)?;
         let mut hits = Vec::new();
-        let mut scanned = 0usize;
-        while hits.len() < ROWS_PER_UNIT && scanned < MAX_ROWS_SCANNED {
-            if self.clock.now_ms() >= deadline_ms {
-                break;
-            }
-            if bool_prop(&mut table, "EndOfTable")? {
-                break;
-            }
-            let Some(mut row) = table.call_object("GetNextRow", Vec::new())? else { break };
-            scanned += 1;
-            let cell = |row: &mut Dispatch, n: i32| row.call("Item", vec![com::variant_from_i32(n)]);
-            let entry = optional(cell(&mut row, COL_ENTRY))?.as_ref().and_then(com::variant_string).unwrap_or_default();
-            if entry.is_empty() {
-                continue;
-            }
-            let received = optional(cell(&mut row, COL_RECEIVED))?.as_ref().and_then(com::variant_date).and_then(table_date);
-            // The date is re-checked here whatever the filter did (its date format is locale
-            // sensitive). The table is sorted newest first, so older than `since` ends it.
-            if let (Some(since), Some(r)) = (self.spec.since, received) {
-                if r < since {
-                    if sorted {
-                        break;
-                    }
-                    continue;
-                }
-            }
-            if let (Some(until), Some(r)) = (self.spec.until, received) {
-                if r >= until {
-                    continue;
-                }
-            }
-            let subject = optional(cell(&mut row, COL_SUBJECT))?.as_ref().and_then(com::variant_string).unwrap_or_default();
-            let from = optional(cell(&mut row, COL_FROM))?.as_ref().and_then(com::variant_string).unwrap_or_default();
-            let read = optional(cell(&mut row, COL_READ))?.as_ref().and_then(com::variant_bool).unwrap_or(true);
-            if self.spec.unread_only && read {
-                continue;
-            }
-            let key = hash16(&format!("mail|{store_id}|{entry}"));
-            state().keys.insert(key.clone(), entry, store_id.to_string());
+        for r in scan.rows {
+            let key = hash16(&format!("mail|{store_id}|{}", r.entry));
+            state().keys.insert(key.clone(), r.entry, store_id.to_string());
             hits.push(MailHit {
                 key,
                 mailbox_id: mailbox.to_string(),
-                subject: clip_name(&subject),
-                from: clip_name(&from),
-                received,
-                unread: !read,
+                subject: clip_name(&r.subject),
+                from: clip_name(&r.from),
+                received: r.received,
+                unread: !r.read,
                 folder: clip_name(name),
             });
         }
+        // Stopped by a cap or the deadline before the end of the folder: queue the rest, so the
+        // result is reported partial with a cursor instead of the folder looking fully searched.
+        let rest = if scan.finished {
+            None
+        } else {
+            let entry = str_prop(folder, "EntryID")?.unwrap_or_default();
+            (!entry.is_empty()).then(|| WorkUnit::Continue {
+                mailbox: mailbox.to_string(),
+                entry,
+                store: store_id.to_string(),
+                name: clip_name(name),
+                skip: scan.consumed,
+                tier,
+            })
+        };
         let _ = (self.limit, self.budget_ms);
-        Ok(hits)
+        Ok((hits, rest))
     }
 
-    fn run_special(&mut self, mailbox: &str, code: i32, deadline_ms: u64) -> ComResult<Vec<MailHit>> {
+    fn run_special(&mut self, mailbox: &str, code: i32, deadline_ms: u64) -> ComResult<(Vec<MailHit>, Option<WorkUnit>)> {
         let mut store = self.store(mailbox)?;
         let store_id = state().store_ids.get(mailbox).cloned().unwrap_or_default();
         let mut folder = store
             .call_object("GetDefaultFolder", vec![com::variant_from_i32(code)])?
             .ok_or_else(|| ComError::new("GetDefaultFolder", 0x8004_010F_u32 as i32))?;
         let name = str_prop(&mut folder, "Name")?.unwrap_or_default();
-        self.search_folder(mailbox, &mut folder, &store_id, &name, deadline_ms)
+        self.search_folder(mailbox, &mut folder, &store_id, &name, deadline_ms, 0, 1)
     }
 
     /// Walk the store's folders (depth <= 4, <= 200) and queue every mail folder not yet covered.
@@ -1128,12 +1283,12 @@ impl OutlookRunner<'_> {
         Ok(())
     }
 
-    fn run_folder(&mut self, mailbox: &str, entry: &str, store_id: &str, name: &str, deadline_ms: u64) -> ComResult<Vec<MailHit>> {
+    fn run_folder(&mut self, mailbox: &str, entry: &str, store_id: &str, name: &str, deadline_ms: u64, skip: usize, tier: u8) -> ComResult<(Vec<MailHit>, Option<WorkUnit>)> {
         let mut folder = self
             .session
             .call_object("GetFolderFromID", vec![com::variant_from_str(entry), com::variant_from_str(store_id)])?
             .ok_or_else(|| ComError::new("GetFolderFromID", 0x8004_010F_u32 as i32))?;
-        self.search_folder(mailbox, &mut folder, store_id, name, deadline_ms)
+        self.search_folder(mailbox, &mut folder, store_id, name, deadline_ms, skip, tier)
     }
 }
 
@@ -1141,24 +1296,25 @@ impl UnitRunner for OutlookRunner<'_> {
     fn run(&mut self, unit: &WorkUnit, remaining_ms: u64) -> UnitResult {
         let deadline = self.clock.now_ms() + remaining_ms;
         let mailbox = unit.mailbox().to_string();
-        let outcome: ComResult<(Vec<MailHit>, Vec<WorkUnit>)> = match unit {
-            WorkUnit::Special { folder, .. } => self.run_special(&mailbox, *folder, deadline).map(|h| (h, Vec::new())),
-            WorkUnit::Expand { .. } => self.run_expand(&mailbox, deadline).map(|u| (Vec::new(), u)),
-            WorkUnit::Folder { entry, store, name, .. } => self.run_folder(&mailbox, entry, store, name, deadline).map(|h| (h, Vec::new())),
+        let outcome: ComResult<(Vec<MailHit>, Vec<WorkUnit>, Vec<WorkUnit>)> = match unit {
+            WorkUnit::Special { folder, .. } => self.run_special(&mailbox, *folder, deadline).map(|(h, r)| (h, Vec::new(), r.into_iter().collect())),
+            WorkUnit::Expand { .. } => self.run_expand(&mailbox, deadline).map(|u| (Vec::new(), u, Vec::new())),
+            WorkUnit::Folder { entry, store, name, .. } => self.run_folder(&mailbox, entry, store, name, deadline, 0, 2).map(|(h, r)| (h, Vec::new(), r.into_iter().collect())),
+            WorkUnit::Continue { entry, store, name, skip, tier, .. } => self.run_folder(&mailbox, entry, store, name, deadline, *skip, *tier).map(|(h, r)| (h, Vec::new(), r.into_iter().collect())),
         };
         match outcome {
-            Ok((hits, follow)) => UnitResult { hits, follow, ..Default::default() },
+            Ok((hits, follow, resume)) => UnitResult { hits, follow, resume, ..Default::default() },
             Err(e) => match classify_com(&e) {
                 Failure::Fatal(code) => UnitResult { fatal: Some(code), ..Default::default() },
                 Failure::Mailbox(code) => {
                     // No Sent Items / unreadable subfolder is not a failure of the mailbox; only
                     // its Inbox or the planning of its folders is.
-                    let optional_unit = matches!(unit, WorkUnit::Folder { .. }) || matches!(unit, WorkUnit::Special { folder, .. } if *folder != FOLDER_INBOX);
+                    let optional_unit = matches!(unit, WorkUnit::Folder { .. } | WorkUnit::Continue { .. }) || matches!(unit, WorkUnit::Special { folder, .. } if *folder != FOLDER_INBOX);
                     let benign = optional_unit && classify_failure(&e) != StoreFailure::Offline;
                     if benign {
                         UnitResult::default()
                     } else {
-                        let code = if matches!(unit, WorkUnit::Special { .. } | WorkUnit::Folder { .. }) && code == "MAIL-108" && classify_failure(&e) == StoreFailure::Other {
+                        let code = if matches!(unit, WorkUnit::Special { .. } | WorkUnit::Folder { .. } | WorkUnit::Continue { .. }) && code == "MAIL-108" && classify_failure(&e) == StoreFailure::Other {
                             "MAIL-107"
                         } else {
                             code
@@ -1410,6 +1566,7 @@ pub fn free_busy(name: &str, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<F
         return Err("MAIL-109: free/busy not available".into());
     }
     let _busy = BusyGuard::acquire()?;
+    let worker = WorkerFlag::acquire(&FREEBUSY_WORKER)?;
     // Slot 0 is local midnight of the first day (Outlook counts the string from there).
     let first_day = from.with_timezone(&Local).date_naive();
     let midnight: NaiveDateTime = first_day.and_hms_opt(0, 0, 0).ok_or("MAIL-109: free/busy not available")?;
@@ -1417,6 +1574,8 @@ pub fn free_busy(name: &str, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<F
         .ok_or("MAIL-109: free/busy not available")?;
     let start_date = com::naive_to_date(midnight).ok_or("MAIL-109: free/busy not available")?;
     let raw = run_on_outlook("companyisland-mail-freebusy", 25, move |_pid| {
+        // Dropped when this thread ends (or panics), however late.
+        let _worker = worker;
         let mut app = Dispatch::get_active("Outlook.Application")?;
         let mut session = app.get_object("Session")?;
         let mut recipient = session
@@ -1811,6 +1970,160 @@ mod tests {
         let keys: Vec<&str> = merged.iter().map(|h| h.key.as_str()).collect();
         assert_eq!(keys, vec!["k2", "k3", "k1"]);
         assert_eq!(merge_hits(vec![], 5), vec![]);
+    }
+
+    // ---- row scan, continuation (review #6) ---------------------------------------------------
+
+    /// `n` rows, newest first, one minute apart; row i is read when `read(i)`.
+    struct FakeRows<'a> {
+        rows: Vec<(String, Option<DateTime<Utc>>, bool)>,
+        pos: usize,
+        clock: &'a FakeClock,
+        tick: u64,
+    }
+
+    fn base_time() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 8, 12, 0, 0).unwrap()
+    }
+
+    fn fake_rows(clock: &FakeClock, n: usize, tick: u64, read: impl Fn(usize) -> bool) -> FakeRows<'_> {
+        let rows = (0..n).map(|i| (format!("e{i}"), Some(base_time() - ChronoDuration::minutes(i as i64)), read(i))).collect();
+        FakeRows { rows, pos: 0, clock, tick }
+    }
+
+    impl RowSource for FakeRows<'_> {
+        fn at_end(&mut self) -> ComResult<bool> {
+            Ok(self.pos >= self.rows.len())
+        }
+        fn advance(&mut self) -> ComResult<bool> {
+            self.clock.0.set(self.clock.0.get() + self.tick);
+            self.pos += 1;
+            Ok(self.pos <= self.rows.len())
+        }
+        fn head(&mut self) -> ComResult<(String, Option<DateTime<Utc>>)> {
+            let r = &self.rows[self.pos - 1];
+            Ok((r.0.clone(), r.1))
+        }
+        fn tail(&mut self) -> ComResult<(String, String, bool)> {
+            Ok(("s".into(), "f".into(), self.rows[self.pos - 1].2))
+        }
+    }
+
+    #[test]
+    fn date_only_query_walks_past_more_than_400_newer_rows() {
+        let clock = FakeClock(std::cell::Cell::new(0));
+        let mut src = fake_rows(&clock, 1000, 0, |_| true);
+        // "last month": everything from row 600 on is old enough.
+        let spec = FilterSpec { until: Some(base_time() - ChronoDuration::minutes(600)), ..Default::default() };
+        let scan = scan_rows(&mut src, &spec, true, 0, &clock, 1_000_000).unwrap();
+        assert_eq!(scan.rows.len(), ROWS_PER_UNIT);
+        assert_eq!(scan.rows[0].entry, "e601");
+        // Stopped by the row cap, not by the end: the folder is not complete.
+        assert!(!scan.finished);
+        assert_eq!(scan.consumed, 602 + ROWS_PER_UNIT - 1);
+    }
+
+    #[test]
+    fn unread_only_query_walks_past_more_than_400_read_rows() {
+        let clock = FakeClock(std::cell::Cell::new(0));
+        let mut src = fake_rows(&clock, 1000, 0, |i| i < 500);
+        let spec = FilterSpec { unread_only: true, ..Default::default() };
+        let scan = scan_rows(&mut src, &spec, true, 0, &clock, 1_000_000).unwrap();
+        assert_eq!(scan.rows.len(), ROWS_PER_UNIT);
+        assert!(scan.rows.iter().all(|r| !r.read));
+    }
+
+    #[test]
+    fn scan_reports_a_deadline_or_cap_stop_as_unfinished_and_resumes() {
+        let clock = FakeClock(std::cell::Cell::new(0));
+        let mut src = fake_rows(&clock, 100, 10, |_| true);
+        // 10 ms per row, deadline at 100 ms: 10 rows.
+        let first = scan_rows(&mut src, &FilterSpec::default(), true, 0, &clock, 100).unwrap();
+        assert_eq!((first.rows.len(), first.consumed, first.finished), (10, 10, false));
+        // The continuation skips what was read and goes on with the next row.
+        clock.0.set(0);
+        let mut again = fake_rows(&clock, 100, 0, |_| true);
+        let second = scan_rows(&mut again, &FilterSpec::default(), true, first.consumed, &clock, 1_000_000).unwrap();
+        assert_eq!(second.rows[0].entry, "e10");
+        assert_eq!(second.consumed, 10 + ROWS_PER_UNIT);
+    }
+
+    #[test]
+    fn scan_is_finished_only_at_the_end_or_the_since_boundary() {
+        let clock = FakeClock(std::cell::Cell::new(0));
+        let mut src = fake_rows(&clock, 5, 0, |_| true);
+        let scan = scan_rows(&mut src, &FilterSpec::default(), true, 0, &clock, 1_000_000).unwrap();
+        assert!(scan.finished && scan.rows.len() == 5);
+        let mut src = fake_rows(&clock, 100, 0, |_| true);
+        let spec = FilterSpec { since: Some(base_time() - ChronoDuration::minutes(3)), ..Default::default() };
+        let scan = scan_rows(&mut src, &spec, true, 0, &clock, 1_000_000).unwrap();
+        assert!(scan.finished && scan.rows.len() == 4);
+        // A skip that runs past the end ends the folder.
+        let mut src = fake_rows(&clock, 5, 0, |_| true);
+        assert!(scan_rows(&mut src, &FilterSpec::default(), true, 50, &clock, 1_000_000).unwrap().finished);
+    }
+
+    #[test]
+    fn continue_unit_round_trips_and_keeps_its_tier() {
+        let u = WorkUnit::Continue { mailbox: "m".into(), entry: "E1".into(), store: "S1".into(), name: "a|b".into(), skip: 123, tier: 1 };
+        assert_eq!(WorkUnit::decode(&u.encode()), Some(u.clone()));
+        assert_eq!(u.tier(), 1);
+        assert_eq!(WorkUnit::decode("C|m|E|S|x|1|n"), None);
+    }
+
+    #[test]
+    fn driver_queues_a_resume_behind_its_tier_and_reports_partial() {
+        let cont = |skip| WorkUnit::Continue { mailbox: "a".into(), entry: "e".into(), store: "s".into(), name: "Inbox".into(), skip, tier: 1 };
+        let units = plan_units(&["a".into()]);
+        let c = cont(25);
+        let (p, ran, _) = run_drive(units, &["a"], 1000, 100, 1, |u| match u {
+            WorkUnit::Special { folder: 6, .. } => UnitResult { hits: vec![hit("k1", "a", 1)], resume: vec![c.clone()], ..Default::default() },
+            _ => UnitResult::default(),
+        });
+        // Sent (tier 1) runs before the rest of the Inbox; the rest then runs before tier 2.
+        assert_eq!(ran[0], "S|a|6");
+        assert_eq!(ran[1], "S|a|5");
+        assert_eq!(ran[2], c.encode());
+        assert!(p.pending.is_empty());
+        // A budget that ends mid-way leaves the continuation pending: partial with a cursor.
+        let (p, _, _) = run_drive(plan_units(&["a".into()]), &["a"], 1, 100, 1, |_| UnitResult { resume: vec![cont(7)], ..Default::default() });
+        assert!(p.pending.iter().any(|u| matches!(u, WorkUnit::Continue { skip: 7, .. })));
+        assert!(!p.outcomes()[0].complete);
+        assert!(result_from(&p, 5).cursor.is_some());
+    }
+
+    #[test]
+    fn driver_does_not_read_the_rest_of_a_folder_once_the_limit_is_met() {
+        let c = WorkUnit::Continue { mailbox: "a".into(), entry: "e".into(), store: "s".into(), name: "Inbox".into(), skip: 25, tier: 1 };
+        let (p, ran, _) = run_drive(plan_units(&["a".into()]), &["a"], 1000, 2, 1, |u| match u {
+            WorkUnit::Special { .. } => UnitResult { hits: vec![hit(&u.encode(), "a", 1), hit(&format!("{}x", u.encode()), "a", 2)], resume: vec![c.clone()], ..Default::default() },
+            _ => UnitResult::default(),
+        });
+        assert!(!ran.contains(&c.encode()));
+        assert!(p.pending.contains(&c));
+    }
+
+    // ---- key map size, free/busy worker (review #9, #25) --------------------------------------
+
+    #[test]
+    fn key_map_holds_every_hit_of_every_stored_query() {
+        // assistant::store: 20 queries, exec: up to 100 mail hits each.
+        assert!(KEY_CAP >= 20 * 100);
+        let mut k = KeyMap::new(KEY_CAP);
+        for i in 0..20 * 100 {
+            k.insert(format!("k{i}"), "e".into(), "s".into());
+        }
+        assert!(k.get("k0").is_some() && k.get("k1999").is_some());
+    }
+
+    #[test]
+    fn free_busy_worker_flag_is_released_by_the_worker_not_the_caller() {
+        static FLAG: AtomicBool = AtomicBool::new(false);
+        let w = WorkerFlag::acquire(&FLAG).unwrap();
+        // The caller gave up, but the worker still owns the flag: a retry is refused.
+        assert_eq!(WorkerFlag::acquire(&FLAG).err().as_deref().map(|e| &e[..11]), Some("OUTLOOK-105"));
+        drop(w);
+        assert!(WorkerFlag::acquire(&FLAG).is_ok());
     }
 
     #[test]
