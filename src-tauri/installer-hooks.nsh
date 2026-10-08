@@ -491,6 +491,9 @@ FunctionEnd
   !endif
   ; Drop this product's previous center folder; the files are copied again right after this hook.
   !insertmacro YUVAL_REMOVE_CENTER_DIR $INSTDIR
+  ; The migration may have removed an (empty) old folder; if that was the install folder written differently
+  ; (trailing backslash, case), make sure it exists for the files that follow.
+  SetOutPath $INSTDIR
   ${If} $YuvalSameProduct = 1
     ${If} $YuvalInstalledVersion == "${VERSION}"
       DetailPrint "$(yuvalRepairing)"
