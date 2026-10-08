@@ -99,6 +99,14 @@ describe("the installer updates in place (nsis/installer.nsi)", () => {
     expect(preUn).toContain('DeleteRegValue HKLM "${YUVAL_RUN_KEY}" "${PRODUCTNAME}"');
   });
 
+  it("names the Run value like the app does: the product name is RUN_VALUE_NAME in autostart.rs", () => {
+    // The installer writes HKLM Run\<product name>; the app toggles the per-user StartupApproved\Run entry that
+    // Windows pairs with a Run value of RUN_VALUE_NAME. If the two differ, a user can no longer switch autostart off.
+    const product = JSON.parse(read("src-tauri", "tauri.conf.json")).productName;
+    const autostart = read("src-tauri", "src", "autostart.rs");
+    expect(autostart.match(/const RUN_VALUE_NAME: PCWSTR = w!\("([^"]+)"\);/)?.[1]).toBe(product);
+  });
+
   it("starts the app again only through RunAsUser (never elevated), and only if it was running or /R was given", () => {
     const onSuccess = fn(template, ".onInstSuccess");
     expect(onSuccess).toContain("$YuvalWasRunning = 1");
