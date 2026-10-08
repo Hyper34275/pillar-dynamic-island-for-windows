@@ -499,6 +499,13 @@ export const ipc = {
   assistantDismiss: (queryId: string) => callVoid("assistant_dismiss", { queryId }, { timeoutMs: 3000 }),
   searchBarState: () => call<SearchBarState>("search_bar_state", undefined, { timeoutMs: 3000 }),
   searchBarClose: () => callVoid("search_bar_close", undefined, { timeoutMs: 3000 }),
+  /**
+   * The centre glass bar reports its sheet's height (DIP): the window's click-through region follows
+   * it. Resolves once the region is applied, so the sheet may grow into the new area right after.
+   */
+  searchBarRegion: (height: number) => callVoid("search_bar_region", { height }, { timeoutMs: 3000 }),
+  /** The screen picture behind the glass bar (memory only), for a page that missed the event; null when there is none. */
+  searchBarBackdrop: () => call<unknown>("search_bar_backdrop", undefined, { timeoutMs: 3000 }),
 
   // --- Windows Sticky Notes, read only (src-tauri/src/sticky_notes.rs; lib/notes/sticky.ts).
   /**

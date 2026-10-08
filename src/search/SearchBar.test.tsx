@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_BAR, SPOTLIGHT_BAR } from "./bar";
+import { DEFAULT_BAR } from "./bar";
 import { SearchBar, type SearchApi } from "./SearchBar";
 import { ss } from "./strings";
 import type { AssistantCard } from "../lib/assistant/types";
@@ -219,44 +219,5 @@ describe("SearchBar", () => {
     expect(glow.getAttribute("data-animated")).toBe("false");
     expect(animate).not.toHaveBeenCalled();
     delete (HTMLElement.prototype as unknown as { animate?: unknown }).animate;
-  });
-});
-
-describe("SearchBar spotlight variant", () => {
-  const api = () => ({ submit: vi.fn().mockResolvedValue(card("q1", "answer") as AssistantCard), close: vi.fn() });
-
-  it("renders the capsule, not the taskbar bar, and keeps the same flow", async () => {
-    const a = api();
-    mount(a, { bar: SPOTLIGHT_BAR });
-    expect(host.querySelector(".sp-root")).not.toBeNull();
-    expect(host.querySelector(".sb-bar")).toBeNull();
-    const input = host.querySelector("input")!;
-    expect(document.activeElement).toBe(input);
-    expect(input.placeholder).toBe(ss("spotlightPlaceholder"));
-    expect(host.querySelector(".sp-chip")?.textContent).toContain("Alt");
-    type(input, "מה יש ביומן");
-    expect(host.querySelector(".sp-chip")?.getAttribute("data-kind")).toBe("enter");
-    press(input, "Enter");
-    await act(async () => {});
-    expect(a.submit).toHaveBeenCalledWith("מה יש ביומן");
-  });
-
-  it("Esc closes; Enter during IME composition does not submit", () => {
-    const a = api();
-    mount(a, { bar: SPOTLIGHT_BAR });
-    const input = host.querySelector("input")!;
-    type(input, "x");
-    press(input, "Enter", { isComposing: true });
-    expect(a.submit).not.toHaveBeenCalled();
-    press(input, "Escape");
-    expect(a.close).toHaveBeenCalled();
-  });
-
-  it("re-lays out when the variant switches", () => {
-    mount(api(), { bar: SPOTLIGHT_BAR });
-    expect(host.querySelector(".sp-root")).not.toBeNull();
-    mount(api(), { bar: DEFAULT_BAR });
-    expect(host.querySelector(".sp-root")).toBeNull();
-    expect(host.querySelector(".sb-bar")).not.toBeNull();
   });
 });

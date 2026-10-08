@@ -1,10 +1,25 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type KeyboardEvent } from "react";
 import { glow as glowTokens } from "../design/tokens";
-import { normalizeAssistantCard, ASSISTANT_UPDATE_EVENT, type AssistantCard, type SearchBarState } from "../lib/assistant/types";
+import { normalizeAssistantCard, ASSISTANT_UPDATE_EVENT, type AssistantCard, type AssistantItem, type Choice, type SearchBarState } from "../lib/assistant/types";
 import { getLocale } from "../lib/i18n";
 import { ipc, onEvent } from "../lib/ipc";
 import { AiSearchGlow } from "./AiSearchGlow";
-import { SpotlightCapsule } from "./SpotlightCapsule";
+import {
+  BACKDROP_EVENT,
+  GLASS_LIST_ID,
+  answerRows,
+  defaultSelection,
+  enterActsOnSelection,
+  glassEntries,
+  glassOptionId,
+  glassView,
+  moveSelection,
+  normalizeBackdrop,
+  orderedChoices,
+  type GlassBackdrop,
+} from "./glassModel";
+import { GlassSearch } from "./GlassSearch";
+import { useDocumentHidden, useMediaFlag } from "./hooks";
 import {
   INITIAL_STATE,
   MAX_QUERY_CHARS,
@@ -17,14 +32,34 @@ import {
 import { ss } from "./strings";
 import "./search.css";
 
+export { useMediaFlag };
+
 export type SearchApi = {
   submit: (text: string) => Promise<AssistantCard | null>;
   close: () => void;
+  // The centre glass bar shows the answer itself; these are what its sheet calls (all optional: the
+  // other variants never use them).
+  /** An explicit click / Enter on a row. */
+  openItem?: (queryId: string, itemId: string) => unknown;
+  /** "הצג את כל התוצאות". */
+  openCenter?: (queryId: string) => unknown;
+  choose?: (queryId: string, optionId: string, remember: boolean) => Promise<AssistantCard | null>;
+  extend?: (queryId: string) => Promise<AssistantCard | null>;
+  /** The sheet's height (DIP) for the window's click-through region; resolves once it is applied. */
+  region?: (height: number) => unknown;
+  /** The screen picture behind the glass, for a page that missed the event. */
+  backdrop?: () => Promise<unknown>;
 };
 
 const defaultApi: SearchApi = {
   submit: (text) => ipc.assistantSubmit(text, "searchBar"),
   close: () => void ipc.searchBarClose(),
+  openItem: (queryId, itemId) => ipc.assistantOpenItem(queryId, itemId),
+  openCenter: (queryId) => ipc.assistantOpenCenter(queryId),
+  choose: (queryId, optionId, remember) => ipc.assistantChoose(queryId, optionId, remember),
+  extend: (queryId) => ipc.assistantExtend(queryId),
+  region: (height) => ipc.searchBarRegion(height),
+  backdrop: () => ipc.searchBarBackdrop(),
 };
 
 export type SearchBarProps = {
@@ -37,34 +72,16 @@ export type SearchBarProps = {
   previewGlow?: GlowState;
   /** Dev preview only: initial text. */
   previewText?: string;
+  /** Dev preview only: the card the glass sheet shows (answer, question, error). */
+  previewCard?: AssistantCard;
+  /** Dev preview only: the picture behind the glass sheet. */
+  previewBackdrop?: GlassBackdrop;
 };
 
-/** Tracks a media query; false where matchMedia does not exist. */
-export function useMediaFlag(query: string): boolean {
-  const get = () => (typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia(query).matches : false);
-  const [flag, setFlag] = useState(get);
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const mq = window.matchMedia(query);
-    const on = () => setFlag(mq.matches);
-    on();
-    mq.addEventListener?.("change", on);
-    return () => mq.removeEventListener?.("change", on);
-  }, [query]);
-  return flag;
-}
+/** Cards kept for the sheet: the newest few, by query id. */
+const MAX_CARDS = 8;
 
-function useDocumentHidden(): boolean {
-  const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.hidden);
-  useEffect(() => {
-    const on = () => setHidden(document.hidden);
-    document.addEventListener("visibilitychange", on);
-    return () => document.removeEventListener("visibilitychange", on);
-  }, []);
-  return hidden;
-}
-
-export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe = onEvent, previewGlow, previewText }: SearchBarProps) {
+export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe = onEvent, previewGlow, previewText, previewCard, previewBackdrop }: SearchBarProps) {
   const [state, dispatch] = useReducer(searchReducer, INITIAL_STATE);
   const [text, setText] = useState(previewText ?? "");
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -76,8 +93,33 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
 
   const reducedMotion = useMediaFlag("(prefers-reduced-motion: reduce)");
   const forcedColors = useMediaFlag("(forced-colors: active)");
+  const systemDark = useMediaFlag("(prefers-color-scheme: dark)");
   const hidden = useDocumentHidden();
   const mode = glowMode({ reducedMotion, forcedColors, highContrast: bar.highContrast });
+  const glass = bar.variant === "spotlight";
+
+  // ---- the centre glass bar: the answer lives in its sheet ----
+  const [cards, setCards] = useState<Record<string, AssistantCard>>({});
+  const [stale, setStale] = useState(false); // typed after a result: the field alone again
+  const [selected, setSelected] = useState(-1);
+  const [pendingChoice, setPendingChoice] = useState<string | null>(null);
+  const [remember, setRemember] = useState(false);
+  const [seed, setSeed] = useState("");
+  const [liveBackdrop, setLiveBackdrop] = useState<GlassBackdrop | null>(null);
+  const backdrop = previewBackdrop ?? liveBackdrop;
+
+  /** A card for this search: the reducer decides whether it is ours, the sheet keeps it by id. */
+  const acceptCard = useCallback((card: AssistantCard) => {
+    dispatch({ type: "CARD", card });
+    setCards((prev) => {
+      const next = { ...prev };
+      delete next[card.queryId]; // re-insert at the end: the oldest go first
+      next[card.queryId] = card;
+      const ids = Object.keys(next);
+      for (const id of ids.slice(0, Math.max(0, ids.length - MAX_CARDS))) delete next[id];
+      return next;
+    });
+  }, []);
 
   const focusInput = useCallback(() => {
     inputRef.current?.focus({ preventScroll: true });
@@ -96,6 +138,13 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
         dispatch({ type: "HIDE" });
         setText("");
         recallIndex.current = -1;
+        // Memory only: a closed bar keeps neither the answer it showed nor the picture behind it.
+        setCards({});
+        setStale(false);
+        setSelected(-1);
+        setPendingChoice(null);
+        setRemember(false);
+        setLiveBackdrop(null);
       } else {
         dispatch({ type: "SHOW" });
         focusInput();
@@ -118,10 +167,33 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
     () =>
       subscribe(ASSISTANT_UPDATE_EVENT, (payload) => {
         const card = normalizeAssistantCard(payload);
-        if (card) dispatch({ type: "CARD", card });
+        if (card) acceptCard(card);
       }),
-    [subscribe],
+    [subscribe, acceptCard],
   );
+
+  // The glass bar's backdrop: pushed just before the window shows, or pulled by a page that was not
+  // loaded yet (or missed it). It is dropped with the window (memory only).
+  useEffect(() => {
+    if (!glass || previewBackdrop) return;
+    return subscribe(BACKDROP_EVENT, (payload) => {
+      const next = normalizeBackdrop(payload);
+      if (next) setLiveBackdrop((prev) => (prev && prev.id > next.id ? prev : next));
+    });
+  }, [glass, previewBackdrop, subscribe]);
+  useEffect(() => {
+    if (!glass || previewBackdrop || hidden || !api.backdrop) return;
+    let alive = true;
+    void Promise.resolve(api.backdrop())
+      .then((raw) => {
+        const next = normalizeBackdrop(raw);
+        if (alive && next) setLiveBackdrop((prev) => (prev && prev.id >= next.id ? prev : next));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [glass, previewBackdrop, hidden, api]);
 
   // Completed is a visual hold of 600 ms, then the bar settles back to Activated.
   useEffect(() => {
@@ -145,26 +217,102 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
       if (history.current[history.current.length - 1] !== q) history.current = [...history.current.slice(-19), q];
       recallIndex.current = -1;
       dirty.current = false;
+      setStale(false);
       dispatch({ type: "SUBMIT" });
       // Only the newest submit may settle the bar: a quick second Enter must not let the older
       // request's returned card be taken for the current one.
       const mine = ++request.current;
+      // The playful line keeps its order for the whole search, whatever cards arrive meanwhile.
+      setSeed(`${Date.now().toString(36)}-${mine}`);
       api
         .submit(q)
         .then((card) => {
           if (mine !== request.current) return;
-          if (card) dispatch({ type: "CARD", card });
+          if (card) acceptCard(card);
           else dispatch({ type: "SUBMIT_FAILED" });
         })
         .catch(() => {
           if (mine === request.current) dispatch({ type: "SUBMIT_FAILED" });
         });
     },
-    [api],
+    [api, acceptCard],
   );
+
+  // ---- what the glass sheet shows, and what its rows do ----
+  const glowState: GlowState = previewGlow ?? state.glow;
+  const shownQuery = previewCard?.queryId ?? state.queryId;
+  const view = glassView({
+    glow: glowState,
+    queryId: shownQuery,
+    card: previewCard ?? (shownQuery ? (cards[shownQuery] ?? null) : null),
+    hasText: text.trim().length > 0,
+    stale,
+  });
+  const entries = glassEntries(view);
+  const viewKey = `${view.kind}:${"card" in view && view.card ? `${view.card.queryId}:${view.card.createdAt}:${view.card.phase}` : ""}`;
+  // A new result starts with its first row (or the preferred button) selected.
+  useEffect(() => {
+    setSelected(defaultSelection(entries));
+    setPendingChoice(null);
+    setRemember(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewKey]);
+
+  const openItem = (card: AssistantCard, item: AssistantItem) => {
+    if (!item.openable) return;
+    // The explicit action (click / Enter on the row); the backend's confirm policy is unchanged.
+    void Promise.resolve(api.openItem?.(card.queryId, item.id)).catch(() => {});
+  };
+  const chooseOption = (card: AssistantCard, choice: Choice, rememberIt: boolean): Promise<boolean> => {
+    if (!api.choose) return Promise.resolve(false);
+    setPendingChoice(choice.id);
+    dirty.current = false;
+    return api
+      .choose(card.queryId, choice.id, rememberIt)
+      .then((next) => {
+        if (next) acceptCard(next);
+        else setPendingChoice(null);
+        return !!next;
+      })
+      .catch(() => {
+        setPendingChoice(null);
+        return false;
+      });
+  };
+  const extendSearch = (card: AssistantCard) => {
+    if (!api.extend) return;
+    void api
+      .extend(card.queryId)
+      .then((next) => next && acceptCard(next))
+      .catch(() => {});
+  };
+  const openCenter = (card: AssistantCard) => {
+    void Promise.resolve(api.openCenter?.(card.queryId)).catch(() => {});
+    api.close();
+  };
+  const activate = (index: number) => {
+    if (view.kind === "answer") {
+      const item = answerRows(view.card)[index];
+      if (item) openItem(view.card, item);
+    } else if (view.kind === "choices") {
+      const choice = orderedChoices(view.card.choices)[index];
+      if (choice && pendingChoice === null) void chooseOption(view.card, choice, remember && choice.kind !== "option");
+    }
+  };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+    if (glass && !composing && entries.selectable.length > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      // Over a list the arrows walk it (the question recall is for an empty sheet).
+      e.preventDefault();
+      setSelected((current) => moveSelection(entries.selectable, current, e.key === "ArrowDown" ? 1 : -1));
+      return;
+    }
+    if (glass && !composing && e.key === "Enter" && enterActsOnSelection(view, selected, text)) {
+      e.preventDefault();
+      activate(selected);
+      return;
+    }
     const action = keyAction({ key: e.key, isComposing: composing }, text);
     switch (action) {
       case "submit":
@@ -191,7 +339,6 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
     }
   };
 
-  const glowState: GlowState = previewGlow ?? state.glow;
   const showHint = state.choices && text.length === 0;
   // Anchored on the Windows 10 search box the window is exactly the box: no outer margin, the
   // ring is drawn inside its edge so nothing shows above the taskbar.
@@ -199,16 +346,23 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
   const barRadius = Math.max(0, Math.min(bar.radius, (bar.height - 2 * margin) / 2));
   const live = glowState !== "idle" && glowState !== "disabled";
 
-  if (bar.variant === "spotlight") {
+  if (glass) {
+    const expanded = entries.kind !== "none";
     const inputEl = (
       <input
         ref={inputRef}
-        className="sp-input"
+        className="gl-input"
         type="text"
-        dir="auto"
+        dir={text ? "auto" : locale === "he" ? "rtl" : "ltr"}
+        role="combobox"
+        aria-autocomplete="none"
+        aria-haspopup="listbox"
+        aria-expanded={expanded}
+        aria-controls={expanded ? GLASS_LIST_ID : undefined}
+        aria-activedescendant={expanded && selected >= 0 ? glassOptionId(selected) : undefined}
         value={text}
         maxLength={MAX_QUERY_CHARS}
-        placeholder={showHint ? ss("choicesHint", locale) : ss("spotlightPlaceholder", locale)}
+        placeholder={showHint ? ss("glassChoicesHint", locale) : ss("spotlightPlaceholder", locale)}
         aria-label={ss("inputLabel", locale)}
         autoComplete="off"
         autoCorrect="off"
@@ -218,23 +372,38 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
           dirty.current = true;
           recallIndex.current = -1;
           setText(e.target.value);
+          // Typing a new question gives way to the field: the old answer goes. (A question's buttons
+          // stay: what is typed there may be the reply.)
+          if (view.kind === "answer" || view.kind === "error") setStale(true);
           dispatch({ type: "INPUT", empty: e.target.value.length === 0 });
         }}
         onKeyDown={onKeyDown}
       />
     );
     return (
-      <SpotlightCapsule
+      <GlassSearch
         bar={bar}
-        glow={glowState}
-        mode={mode}
-        hidden={hidden}
-        rtl={locale === "he"}
-        hasText={text.trim().length > 0}
+        view={view}
         input={inputEl}
-        keysLabel={ss("spotlightKeys", locale)}
-        statusText={glowState === "error" ? ss("failed", locale) : ""}
+        hasText={text.trim().length > 0}
+        locale={locale}
+        backdrop={backdrop}
+        systemDark={systemDark}
+        reducedMotion={reducedMotion}
+        plain={mode === "plain"}
+        hidden={hidden}
+        seed={previewCard?.queryId ?? seed}
+        selected={selected}
+        pendingChoice={pendingChoice}
+        remember={remember}
+        onToggleRemember={() => setRemember((on) => !on)}
+        onSelect={setSelected}
+        onOpenItem={openItem}
+        onChoose={chooseOption}
+        onExtend={extendSearch}
+        onOpenCenter={openCenter}
         onBackground={() => focusInput()}
+        onRegion={(height) => api.region?.(height)}
       />
     );
   }

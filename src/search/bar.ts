@@ -13,12 +13,12 @@ export const DEFAULT_BAR: SearchBarState = {
   edge: "bottom",
 };
 
-/** Spotlight window until the backend says otherwise: 680x60 capsule plus 28 DIP margin on every side. */
+/** Spotlight window until the backend says otherwise: the 680 DIP sheet plus its side margins, as tall as the tallest sheet plus the margins above and below. */
 export const SPOTLIGHT_BAR: SearchBarState = {
   variant: "spotlight",
   anchored: false,
-  width: spotlight.width + 2 * spotlight.margin,
-  height: spotlight.height + 2 * spotlight.margin,
+  width: spotlight.width + 2 * spotlight.marginX,
+  height: spotlight.marginTop + spotlight.sheetMax + spotlight.marginBottom,
   radius: spotlight.radius,
   scale: 1,
   highContrast: false,
@@ -44,13 +44,12 @@ export function sanitizeBar(raw: Partial<SearchBarState> | null | undefined): Se
     edge: typeof raw.edge === "string" ? raw.edge : "bottom",
   };
   if (variant === "spotlight") {
-    // The page draws its own capsule: fixed radius, never anchored.
-    const min = 2 * spotlight.margin + 16;
+    // The page draws its own sheet: fixed radius, never anchored.
     return {
       variant,
       anchored: false,
-      width: n(raw.width, SPOTLIGHT_BAR.width, min),
-      height: n(raw.height, SPOTLIGHT_BAR.height, min),
+      width: n(raw.width, SPOTLIGHT_BAR.width, 2 * spotlight.marginX + 16),
+      height: n(raw.height, SPOTLIGHT_BAR.height, spotlight.marginTop + spotlight.marginBottom + 16),
       radius: spotlight.radius,
       ...common,
     };

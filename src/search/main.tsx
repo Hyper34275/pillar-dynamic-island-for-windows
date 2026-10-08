@@ -1,27 +1,61 @@
 // Entry of the smart search bar window (label "search"): the input and its glow.
 import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
-import type { SearchBarState } from "../lib/assistant/types";
+import type { AssistantCard, SearchBarState } from "../lib/assistant/types";
 import { applyDocumentLocale } from "../lib/i18n";
 import { ipc, normalizeSettings, onEvent } from "../lib/ipc";
 import { DEFAULT_BAR, SPOTLIGHT_BAR, sanitizeBar } from "./bar";
-import { SearchBar } from "./SearchBar";
+import { previewBackdrop, previewCard, type GlassPreviewState } from "./glassPreview";
+import type { GlassBackdrop } from "./glassModel";
+import { SearchBar, type SearchApi } from "./SearchBar";
 import type { GlowState } from "./searchState";
 
-type Preview = { glow: GlowState; bar: SearchBarState; text: string };
+type Preview = { glow: GlowState; bar: SearchBarState; text: string; card?: AssistantCard; backdrop?: GlassBackdrop };
 
 const GLOW_STATES: readonly GlowState[] = ["idle", "activated", "typing", "submitting", "processing", "completed", "error", "disabled"];
 
-/** Dev only: ?preview=1&state=processing&w=360&h=52&r=4&hc=1&text=... renders without Tauri. */
+/** The glass sheet's preview states and the glow state each stands for. */
+const GLASS_STATES: Record<GlassPreviewState, GlowState> = {
+  ready: "activated",
+  typing: "typing",
+  processing: "processing",
+  answer: "completed",
+  choices: "completed",
+  error: "error",
+};
+
+/** A backend that does nothing: the preview sheet reports its height and clicks go nowhere. */
+const PREVIEW_API: SearchApi = {
+  submit: () => Promise.resolve(null),
+  close: () => {},
+  openItem: () => {},
+  openCenter: () => {},
+  choose: () => Promise.resolve(null),
+  extend: () => Promise.resolve(null),
+  region: () => {},
+  backdrop: () => Promise.resolve(null),
+};
+
+/**
+ * Dev only: ?preview=1&state=processing&w=360&h=52&r=4&hc=1&text=... renders without Tauri.
+ * The glass sheet: ?preview=1&variant=spotlight&state=ready|typing|processing|answer|choices|error
+ * &theme=dark|light &bg=<image url> (the screen behind it, as the backend would capture it)
+ * &rows=3 (answer rows) &hc=1 &opaque=1 &text=...
+ */
 function readPreview(): Preview | null {
   const q = new URLSearchParams(window.location.search);
   if (q.get("preview") !== "1") return null;
   const state = q.get("state") as GlowState;
   if (q.get("variant") === "spotlight") {
+    const gs = q.get("state") as GlassPreviewState;
+    const sheet = gs in GLASS_STATES ? gs : null;
+    const text = q.get("text") ?? (sheet === "typing" || sheet === "processing" || sheet === "answer" || sheet === "choices" || sheet === "error" ? "מה יש לי מחר?" : "");
     return {
-      glow: GLOW_STATES.includes(state) ? state : "activated",
+      glow: sheet ? GLASS_STATES[sheet] : GLOW_STATES.includes(state) ? state : "activated",
       bar: sanitizeBar({ ...SPOTLIGHT_BAR, highContrast: q.get("hc") === "1" }),
-      text: q.get("text") ?? "",
+      text,
+      card: sheet ? previewCard(sheet, { rows: Number(q.get("rows")) || 3 }) : undefined,
+      backdrop: previewBackdrop({ dark: q.get("theme") !== "light", image: q.get("bg"), opaque: q.get("opaque") === "1" }),
     };
   }
   const w = Number(q.get("w")) || 360;
@@ -57,7 +91,17 @@ function App({ preview }: { preview: Preview | null }) {
     };
   }, [preview]);
 
-  return <SearchBar bar={bar} disabled={disabled} previewGlow={preview?.glow} previewText={preview?.text} />;
+  return (
+    <SearchBar
+      bar={bar}
+      disabled={disabled}
+      api={preview ? PREVIEW_API : undefined}
+      previewGlow={preview?.glow}
+      previewText={preview?.text}
+      previewCard={preview?.card}
+      previewBackdrop={preview?.backdrop}
+    />
+  );
 }
 
 applyDocumentLocale();

@@ -1,0 +1,645 @@
+/* Spotlight glass: the centre search bar (variant "spotlight"). The values are the approved mock's
+   (docs/DESIGN_SYSTEM.md, "Spotlight glass"): a 680 DIP sheet, radius 16, 22 px text, a 1 px stroke, a
+   tint and a sheen over the blurred picture of the screen behind it, result rows with a coloured tile.
+
+   The window is fixed at the tallest sheet plus a transparent margin; the sheet sits in it and grows
+   downward here, in CSS. Its picture is the screen under the WINDOW (captured before it showed), drawn at
+   window coordinates behind the sheet, so the glass lines up with what is really behind it. Logical
+   properties everywhere the layout is directional: the page is RTL in Hebrew. */
+
+@property --gl-a {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0.46;
+}
+
+.gl-root,
+.gl-root * {
+  box-sizing: border-box;
+}
+
+.gl-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: "CI Hebrew", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  /* The tint settles when the picture arrives (it is raised without one). */
+  transition: --gl-a var(--gl-fade, 120ms) linear;
+}
+
+/* ---- theme tokens (the mock's) ---- */
+.gl-dark {
+  --fg: rgba(255, 255, 255, 0.96);
+  --fg2: rgba(255, 255, 255, 0.68);
+  --fg3: rgba(255, 255, 255, 0.44);
+  --hair: rgba(255, 255, 255, 0.1);
+  --tint: rgba(22, 30, 48, var(--gl-a));
+  --sheen: rgba(255, 255, 255, 0.085);
+  --edge: rgba(255, 255, 255, 0.15);
+  --sel: rgba(255, 255, 255, 0.1);
+  --inset: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  --pick: rgba(255, 255, 255, 0.22);
+  --bad: #ff7a6e;
+  /* Shadow tuned to the window's margins (40 at the sides, 24 above, 64 below the tallest sheet). */
+  --shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.45), 0 26px 44px -6px rgba(0, 6, 22, 0.55), 0 8px 20px -4px rgba(0, 6, 22, 0.32);
+}
+.gl-light {
+  --fg: rgba(10, 18, 36, 0.92);
+  --fg2: rgba(10, 18, 36, 0.62);
+  --fg3: rgba(10, 18, 36, 0.42);
+  --hair: rgba(10, 18, 36, 0.09);
+  --tint: rgba(255, 255, 255, var(--gl-a));
+  --sheen: rgba(255, 255, 255, 0.55);
+  --edge: rgba(255, 255, 255, 0.75);
+  --sel: rgba(10, 18, 36, 0.055);
+  --inset: inset 0 0 0 0 transparent;
+  --pick: rgba(10, 18, 36, 0.14);
+  --bad: #c42b1c;
+  --shadow: 0 0 0 1px rgba(20, 40, 90, 0.07), 0 26px 46px -8px rgba(25, 55, 120, 0.32), 0 8px 20px -4px rgba(25, 55, 120, 0.15);
+}
+
+/* ---- the sheet ---- */
+.gl-sheet {
+  position: absolute;
+  left: var(--gl-x);
+  top: var(--gl-top);
+  width: var(--gl-w);
+  border-radius: var(--gl-radius);
+  overflow: hidden;
+  isolation: isolate;
+  color: var(--fg);
+  box-shadow: var(--shadow);
+  transform-origin: 50% 0;
+  /* The content sits inside the 1 px stroke (drawn by .gl-edge over the outer pixel), like the mock's border. */
+  padding: 1px;
+}
+/* The sheet's height follows its content; the first measurement is a size, not a growth. */
+.gl-root[data-armed="on"] .gl-sheet {
+  transition: height var(--gl-grow, 220ms) cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.gl-root[data-entering="on"] .gl-sheet {
+  animation: gl-in 170ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes gl-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.975);
+  }
+}
+@keyframes gl-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* The screen behind the window, blurred. Drawn at window coordinates (the sheet is a window onto it). */
+.gl-bg {
+  position: absolute;
+  left: calc(var(--gl-x) * -1);
+  top: calc(var(--gl-top) * -1);
+  width: var(--gl-rw);
+  height: var(--gl-rh);
+  opacity: 0;
+  transition: opacity var(--gl-fade, 120ms) linear;
+}
+.gl-bg[data-ready="on"] {
+  opacity: 1;
+}
+.gl-bg img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  filter: blur(14px) saturate(1.8);
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.gl-tint {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, var(--sheen), rgba(255, 255, 255, 0) 52%),
+    var(--tint);
+}
+
+.gl-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: var(--gl-max);
+}
+
+/* The 1 px stroke and the top highlight sit above everything (and never take a click). */
+.gl-edge {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  box-shadow:
+    inset 0 0 0 1px var(--edge),
+    var(--inset);
+}
+
+/* ---- the field ---- */
+.gl-field {
+  position: relative;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 72px;
+  padding-inline: 24px 22px;
+}
+.gl-ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--fg2);
+}
+.gl-ico[data-lit="on"] {
+  color: var(--fg);
+}
+.gl-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--fg);
+  caret-color: var(--fg);
+  font: inherit;
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: start;
+  white-space: nowrap;
+  user-select: text;
+}
+.gl-input::placeholder {
+  color: var(--fg3);
+  opacity: 1;
+}
+.gl-input::selection {
+  background: var(--pick);
+}
+/* After an answer the question stays in the field, quieter. */
+.gl-root[data-view="answer"] .gl-input {
+  color: var(--fg2);
+}
+
+.gl-hint {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  direction: ltr;
+  font: 500 12px/1 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  color: var(--fg3);
+  user-select: none;
+}
+.gl-hint svg {
+  opacity: 0.9;
+}
+
+/* Working: a hairline of light under the field. */
+.gl-shimmer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.5px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.gl-shimmer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  height: 100%;
+  left: 18%;
+  width: 46%;
+  background: linear-gradient(90deg, transparent, var(--fg2), transparent);
+}
+.gl-root:not(.gl-reduced):not(.gl-plain) .gl-shimmer::before {
+  animation: gl-sweep 1.8s ease-in-out infinite alternate;
+}
+@keyframes gl-sweep {
+  from {
+    transform: translateX(-70%);
+  }
+  to {
+    transform: translateX(130%);
+  }
+}
+
+/* ---- what unfolds under the field ---- */
+.gl-body {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  animation: gl-fade 140ms ease-out both;
+}
+.gl-sep {
+  flex: none;
+  height: 1px;
+  background: var(--hair);
+}
+
+.gl-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 60px;
+  padding: 0 26px;
+  font-size: 15px;
+  color: var(--fg2);
+}
+.gl-status span {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.gl-ring {
+  flex: none;
+}
+.gl-root:not(.gl-reduced):not(.gl-plain) .gl-ring {
+  animation: gl-spin 900ms linear infinite;
+}
+@keyframes gl-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.gl-ans {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 26px 6px;
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.gl-ans svg {
+  flex: none;
+  color: var(--fg2);
+}
+.gl-ans h3 {
+  margin: 0;
+  min-width: 0;
+  font: inherit;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.gl-ans[data-error] svg {
+  color: var(--bad);
+}
+.gl-sub {
+  flex: none;
+  margin: 0;
+  padding-block: 0 6px;
+  padding-inline: 54px 26px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--fg2);
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+.gl-code {
+  flex: none;
+  display: block;
+  padding-inline: 54px 26px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--fg3);
+  font-variant-numeric: tabular-nums;
+}
+.gl-pad {
+  flex: none;
+  height: 12px;
+}
+
+/* ---- rows ---- */
+.gl-rows,
+.gl-choices {
+  flex: 0 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 10px 10px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.gl-rows {
+  gap: 2px;
+}
+.gl-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  height: 62px;
+  margin: 0;
+  padding-block: 0;
+  padding-inline: 14px 18px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: default;
+}
+.gl-row[data-openable="on"] {
+  cursor: pointer;
+}
+.gl-row[data-sel] {
+  background: var(--sel);
+}
+.gl-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  color: var(--c);
+  background: color-mix(in srgb, var(--c) 17%, transparent);
+}
+.gl-tile[data-neutral] {
+  color: var(--fg2);
+  background: var(--hair);
+}
+.gl-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.gl-t,
+.gl-s {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.gl-t {
+  font-size: 16px;
+  line-height: 22px;
+}
+.gl-s {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--fg3);
+}
+.gl-time {
+  flex: none;
+  direction: ltr;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--fg2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---- footer ---- */
+.gl-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding-inline: 26px;
+  border-top: 1px solid var(--hair);
+  font-size: 13px;
+  color: var(--fg2);
+}
+.gl-foot-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+.gl-go {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px;
+  margin-inline: -8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.gl-go:hover {
+  background: var(--sel);
+}
+.gl-root[dir="ltr"] .gl-chevron {
+  transform: scaleX(-1);
+}
+.gl-esc {
+  direction: ltr;
+  font: 500 12px/1 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  color: var(--fg3);
+  user-select: none;
+}
+
+/* ---- a question's buttons ---- */
+.gl-choices {
+  gap: 4px;
+}
+.gl-choice {
+  flex: none;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 46px;
+  margin: 0;
+  padding-block: 0;
+  padding-inline: 16px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--hair);
+  color: inherit;
+  font: inherit;
+  font-size: 16px;
+  text-align: start;
+  cursor: pointer;
+}
+.gl-choice[data-preferred] {
+  font-weight: 600;
+}
+.gl-choice[data-sel] {
+  background: var(--sel);
+}
+.gl-choice:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.gl-remember {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  margin: 0;
+  padding-block: 0;
+  padding-inline: 16px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--fg2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.gl-remember:hover {
+  background: var(--sel);
+}
+.gl-check {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+.gl-check[data-on="on"] {
+  background: radial-gradient(circle, currentColor 0 3.6px, transparent 4px);
+}
+
+.gl-go:focus-visible,
+.gl-remember:focus-visible,
+.gl-choice:focus-visible,
+.gl-row:focus-visible {
+  outline: 2px solid var(--fg2);
+  outline-offset: -2px;
+}
+
+/* Spoken status only. */
+.gl-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- fallbacks ---- */
+
+/* Reduced motion: no scale-in, no growth, nothing turning; opacity only. */
+.gl-reduced[data-entering="on"] .gl-sheet {
+  animation: gl-fade 120ms linear both;
+}
+.gl-reduced .gl-sheet,
+.gl-reduced[data-armed="on"] .gl-sheet {
+  transition: none;
+}
+/* (The picture's and the tint's fade-in are opacity changes: they stay.) */
+@media (prefers-reduced-motion: reduce) {
+  .gl-root[data-entering="on"] .gl-sheet {
+    animation: gl-fade 120ms linear both;
+  }
+  .gl-root .gl-sheet,
+  .gl-root[data-armed="on"] .gl-sheet {
+    transition: none;
+  }
+  .gl-root .gl-shimmer::before,
+  .gl-root .gl-ring {
+    animation: none;
+  }
+}
+
+/* Plain (forced colours / high contrast): system colours, a 2 px border, no picture, no tint, no shadow. */
+.gl-plain {
+  --fg: CanvasText;
+  --fg2: CanvasText;
+  /* GrayText means "disabled" in a high-contrast theme: the hierarchy is the layout's, not a colour's. */
+  --fg3: CanvasText;
+  --hair: CanvasText;
+  --sel: transparent;
+  --edge: CanvasText;
+  --shadow: none;
+  --inset: none;
+  --pick: Highlight;
+  --bad: CanvasText;
+}
+.gl-plain .gl-sheet {
+  background: Canvas;
+  box-shadow: none;
+}
+.gl-plain .gl-bg,
+.gl-plain .gl-tint {
+  display: none;
+}
+.gl-plain .gl-edge {
+  box-shadow: none;
+  border: 2px solid CanvasText;
+}
+/* The selection is an outline, not an inverted fill: inverted text gets a backplate in forced colours. */
+.gl-plain .gl-row[data-sel],
+.gl-plain .gl-choice[data-sel] {
+  background: transparent;
+  outline: 2px solid Highlight;
+  outline-offset: -2px;
+}
+.gl-plain .gl-tile {
+  background: transparent;
+  color: inherit;
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+.gl-plain .gl-input::selection {
+  color: HighlightText;
+}
+@media (forced-colors: active) {
+  .gl-root .gl-sheet {
+    background: Canvas;
+    box-shadow: none;
+  }
+  .gl-root .gl-bg,
+  .gl-root .gl-tint {
+    display: none;
+  }
+  .gl-root .gl-edge {
+    box-shadow: none;
+    border: 2px solid CanvasText;
+  }
+  .gl-input {
+    color: CanvasText;
+  }
+  .gl-root .gl-row[data-sel],
+  .gl-root .gl-choice[data-sel] {
+    background: transparent;
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+  .gl-root .gl-s,
+  .gl-root .gl-time,
+  .gl-root .gl-hint,
+  .gl-root .gl-esc {
+    color: CanvasText;
+  }
+}

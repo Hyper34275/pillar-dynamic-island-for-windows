@@ -357,19 +357,22 @@ export const glow = {
 } as const;
 
 /**
- * The spotlight variant of the smart search bar (centre of the screen).
- * The capsule is black and white (it floats over any wallpaper or window); colour lives only in the halo.
+ * The spotlight variant of the smart search bar (centre of the screen): the "Spotlight glass" sheet.
+ * A frosted sheet over the (captured, blurred) screen behind it; the answer unfolds below the field in
+ * the same sheet. The window is fixed at the tallest sheet plus the margins (the shadow lives there);
+ * the sheet grows downward in CSS. Mirrors src-tauri/src/search_bar/layout.rs (`SPOT_*`).
  */
 export const spotlight = {
-  /** Capsule size (DIPs); the window is the capsule plus `margin` on every side. */
+  /** Sheet width (DIPs). */
   width: 680,
-  height: 60,
-  margin: 28,
-  radius: 30,
-  inkTop: "#17171A",
-  inkBottom: "#0B0B0D",
-  /** Rim thickness (DIPs). */
-  rim: 1,
+  /** Transparent margin of the window: each side, above the sheet, below the tallest sheet. */
+  marginX: 40,
+  marginTop: 24,
+  marginBottom: 64,
+  /** The tallest sheet (the window holds it), and the sheet with the field alone (72 + the 1 px frame on each side). */
+  sheetMax: 552,
+  field: 74,
+  radius: 16,
 } as const;
 
 /** The conic stops in order; cyan repeats at the end so the loop closes without a seam. */

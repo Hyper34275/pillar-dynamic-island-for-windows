@@ -13,7 +13,7 @@ import {
   type SearchState,
 } from "./searchState";
 import { SEARCH_STRINGS } from "./strings";
-import { sanitizeBar, DEFAULT_BAR } from "./bar";
+import { sanitizeBar, DEFAULT_BAR, SPOTLIGHT_BAR } from "./bar";
 
 const run = (events: SearchEvent[], from: SearchState = INITIAL_STATE) => events.reduce(searchReducer, from);
 const card = (queryId: string, phase: "processing" | "answer" | "choices" | "error"): SearchEvent => ({ type: "CARD", card: { queryId, phase } });
@@ -232,11 +232,17 @@ describe("sanitizeBar", () => {
     expect(sanitizeBar({ variant: "taskbar", anchored: true, width: 372, height: 64, radius: 4 })).toMatchObject({ variant: "taskbar", anchored: true, radius: 4 });
     expect(sanitizeBar({ variant: "floating", width: 572, height: 60, radius: 4 })).toMatchObject({ variant: "floating", anchored: false });
   });
-  it("spotlight: fixed capsule radius, never anchored, safe sizes", () => {
-    const s = sanitizeBar({ variant: "spotlight", anchored: true, width: 736, height: 116, radius: 3 });
-    expect(s).toMatchObject({ variant: "spotlight", anchored: false, width: 736, height: 116, radius: 30 });
+  it("spotlight: fixed sheet radius, never anchored, safe sizes", () => {
+    const s = sanitizeBar({ variant: "spotlight", anchored: true, width: 760, height: 640, radius: 3 });
+    expect(s).toMatchObject({ variant: "spotlight", anchored: false, width: 760, height: 640, radius: 16 });
     const bad = sanitizeBar({ variant: "spotlight", width: NaN, height: 10 });
-    expect(bad.width).toBe(736);
-    expect(bad.height).toBe(116);
+    expect(bad.width).toBe(760);
+    expect(bad.height).toBe(640);
+  });
+  it("spotlight: the default window is the 680 sheet plus its margins, as tall as the tallest sheet", () => {
+    expect(SPOTLIGHT_BAR.width).toBe(680 + 2 * 40);
+    expect(SPOTLIGHT_BAR.height).toBe(24 + 552 + 64);
+    // a short work area gives a shorter window: kept, as long as it can hold the field and its margins
+    expect(sanitizeBar({ variant: "spotlight", width: 760, height: 500 }).height).toBe(500);
   });
 });
