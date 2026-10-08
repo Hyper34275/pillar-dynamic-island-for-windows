@@ -1,0 +1,300 @@
+{"id":"d001","text":"מה יש לי מחר ביומם","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","relative-date","typo"]}
+{"id":"d002","text":"תראה לי את הפגיסות של מחרתיים","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-10"}},"tags":["he","calendar","relative-date","inflection","typo"]}
+{"id":"d003","text":"מה הלו״ז שלי להיום","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-08"}},"tags":["he","calendar","abbrev","synonym"]}
+{"id":"d004","text":"מה קבעתי ליום ראשון","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-11"}},"tags":["he","calendar","synonym","relative-date"]}
+{"id":"d005","text":"יש מצב שאתה יכול להגיד לי מה מתוכנן לשבוע הבא","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-11","to":"2026-10-18"}},"tags":["he","calendar","indirect","relative-date"]}
+{"id":"d006","text":"מה הולך מחד אחי","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","slang","typo"]}
+{"id":"d007","text":"תקפיץ לי את האירועים של השבוע","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-04","to":"2026-10-11"}},"tags":["he","calendar","slang","relative-date"]}
+{"id":"d008","text":"אילו פגיסות היו לי אתמול","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-07"}},"tags":["he","calendar","relative-date","typo"]}
+{"id":"d009","text":"מה היה לי שלשום ביומם","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-06"}},"tags":["he","calendar","relative-date","typo"]}
+{"id":"d010","text":"מה יש לי מחד בבוקר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T06:00","to":"2026-10-09T12:00"}},"tags":["he","calendar","relative-date","typo"]}
+{"id":"d011","text":"פגיסות מחר אחה״צ","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T12:00","to":"2026-10-09T18:00"}},"tags":["he","calendar","abbrev","typo"]}
+{"id":"d012","text":"מה יש לי מחד בצהריים","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T12:00","to":"2026-10-09T14:00"}},"tags":["he","calendar","typo"]}
+{"id":"d013","text":"תבדוק לי בבקשה מה יש לי מחד ב-10","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T10:00","to":"2026-10-09T11:00"}},"tags":["he","calendar","indirect","typo"]}
+{"id":"d014","text":"מה יש לי ביומם ב-15.10","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-15"}},"tags":["he","calendar","typo"]}
+{"id":"d015","text":"הלוז ל-20/10","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-20"}},"tags":["he","calendar","synonym"]}
+{"id":"d016","text":"מה יש לי ביום חמישי הבא","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-15"}},"tags":["he","calendar","relative-date"]}
+{"id":"d017","text":"מה היה ביומם שלי ביום שני שעבר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-05"}},"tags":["he","calendar","relative-date","inflection","typo"]}
+{"id":"d018","text":"מה יש לדנה ביומם מחר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"דנה","date":"2026-10-09"}},"tags":["he","calendar","person","typo"]}
+{"id":"d019","text":"מה משה עושה היוםם","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"משה","date":"2026-10-08"}},"tags":["he","calendar","person","typo"]}
+{"id":"d020","text":"תזרוק לי היומן של איציק לשבוע הבא","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"איציק","from":"2026-10-11","to":"2026-10-18"}},"tags":["he","calendar","person","relative-date","slang"]}
+{"id":"d021","text":"תראה לי את הפגיסות של דנה כהן ביום ראשון","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"דנה כהן","date":"2026-10-11"}},"tags":["he","calendar","person","typo"]}
+{"id":"d022","text":"מה יש בחדר ישיבות מחד","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"חדר ישיבות","date":"2026-10-09"}},"tags":["he","calendar","shared-calendar","typo"]}
+{"id":"d023","text":"אילו אירועים יש למשה פרץ השבוע","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"משה פרץ","from":"2026-10-04","to":"2026-10-11"}},"tags":["he","calendar","person","relative-date"]}
+{"id":"d024","text":"מה איציק עושה מחד בבוקר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"איציק","from":"2026-10-09T06:00","to":"2026-10-09T12:00"}},"tags":["he","calendar","person","multi-condition","typo"]}
+{"id":"d025","text":"מה הפגיסות שלי להיום","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-08"}},"tags":["he","calendar","typo"]}
+{"id":"d026","text":"מה יש לי מחד ביומן","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","typo"]}
+{"id":"d027","text":"מה יש לי היוםם","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-08"}},"tags":["he","calendar","typo"]}
+{"id":"d028","text":"יאללה תזרוק לי מה יש לי היום ביומם","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-08"}},"tags":["he","calendar","slang","typo"]}
+{"id":"d029","text":"מה קורה עם דנה מחר ביומם","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"דנה","date":"2026-10-09"}},"tags":["he","calendar","slang","person","typo"]}
+{"id":"d030","text":"מה יש לי ביומם בשבוע שעבר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-09-27","to":"2026-10-04"}},"tags":["he","calendar","relative-date","typo"]}
+{"id":"d031","text":"הפגיסות שלי ביום רביעי","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-14"}},"tags":["he","calendar","inflection","typo"]}
+{"id":"d032","text":"אשמח לראות מה יש לי בלוח זמנים ביום שישי","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","indirect","synonym"]}
+{"id":"d033","text":"מה מתוכנן לי מחד אחה״צ","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T12:00","to":"2026-10-09T18:00"}},"tags":["he","calendar","abbrev","synonym","typo"]}
+{"id":"d034","text":"אני פנוי מחד ב-11","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T11:00","to":"2026-10-09T12:00"}},"tags":["he","calendar","typo"]}
+{"id":"d035","text":"דנה תפוסה מחר?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"דנה","date":"2026-10-09"}},"tags":["he","calendar","person"]}
+{"id":"d036","text":"האם איציק פנוי ביום ראשון בבוקר","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"איציק","from":"2026-10-11T06:00","to":"2026-10-11T12:00"}},"tags":["he","calendar","person","multi-condition"]}
+{"id":"d037","text":"אפשר לדעת אם אני פנוי היוםם אחה״צ","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-08T12:00","to":"2026-10-08T18:00"}},"tags":["he","calendar","indirect","abbrev","typo"]}
+{"id":"d038","text":"אני תפוס ביום שני?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"date":"2026-10-12"}},"tags":["he","calendar"]}
+{"id":"d039","text":"משה פנוי ב-14.10?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"משה","date":"2026-10-14"}},"tags":["he","calendar","person"]}
+{"id":"d040","text":"חדר ישיבות פנוי מחד ב-14:00","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"חדר ישיבות","from":"2026-10-09T14:00","to":"2026-10-09T15:00"}},"tags":["he","calendar","shared-calendar","typo"]}
+{"id":"d041","text":"יש מצב שאני פנוי בשלישי","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"date":"2026-10-13"}},"tags":["he","calendar","indirect"]}
+{"id":"d042","text":"אני חופשי מחרתיים בבוקר?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-10T06:00","to":"2026-10-10T12:00"}},"tags":["he","calendar","relative-date"]}
+{"id":"d043","text":"דנה פנויה מחד בצהריים?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"דנה","from":"2026-10-09T12:00","to":"2026-10-09T14:00"}},"tags":["he","calendar","person","typo"]}
+{"id":"d044","text":"אני פנוי מחד ב-15:30","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T15:30"}},"tags":["he","calendar","typo"]}
+{"id":"d045","text":"תבדוק אם איציק זמין מחד ב-9","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"איציק","from":"2026-10-09T09:00"}},"tags":["he","calendar","indirect","person","typo"]}
+{"id":"d046","text":"מתי הפגישה עם דנה","expect":{"decision":"exec","cap":"calendar.search_events"},"tags":["he","calendar"]}
+{"id":"d047","text":"פגיסות על התקציב","expect":{"decision":"exec","cap":"calendar.search_events","slots":{"terms":[["תקציב"]]}},"tags":["he","calendar","typo"]}
+{"id":"d048","text":"מתי הדמו עם הלקוק","expect":{"decision":"exec","cap":"calendar.search_events","slots":{"terms":[["דמו"],["לקוח"]]}},"tags":["he","calendar","multi-condition","typo"]}
+{"id":"d049","text":"מתי הפגישה על הרבעון","expect":{"decision":"exec","cap":"calendar.search_events","slots":{"terms":[["רבעון"]]}},"tags":["he","calendar"]}
+{"id":"d050","text":"תמצא לי את הפגישה על המכרז","expect":{"decision":"exec","cap":"calendar.search_events","slots":{"terms":[["מכרז"]]}},"tags":["he","calendar"]}
+{"id":"d051","text":"פגסה עם יובל מתי","expect":{"decision":"exec","cap":"calendar.search_events"},"tags":["he","calendar","typo"]}
+{"id":"d052","text":"מתי יש לי פגישה על הפרויקט השבוע","expect":{"decision":"exec","cap":"calendar.search_events","slots":{"terms":[["פרויקט"]],"from":"2026-10-04","to":"2026-10-11"}},"tags":["he","calendar","multi-condition","relative-date"]}
+{"id":"d053","text":"תחפש פגיסות בנושא אבטחה","expect":{"decision":"exec","cap":"calendar.search_events","slots":{"terms":[["אבטחה"]]}},"tags":["he","calendar","typo"]}
+{"id":"d054","text":"איזה יומנים משותפים יש לי","expect":{"decision":"exec","cap":"calendar.resolve_shared_calendar"},"tags":["he","calendar","shared-calendar"]}
+{"id":"d055","text":"לאילו לוחות שנה יש לי גישה","expect":{"decision":"exec","cap":"calendar.resolve_shared_calendar"},"tags":["he","calendar","shared-calendar","synonym"]}
+{"id":"d056","text":"תרא לי את היומנים של אחרים שאני רואה","expect":{"decision":"exec","cap":"calendar.resolve_shared_calendar"},"tags":["he","calendar","shared-calendar","typo"]}
+{"id":"d057","text":"איזה יומנים אפשר לבדוק","expect":{"decision":"exec","cap":"calendar.resolve_shared_calendar"},"tags":["he","calendar","shared-calendar","indirect"]}
+{"id":"d058","text":"אילו יומני צוות קיימים אצלי","expect":{"decision":"exec","cap":"calendar.resolve_shared_calendar"},"tags":["he","calendar","shared-calendar","inflection"]}
+{"id":"d059","text":"יאללה מיילם מיובל","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל"}},"tags":["he","mail","typo","slang"]}
+{"id":"d060","text":"תבדק אם קיבלתי מייל מדני","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני"}},"tags":["he","mail","indirect","typo"]}
+{"id":"d061","text":"תקפיץ לי המיילם שלי שלא קראתי","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true}},"tags":["he","mail","inflection","typo","slang"]}
+{"id":"d062","text":"כמה הודאות לא נקראו יש לי","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true}},"tags":["he","mail","indirect","synonym","typo"]}
+{"id":"d063","text":"אחי המייל האחרן משרון","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"שרון","latest":true,"limit":1}},"tags":["he","mail","multi-condition","typo","slang"]}
+{"id":"d064","text":"5 המיילם האחרונים","expect":{"decision":"exec","cap":"email.search","slots":{"latest":true,"limit":5}},"tags":["he","mail","typo"]}
+{"id":"d065","text":"תראה לי מיילם מאתמול","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-07"}},"tags":["he","mail","relative-date","typo"]}
+{"id":"d066","text":"תוכל לבדוק לי מיילים מהשבוע שעבר","expect":{"decision":"exec","cap":"email.search","slots":{"from":"2026-09-27","to":"2026-10-04"}},"tags":["he","mail","relative-date","indirect"]}
+{"id":"d067","text":"מה קיבלתי היום במייל","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-08"}},"tags":["he","mail","indirect","relative-date"]}
+{"id":"d068","text":"יש לי מייל עם המילה חשבונית","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["חשבונית"]],"exact":true}},"tags":["he","mail","exact-word"]}
+{"id":"d069","text":"תמצא מייל שיש בו בדיוק `דחוף`","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["דחוף"]],"exact":true}},"tags":["he","mail","exact-word"]}
+{"id":"d070","text":"אפשר לראות את מיילים מדני על התקציב מהשבוע שעבר שלא קראתי","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","terms":[["תקציב"]],"from":"2026-09-27","to":"2026-10-04","unread":true}},"tags":["he","mail","multi-condition","indirect"]}
+{"id":"d071","text":"תביא את המיילים של מירי אברהם מהיום","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"מירי אברהם","date":"2026-10-08"}},"tags":["he","mail","inflection","multi-condition"]}
+{"id":"d072","text":"יש מצב שתראה לי מיילים בתיבה של מכירות","expect":{"decision":"exec","cap":"email.search","slots":{"mailbox":"mb2"}},"tags":["he","mail","multi-mailbox","indirect"]}
+{"id":"d073","text":"אשמח לראות הודעות בתמיכה טכנית מאתמול","expect":{"decision":"exec","cap":"email.search","slots":{"mailbox":"mb3","date":"2026-10-07"}},"tags":["he","mail","multi-mailbox","synonym","multi-condition","indirect"]}
+{"id":"d074","text":"חפש בכל התיבות מייל על החוזה","expect":{"decision":"exec","cap":"email.search","slots":{"all_mailboxes":true,"terms":[["חוזה"]]}},"tags":["he","mail","multi-mailbox","multi-condition"]}
+{"id":"d075","text":"תזרוק לי מיילים מהתיבה המשותפת","expect":{"decision":"exec","cap":"email.search","slots":{"shared_mailbox":true}},"tags":["he","mail","multi-mailbox","slang"]}
+{"id":"d076","text":"מה יש בתיבות משותפות מהיום","expect":{"decision":"exec","cap":"email.search","slots":{"shared_mailbox":true,"date":"2026-10-08"}},"tags":["he","mail","multi-mailbox","multi-condition"]}
+{"id":"d077","text":"הדואר הנכנס של היום","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-08"}},"tags":["he","mail","synonym"]}
+{"id":"d078","text":"יאללה מיילים מיובל מהבוקר","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","from":"2026-10-08T06:00","to":"2026-10-08T12:00"}},"tags":["he","mail","multi-condition","slang"]}
+{"id":"d079","text":"מיל מדני","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני"}},"tags":["he","mail","typo"]}
+{"id":"d080","text":"מייליים מיובל על הפרויקט","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","terms":[["פרויקט"]]}},"tags":["he","mail","typo","multi-condition"]}
+{"id":"d081","text":"תקפיץ לי הודעות שלא נקראו בתיבה של מכירות","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true,"mailbox":"mb2"}},"tags":["he","mail","multi-mailbox","multi-condition","slang"]}
+{"id":"d082","text":"דוא״ל מיובל מהשבוע","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","from":"2026-10-04","to":"2026-10-11"}},"tags":["he","mail","abbrev","synonym","multi-condition"]}
+{"id":"d083","text":"תזרוק לי את המיילים מדני מהיום","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","date":"2026-10-08"}},"tags":["he","mail","slang","multi-condition"]}
+{"id":"d084","text":"מה שרון שלחה לי השבוע","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"שרון","from":"2026-10-04","to":"2026-10-11"}},"tags":["he","mail","indirect","multi-condition"]}
+{"id":"d085","text":"ההתכתבות עם מירי על המכרז","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"מירי","terms":[["מכרז"]]}},"tags":["he","mail","synonym","multi-condition"]}
+{"id":"d086","text":"אחי מיילים על ההצעה","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["הצעה"]]}},"tags":["he","mail","slang"]}
+{"id":"d087","text":"אפשר לראות את ההודעות ששלחו לי אתמול בערב","expect":{"decision":"exec","cap":"email.search","slots":{"from":"2026-10-07T18:00","to":"2026-10-08"}},"tags":["he","mail","indirect","synonym","multi-condition"]}
+{"id":"d088","text":"תוכל לבדוק לי המייל החדש ביותר","expect":{"decision":"exec","cap":"email.search","slots":{"latest":true,"limit":1}},"tags":["he","mail","indirect"]}
+{"id":"d089","text":"3 מיילים אחרונים מיובל","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","latest":true,"limit":3}},"tags":["he","mail","multi-condition"]}
+{"id":"d090","text":"אפשר לראות את מיילים שלא קראתי מדני מהשבוע","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true,"sender":"דני","from":"2026-10-04","to":"2026-10-11"}},"tags":["he","mail","multi-condition","indirect"]}
+{"id":"d091","text":"יש מייל מדני?","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני"}},"tags":["he","mail"]}
+{"id":"d092","text":"יש מצב שתראה לי הודעות על הדוח השנתי","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["דוח"],["שנתי"]]}},"tags":["he","mail","synonym","multi-condition","indirect"]}
+{"id":"d093","text":"אשמח לראות מיילים מאתמול בתיבת התמיכה","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-07","mailbox":"mb3"}},"tags":["he","mail","multi-mailbox","multi-condition","indirect"]}
+{"id":"d094","text":"תזרוק לי מיילים שהגיעו ב-6.10","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-06"}},"tags":["he","mail","slang"]}
+{"id":"d095","text":"תחפשי מיילים מיובל שנשלחו שלשום","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","date":"2026-10-06"}},"tags":["he","mail","multi-condition","relative-date"]}
+{"id":"d096","text":"יש לי הודעה מהבוס?","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"בוס"}},"tags":["he","mail","synonym"]}
+{"id":"d097","text":"מייל מיובל כהן על התקציב","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל כהן","terms":[["תקציב"]]}},"tags":["he","mail","person","multi-condition"]}
+{"id":"d098","text":"תחפס מיילים מדני","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני"}},"tags":["he","mail","typo"]}
+{"id":"d099","text":"יאללה הודעות מדני בשבוע האחרון","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","from":"2026-10-01"}},"tags":["he","mail","multi-condition","relative-date","slang"]}
+{"id":"d100","text":"תקפיץ לי מיילים מאתמול שלא נקראו","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-07","unread":true}},"tags":["he","mail","multi-condition","slang"]}
+{"id":"d101","text":"תגיד לי אם יש מיילים חדשים שלא קראתי","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true}},"tags":["he","mail","indirect"]}
+{"id":"d102","text":"אחי המיילים האחרונים בתיבה של מכירות","expect":{"decision":"exec","cap":"email.search","slots":{"latest":true,"mailbox":"mb2"}},"tags":["he","mail","multi-mailbox","multi-condition","slang"]}
+{"id":"d103","text":"תבדוק בתמיכה טכנית אם יש משהו על התקלה","expect":{"decision":"exec","cap":"email.search","slots":{"mailbox":"mb3","terms":[["תקלה"]]}},"tags":["he","mail","indirect","multi-mailbox","multi-condition"]}
+{"id":"d104","text":"אימייל מהמנהל עם המילה `אישור`","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"מנהל","terms":[["אישור"]],"exact":true}},"tags":["he","mail","exact-word","synonym","multi-condition"]}
+{"id":"d105","text":"מייל עם המילה פרוטוקול","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["פרוטוקול"]],"exact":true}},"tags":["he","mail","exact-word"]}
+{"id":"d106","text":"יש לי הודעה עם המילה `חתימה` בדיוק?","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["חתימה"]],"exact":true}},"tags":["he","mail","exact-word","synonym"]}
+{"id":"d107","text":"תוכל לבדוק לי מיילים משרון מיום שני שעבר","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"שרון","date":"2026-10-05"}},"tags":["he","mail","multi-condition","relative-date","indirect"]}
+{"id":"d108","text":"אפשר לראות את המייל שקיבלתי הבוקר","expect":{"decision":"exec","cap":"email.search","slots":{"from":"2026-10-08T06:00","to":"2026-10-08T12:00"}},"tags":["he","mail","indirect"]}
+{"id":"d109","text":"מיילים מיובל אתמול אחה״צ","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","from":"2026-10-07T12:00","to":"2026-10-07T18:00"}},"tags":["he","mail","abbrev","multi-condition"]}
+{"id":"d110","text":"בכל התיבות מיילים שלא נקראו","expect":{"decision":"exec","cap":"email.search","slots":{"all_mailboxes":true,"unread":true}},"tags":["he","mail","multi-mailbox","multi-condition"]}
+{"id":"d111","text":"מיל שלא קראתי מהתיבה המשותפת","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true,"shared_mailbox":true}},"tags":["he","mail","typo","multi-mailbox","multi-condition"]}
+{"id":"d112","text":"מה דני כתב לי בנושא התקציב","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","terms":[["תקציב"]]}},"tags":["he","mail","indirect","multi-condition"]}
+{"id":"d113","text":"מיילם מיובל משלשום","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","date":"2026-10-06"}},"tags":["he","mail","typo","relative-date","multi-condition"]}
+{"id":"d114","text":"תזרוק לי מיילים על הלקוח מהשבוע","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["לקוח"]],"from":"2026-10-04","to":"2026-10-11"}},"tags":["he","mail","multi-condition","slang"]}
+{"id":"d115","text":"מייל אחרון של יובל","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","latest":true,"limit":1}},"tags":["he","mail"]}
+{"id":"d116","text":"איפה שמרתי את התקציב","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["תקציב"]]}},"tags":["he","files","indirect"]}
+{"id":"d117","text":"תמצא לי את קובץ האקסל של המכירות","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","terms":[["מכירות"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d118","text":"יאללה מצגת על הפרויקט החדש","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pptx","terms":[["פרויקט"],["חדש"]]}},"tags":["he","files","multi-condition","slang"]}
+{"id":"d119","text":"תקפיץ לי קבצי PDF מהשבוע","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pdf","from":"2026-10-04","to":"2026-10-11"}},"tags":["he","files","multi-condition","relative-date","slang"]}
+{"id":"d120","text":"קצבים של הלקוח","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["לקוח"]]}},"tags":["he","files","typo"]}
+{"id":"d121","text":"אחי מסמך וורד על החוזה","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"docx","terms":[["חוזה"]]}},"tags":["he","files","multi-condition","slang"]}
+{"id":"d122","text":"איפה הקובץ שעבדתי עליו אתמול","expect":{"decision":"exec","cap":"files.search","slots":{"date":"2026-10-07"}},"tags":["he","files","indirect","relative-date"]}
+{"id":"d123","text":"קבצים מהשבוע האחרון","expect":{"decision":"exec","cap":"files.search","slots":{"from":"2026-10-01"}},"tags":["he","files","relative-date"]}
+{"id":"d124","text":"תראה לי את כל קבצי האקסל","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx"}},"tags":["he","files","inflection"]}
+{"id":"d125","text":"מסמכים שקשורים לדוח רבעוני","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["דוח"],["רבעוני"]]}},"tags":["he","files","synonym","multi-condition"]}
+{"id":"d126","text":"יש לי קובץ csv של לקוחות?","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"csv","terms":[["לקוחות"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d127","text":"איפה ה-PDF של ההסכם","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pdf","terms":[["הסכם"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d128","text":"תזרוק לי את המצגת מהישיבה","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pptx","terms":[["ישיבה"]]}},"tags":["he","files","slang","multi-condition"]}
+{"id":"d129","text":"קובץ טקסט עם הערות","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"txt","terms":[["הערות"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d130","text":"מסמך מאתמול","expect":{"decision":"exec","cap":"files.search","slots":{"date":"2026-10-07"}},"tags":["he","files","relative-date"]}
+{"id":"d131","text":"אקסל של הנוכחות","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","terms":[["נוכחות"]]}},"tags":["he","files"]}
+{"id":"d132","text":"פדף של החשבונית","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pdf","terms":[["חשבונית"]]}},"tags":["he","files","typo","multi-condition"]}
+{"id":"d133","text":"איפה שמרתי את המצגת של הלקוח","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pptx","terms":[["לקוח"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d134","text":"בבקשה תמצא את המסמך על מדיניות הפרטיות","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["מדיניות"],["פרטיות"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d135","text":"ורד עם הצעה","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"docx","terms":[["הצעה"]]}},"tags":["he","files","typo"]}
+{"id":"d136","text":"מה הקבצים שפתחתי היום","expect":{"decision":"exec","cap":"files.search","slots":{"date":"2026-10-08"}},"tags":["he","files","indirect"]}
+{"id":"d137","text":"אפשר לדעת איפה הקובץ של התקציב השנתי","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["תקציב"],["שנתי"]]}},"tags":["he","files","indirect"]}
+{"id":"d138","text":"קבצים שנוצרו שלשום","expect":{"decision":"exec","cap":"files.search","slots":{"date":"2026-10-06"}},"tags":["he","files","relative-date"]}
+{"id":"d139","text":"תזרוק לי אקסל מהשבוע שעבר על המלאי","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","from":"2026-09-27","to":"2026-10-04","terms":[["מלאי"]]}},"tags":["he","files","multi-condition","relative-date","slang"]}
+{"id":"d140","text":"יאללה מסמך על תכנית עבודה","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["תכנית"],["עבודה"]]}},"tags":["he","files","slang"]}
+{"id":"d141","text":"תקפיץ לי מצגת מהשבוע שעבר","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pptx","from":"2026-09-27","to":"2026-10-04"}},"tags":["he","files","relative-date","slang"]}
+{"id":"d142","text":"תחפש קובץ אקסל עם תקציב ","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","terms":[["תקציב"]]}},"tags":["he","files","multi-condition"]}
+{"id":"d143","text":"אחי תביא לי את הקובץ של הספק","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["ספק"]]}},"tags":["he","files","slang"]}
+{"id":"d144","text":"איפה המסמכים של הביטוח שלי","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["ביטוח"]]}},"tags":["he","files","inflection"]}
+{"id":"d145","text":"תבדוק לי אם יש לי מסמך על הדרכה","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["הדרכה"]]}},"tags":["he","files","indirect"]}
+{"id":"d146","text":"מסמכי וורד מאתמול","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"docx","date":"2026-10-07"}},"tags":["he","files","multi-condition","inflection"]}
+{"id":"d147","text":"קבוצי אקסל על הנהלת חשבונות","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","terms":[["הנהלת"],["חשבונות"]]}},"tags":["he","files","typo"]}
+{"id":"d148","text":"יש מצב שיש לי קובץ pdf על העסקה","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pdf","terms":[["עסקה"]]}},"tags":["he","files","indirect"]}
+{"id":"d149","text":"אחי הפתקים שלי על הגיבוי","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["גיבוי"]]}},"tags":["he","notes","inflection","slang"]}
+{"id":"d150","text":"מה רשמתי על הפגישה עם דני","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["פגישה"],["דני"]]}},"tags":["he","notes","indirect","multi-condition"]}
+{"id":"d151","text":"הערה על הסיסמה","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["סיסמה"]]}},"tags":["he","notes","synonym"]}
+{"id":"d152","text":"פתק מאתמול","expect":{"decision":"exec","cap":"notes.search","slots":{"date":"2026-10-07"}},"tags":["he","notes","relative-date"]}
+{"id":"d153","text":"פתקים מהשבוע","expect":{"decision":"exec","cap":"notes.search","slots":{"from":"2026-10-04","to":"2026-10-11"}},"tags":["he","notes","relative-date"]}
+{"id":"d154","text":"פתקיים על הלקוח","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["לקוח"]]}},"tags":["he","notes","typo"]}
+{"id":"d155","text":"איפה רשמתי את המספר של הספק","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["מספר"],["ספק"]]}},"tags":["he","notes","indirect","multi-condition"]}
+{"id":"d156","text":"פתק שכתבתי היום","expect":{"decision":"exec","cap":"notes.search","slots":{"date":"2026-10-08"}},"tags":["he","notes"]}
+{"id":"d157","text":"תזרוק לי פתקים על החגים","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["חגים"]]}},"tags":["he","notes","slang"]}
+{"id":"d158","text":"מה כתבתי בפתק על התקציב","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["תקציב"]]}},"tags":["he","notes","indirect"]}
+{"id":"d159","text":"יש לי פתק עם המילה סיסמה","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["סיסמה"]],"exact":true}},"tags":["he","notes","exact-word"]}
+{"id":"d160","text":"פתקים שכתבתי בשבוע שעבר על הפרויקט","expect":{"decision":"exec","cap":"notes.search","slots":{"from":"2026-09-27","to":"2026-10-04","terms":[["פרויקט"]]}},"tags":["he","notes","multi-condition","relative-date"]}
+{"id":"d161","text":"תבדוק אם רשמתי משהו על הדמו","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["דמו"]]}},"tags":["he","notes","indirect"]}
+{"id":"d162","text":"הפתק האחרון שלי","expect":{"decision":"exec","cap":"notes.search","slots":{"latest":true,"limit":1}},"tags":["he","notes"]}
+{"id":"d163","text":"3 הפתקים האחרונים","expect":{"decision":"exec","cap":"notes.search","slots":{"latest":true,"limit":3}},"tags":["he","notes"]}
+{"id":"d164","text":"פתקים עם המילה `דחוף`","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["דחוף"]],"exact":true}},"tags":["he","notes","exact-word"]}
+{"id":"d165","text":"פתק על הגיבוי שכתבתי שלשום","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["גיבוי"]],"date":"2026-10-06"}},"tags":["he","notes","multi-condition","relative-date"]}
+{"id":"d166","text":"פתקם על הפגישה","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["פגישה"]]}},"tags":["he","notes","typo"]}
+{"id":"d167","text":"מה הולך בפתקים על הלקוחות","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["לקוחות"]]}},"tags":["he","notes","slang"]}
+{"id":"d168","text":"תראה לי הערות מהיום על המכרז","expect":{"decision":"exec","cap":"notes.search","slots":{"date":"2026-10-08","terms":[["מכרז"]]}},"tags":["he","notes","synonym","multi-condition"]}
+{"id":"d169","text":"אשמח לראות את מה שרשמתי על הנסיעה","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["נסיעה"]]}},"tags":["he","notes","indirect"]}
+{"id":"d170","text":"פתק שמזכיר את החשבונית","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["חשבונית"]]}},"tags":["he","notes"]}
+{"id":"d171","text":"הפתקים שלי מהשבוע האחרון","expect":{"decision":"exec","cap":"notes.search","slots":{"from":"2026-10-01"}},"tags":["he","notes","inflection","relative-date"]}
+{"id":"d172","text":"איפה הפתק שרשמתי עם הקוד","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["קוד"]]}},"tags":["he","notes","indirect"]}
+{"id":"d173","text":"פטקים על הצעת המחיר","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["הצעת"],["מחיר"]]}},"tags":["he","notes","typo"]}
+{"id":"d174","text":"מה יש לי מחר ביומן שלי","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar"]}
+{"id":"d175","text":"ומה ביום ראשון?","ctx":"d174","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-11","follow_up":true}},"tags":["he","follow-up","calendar","relative-date"]}
+{"id":"d176","text":"רק בבוקר","ctx":"d174","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T06:00","to":"2026-10-09T12:00","follow_up":true}},"tags":["he","follow-up","calendar"]}
+{"id":"d177","text":"ואחה״צ?","ctx":"d174","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T12:00","to":"2026-10-09T18:00","follow_up":true}},"tags":["he","follow-up","calendar","abbrev"]}
+{"id":"d178","text":"מה יש לדנה מחר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"דנה","date":"2026-10-09"}},"tags":["he","calendar","person"]}
+{"id":"d179","text":"ולאיציק?","ctx":"d178","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"איציק","date":"2026-10-09","follow_up":true}},"tags":["he","follow-up","calendar","person"]}
+{"id":"d180","text":"ומה עם משה","ctx":"d178","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"משה","date":"2026-10-09","follow_up":true}},"tags":["he","follow-up","calendar","person"]}
+{"id":"d181","text":"מיילים מדני","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני"}},"tags":["he","mail"]}
+{"id":"d182","text":"רק שלא נקראו","ctx":"d181","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","unread":true,"follow_up":true}},"tags":["he","follow-up","mail","multi-condition"]}
+{"id":"d183","text":"ומיובל?","ctx":"d181","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","follow_up":true}},"tags":["he","follow-up","mail"]}
+{"id":"d184","text":"מהשבוע בלבד","ctx":"d181","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","from":"2026-10-04","to":"2026-10-11","follow_up":true}},"tags":["he","follow-up","mail","relative-date"]}
+{"id":"d185","text":"רק האחרון","ctx":"d181","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","latest":true,"limit":1,"follow_up":true}},"tags":["he","follow-up","mail"]}
+{"id":"d186","text":"תראה לי את קבצי האקסל","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx"}},"tags":["he","files"]}
+{"id":"d187","text":"מהשבוע שעבר","ctx":"d186","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","from":"2026-09-27","to":"2026-10-04","follow_up":true}},"tags":["he","follow-up","files","relative-date"]}
+{"id":"d188","text":"ורק ה-PDF","ctx":"d186","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pdf","follow_up":true}},"tags":["he","follow-up","files"]}
+{"id":"d189","text":"תזרוק לי פתקים על הגיבוי","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["גיבוי"]]}},"tags":["he","notes","slang"]}
+{"id":"d190","text":"מאתמול","ctx":"d189","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["גיבוי"]],"date":"2026-10-07","follow_up":true}},"tags":["he","follow-up","notes","relative-date"]}
+{"id":"d191","text":"ומה כתבתי על הסיסמה","ctx":"d189","expect":{"decision":"exec","cap":"notes.search","slots":{"terms":[["סיסמה"]],"follow_up":true}},"tags":["he","follow-up","notes"]}
+{"id":"d192","text":"אני פנוי מחר ב-11?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T11:00","to":"2026-10-09T12:00"}},"tags":["he","calendar"]}
+{"id":"d193","text":"ומחרתיים?","ctx":"d192","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-10T11:00","to":"2026-10-10T12:00","follow_up":true}},"tags":["he","follow-up","calendar","relative-date"]}
+{"id":"d194","text":"ודנה?","ctx":"d192","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"דנה","from":"2026-10-09T11:00","to":"2026-10-09T12:00","follow_up":true}},"tags":["he","follow-up","calendar","person"]}
+{"id":"d195","text":"תראה מיילים בתיבת מכירות","expect":{"decision":"exec","cap":"email.search","slots":{"mailbox":"mb2"}},"tags":["he","mail","multi-mailbox"]}
+{"id":"d196","text":"ובתמיכה?","ctx":"d195","expect":{"decision":"exec","cap":"email.search","slots":{"mailbox":"mb3","follow_up":true}},"tags":["he","follow-up","mail","multi-mailbox"]}
+{"id":"d197","text":"רק מהיום","ctx":"d195","expect":{"decision":"exec","cap":"email.search","slots":{"mailbox":"mb2","date":"2026-10-08","follow_up":true}},"tags":["he","follow-up","mail","multi-condition"]}
+{"id":"d198","text":"תביא לי מיילים מיובל","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל"}},"tags":["he","mail"]}
+{"id":"d199","text":"תסנן לשבוע שעבר","ctx":"d198","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","from":"2026-09-27","to":"2026-10-04","follow_up":true}},"tags":["he","follow-up","mail","relative-date"]}
+{"id":"d200","text":"ושלא נקראו","ctx":"d199","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","unread":true,"follow_up":true}},"tags":["he","follow-up","mail","multi-condition"]}
+{"id":"d201","text":"יאללה הפגישות שלי השבוע","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-04","to":"2026-10-11"}},"tags":["he","calendar","relative-date","slang"]}
+{"id":"d202","text":"ומה בשבוע הבא","ctx":"d201","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-11","to":"2026-10-18","follow_up":true}},"tags":["he","follow-up","calendar","relative-date"]}
+{"id":"d203","text":"רק מחר","ctx":"d201","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09","follow_up":true}},"tags":["he","follow-up","calendar","relative-date"]}
+{"id":"d204","text":"מסמכים על התקציב","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["תקציב"]]}},"tags":["he","files"]}
+{"id":"d205","text":"ורק וורד","ctx":"d204","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["תקציב"]],"ext":"docx","follow_up":true}},"tags":["he","follow-up","files","multi-condition"]}
+{"id":"d206","text":"אותו דבר על התכנון","ctx":"d204","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["תכנון"]],"follow_up":true}},"tags":["he","follow-up","files"]}
+{"id":"d207","text":"ומה עם הלקוח","ctx":"d204","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["לקוח"]],"follow_up":true}},"tags":["he","follow-up","files"]}
+{"id":"d208","text":"מה קבוע לי","expect":{"decision":"clarify","ask":"date","cap":"calendar.list_events"},"tags":["he","calendar"]}
+{"id":"d209","text":"תגיד לי בבקשה מה יש לי","expect":{"decision":"clarify","ask":"date","cap":"calendar.list_events"},"tags":["he","calendar","indirect"]}
+{"id":"d210","text":"מה יש ליובל ולדנה","expect":{"decision":"clarify","ask":"person","cap":"calendar.list_events"},"tags":["he","calendar","person"]}
+{"id":"d211","text":"מה דנה ואיציק עושים מחר","expect":{"decision":"clarify","ask":"person","cap":"calendar.list_events"},"tags":["he","calendar","person"]}
+{"id":"d212","text":"אני פנוי מחר ב-3","expect":{"decision":"clarify","ask":"time","cap":"calendar.check_availability"},"tags":["he","calendar"]}
+{"id":"d213","text":"מה יש לי ביומן ב-5","expect":{"decision":"clarify","ask":"time","cap":"calendar.list_events"},"tags":["he","calendar"]}
+{"id":"d214","text":"תביא קבצים","expect":{"decision":"clarify","ask":"content","cap":"files.search"},"tags":["he","files"]}
+{"id":"d215","text":"תחפש לי מיילים","expect":{"decision":"clarify","ask":"content","cap":"email.search"},"tags":["he","mail"]}
+{"id":"d216","text":"כל המיילים","expect":{"decision":"clarify","ask":"content","cap":"email.search"},"tags":["he","mail"]}
+{"id":"d217","text":"דואר נכנס","expect":{"decision":"clarify","ask":"content","cap":"email.search"},"tags":["he","mail","synonym"]}
+{"id":"d218","text":"הפתקים שלי","expect":{"decision":"exec","cap":"notes.search"},"tags":["he","notes"]}
+{"id":"d219","text":"תראה לי פתקים","expect":{"decision":"exec","cap":"notes.search"},"tags":["he","notes"]}
+{"id":"d220","text":"ומה עם יום ראשון","expect":{"decision":"clarify","ask":"intent"},"tags":["he","follow-up"]}
+{"id":"d221","text":"רק מדני","expect":{"decision":"clarify","ask":"intent"},"tags":["he","follow-up"]}
+{"id":"d222","text":"מחר","expect":{"decision":"clarify","ask":"intent"},"tags":["he","relative-date"]}
+{"id":"d223","text":"דנה","expect":{"decision":"clarify","ask":"intent"},"tags":["he","person"]}
+{"id":"d224","text":"מה יש לי ב-31.2 ביומן","expect":{"decision":"clarify","ask":"date","cap":"calendar.list_events"},"tags":["he","calendar"]}
+{"id":"d225","text":"אירועים ב-30.2","expect":{"decision":"clarify","ask":"date","cap":"calendar.list_events"},"tags":["he","calendar"]}
+{"id":"d226","text":"מה קורה ביומן של איציק ושל משה","expect":{"decision":"clarify","ask":"person","cap":"calendar.list_events"},"tags":["he","calendar","person"]}
+{"id":"d227","text":"מה יש לדנה ולמשה מחר?","expect":{"decision":"clarify","ask":"person","cap":"calendar.list_events"},"tags":["he","calendar","person"]}
+{"id":"d228","text":"תחפש קצבים","expect":{"decision":"clarify","ask":"content","cap":"files.search"},"tags":["he","files","typo"]}
+{"id":"d229","text":"מייליים","expect":{"decision":"clarify","ask":"content","cap":"email.search"},"tags":["he","mail","typo"]}
+{"id":"d230","text":"משהו ביומן?","expect":{"decision":"clarify","ask":"date","cap":"calendar.list_events"},"tags":["he","calendar","indirect"]}
+{"id":"d231","text":"תמחק את המייל מיובל אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","mail","slang"]}
+{"id":"d232","text":"תענה לדני שאני מאשר אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","mail","slang"]}
+{"id":"d233","text":"תעביר את המייל הזה לשרון אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","mail","slang"]}
+{"id":"d234","text":"בטל את הפגישה מחר אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","calendar","slang"]}
+{"id":"d235","text":"דחה את הפגישה לשבוע הבא אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","calendar","slang"]}
+{"id":"d236","text":"תקבע פגישה עם דנה ביום ראשון אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","calendar","slang"]}
+{"id":"d237","text":"תזמין לי את חדר ישיבות מחר ב-10","expect":{"decision":"nomatch"},"tags":["he","unsupported","calendar"]}
+{"id":"d238","text":"שנה את השם של הקובץ","expect":{"decision":"nomatch"},"tags":["he","unsupported","files"]}
+{"id":"d239","text":"תמחק את הפתק על הגיבוי","expect":{"decision":"nomatch"},"tags":["he","unsupported","notes"]}
+{"id":"d240","text":"מה מזג האוויר מחר","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d241","text":"מה החדשות היום","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d242","text":"תתרגם לי לאנגלית את המשפט הזה","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d243","text":"תנגן לי שיר","expect":{"decision":"nomatch"},"tags":["he","unsupported","other","slang"]}
+{"id":"d244","text":"תזמין לי פיצה","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d245","text":"תתקין לי את וואטסאפ","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d246","text":"תזיז את הפגישה של מחר לשעה 4","expect":{"decision":"nomatch"},"tags":["he","unsupported","calendar"]}
+{"id":"d247","text":"תערוך את המסמך של התקציב","expect":{"decision":"nomatch"},"tags":["he","unsupported","files"]}
+{"id":"d248","text":"שלח את הקובץ הזה לדנה","expect":{"decision":"nomatch"},"tags":["he","unsupported","files"]}
+{"id":"d249","text":"תעדכן את הפתק שלי","expect":{"decision":"nomatch"},"tags":["he","unsupported","notes"]}
+{"id":"d250","text":"מה השעה","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d251","text":"ספר לי בדיחה","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d252","text":"מה התחזית לסוף השבוע","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d253","text":"בלה בלה בלה","expect":{"decision":"nomatch"},"tags":["he","unsupported","other"]}
+{"id":"d254","text":"תסדר לי את הדואר הנכנס","expect":{"decision":"nomatch"},"tags":["he","unsupported","mail"]}
+{"id":"d255","text":"אפשר לבטל את הפגישה עם דנה? יש מצב","expect":{"decision":"nomatch"},"tags":["he","unsupported","calendar","indirect"]}
+{"id":"d256","text":"תפתח את המייל האחרון מיובל","expect":{"decision":"confirm","cap":"email.open"},"tags":["he","mail"]}
+{"id":"d257","text":"תפתח את הקובץ של התקציב","expect":{"decision":"confirm","cap":"files.open"},"tags":["he","files"]}
+{"id":"d258","text":"תפתח את הפתק על הגיבוי","expect":{"decision":"confirm","cap":"notes.open"},"tags":["he","notes"]}
+{"id":"d259","text":"תפעיל את אקסל","expect":{"decision":"confirm","cap":"apps.launch","slots":{"app":"אקסל"}},"tags":["he","apps"]}
+{"id":"d260","text":"תפתח וורד בבקשה","expect":{"decision":"confirm","cap":"apps.launch","slots":{"app":"וורד"}},"tags":["he","apps"]}
+{"id":"d261","text":"תריץ את המחשבון","expect":{"decision":"confirm","cap":"apps.launch","slots":{"app":"מחשבון"}},"tags":["he","apps"]}
+{"id":"d262","text":"תפתח לי את הכרום","expect":{"decision":"confirm","cap":"apps.launch","slots":{"app":"כרום"}},"tags":["he","apps"]}
+{"id":"d263","text":"תפתח את המצגת של הלקוח","expect":{"decision":"confirm","cap":"files.open"},"tags":["he","files"]}
+{"id":"d264","text":"פתח את המייל מדני","expect":{"decision":"confirm","cap":"email.open"},"tags":["he","mail"]}
+{"id":"d265","text":"תפתח אאוטלוק","expect":{"decision":"confirm","cap":"apps.launch","slots":{"app":"אאוטלוק"}},"tags":["he","apps","typo"]}
+{"id":"d266","text":"איזה אפליקציות יש לי","expect":{"decision":"exec","cap":"apps.search"},"tags":["he","apps"]}
+{"id":"d267","text":"אילו תוכנות מותקנות אצלי","expect":{"decision":"exec","cap":"apps.search"},"tags":["he","apps","synonym","inflection"]}
+{"id":"d268","text":"אפשר לדעת איזה אפליקציות יש לי במחשב","expect":{"decision":"exec","cap":"apps.search"},"tags":["he","apps","indirect"]}
+{"id":"d269","text":"איזה אפליקצות יש לי","expect":{"decision":"exec","cap":"apps.search"},"tags":["he","apps","typo"]}
+{"id":"d270","text":"איזה תוכנות יש לי פה אחי","expect":{"decision":"exec","cap":"apps.search"},"tags":["he","apps","slang"]}
+{"id":"d271","text":"כמה זה 15 כפול 4","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":60}},"tags":["he","calc"]}
+{"id":"d272","text":"חשב 120 חלקי 8","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":15}},"tags":["he","calc"]}
+{"id":"d273","text":"250 ועוד 175","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":425}},"tags":["he","calc"]}
+{"id":"d274","text":"כמה זה 1000 פחות 335","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":665}},"tags":["he","calc"]}
+{"id":"d275","text":"מה זה 12*12","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":144}},"tags":["he","calc"]}
+{"id":"d276","text":"כמה זה 17% מ-200","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":34}},"tags":["he","calc"]}
+{"id":"d277","text":"תחשב 99 ועוד 1","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":100}},"tags":["he","calc"]}
+{"id":"d278","text":"כמה זה 45 חלקי 4","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":11.25}},"tags":["he","calc"]}
+{"id":"d279","text":"אפשר לדעת כמה זה 100 - 37","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":63}},"tags":["he","calc","indirect"]}
+{"id":"d280","text":"כמה זה 8 כפול 7 אחי","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":56}},"tags":["he","calc","slang"]}
+{"id":"d281","text":"מַה יֵשׁ לִי מָחָר בַּיּוֹמָן","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","niqqud"]}
+{"id":"d282","text":"תַּחְפֵּשׂ מיילים מיובל","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל"}},"tags":["he","mail","niqqud"]}
+{"id":"d283","text":"מהיש לימחר ביומן","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","typo"]}
+{"id":"d284","text":"תראהלי מיילים מדני","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני"}},"tags":["he","mail","typo"]}
+{"id":"d285","text":"מייליים מיבול שלא קראתי","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"יובל","unread":true}},"tags":["he","mail","typo","multi-condition"]}
+{"id":"d286","text":"מה הלו״ז מחר אחה״צ","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T12:00","to":"2026-10-09T18:00"}},"tags":["he","calendar","abbrev"]}
+{"id":"d287","text":"דוא״ל מדני מהיום","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","date":"2026-10-08"}},"tags":["he","mail","abbrev"]}
+{"id":"d288","text":"אחי תקפיץ לי מה הולך מחר ביומן","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","slang"]}
+{"id":"d289","text":"יאללה מה קורה עם המיילים שלא קראתי","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true}},"tags":["he","mail","slang"]}
+{"id":"d290","text":"תחפש את החשבונית","expect":{"decision":"multi","caps":["email.search","files.search","notes.search"],"slots":{"terms":[["חשבונית"]]}},"tags":["he","other"]}
+{"id":"d291","text":"תמצא לי את הסכם הסודיות","expect":{"decision":"multi","caps":["email.search","files.search","notes.search"],"slots":{"terms":[["הסכם"],["סודיות"]]}},"tags":["he","other","multi-condition"]}
+{"id":"d292","text":"מה יש לי מחד בבוקר ביומן","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T06:00","to":"2026-10-09T12:00"}},"tags":["he","calendar","typo"]}
+{"id":"d293","text":"תקפיץ קצבי אקסל של השבוע","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","from":"2026-10-04","to":"2026-10-11"}},"tags":["he","files","slang","typo"]}
+{"id":"d294","text":"פתקיים מאתמולל","expect":{"decision":"exec","cap":"notes.search","slots":{"date":"2026-10-07"}},"tags":["he","notes","typo"]}
+{"id":"d295","text":"יש מצב שאני פנוי מחר בבקור","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T06:00","to":"2026-10-09T12:00"}},"tags":["he","calendar","indirect","typo"]}
+{"id":"d296","text":"חפשלי מיילים מדני על התקציב","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"דני","terms":[["תקציב"]]}},"tags":["he","mail","typo","multi-condition"]}
+{"id":"d297","text":"כמה זה 9 כפול 9","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":81}},"tags":["he","calc"]}
+{"id":"d298","text":"אחי תפתח אקסל","expect":{"decision":"confirm","cap":"apps.launch","slots":{"app":"אקסל"}},"tags":["he","apps","slang"]}
+{"id":"d299","text":"תמחק את כל המיילים אחי","expect":{"decision":"nomatch"},"tags":["he","unsupported","mail","slang"]}
+{"id":"d300","text":"מה יש לי מחר ביומן? תבדוק בבקשה","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","calendar","indirect"]}
