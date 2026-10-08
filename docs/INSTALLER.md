@@ -308,4 +308,4 @@ compatibility, PerMonitorV2 DPI.
 product/identifier names listed in `docs/ENTERPRISE_DESIGN.md` section 0; `RUN_VALUE_NAME` in
 `src-tauri/src/autostart.rs` (the installer takes the Run value name from the product name, so they move together);
 the legacy-product constants `YUVAL_OLD_*` in `src-tauri/installer-hooks.nsh` stay as they are (they name what
-shipped before); the icon via `scripts/make-icon.ps1` then `npx tauri icon app-icon.png`.
+shipped before); the icon and the installer images are generated from `assets/brand/*.svg` by `node scripts/make-brand-assets.cjs` (see `assets/brand/LOGO_NOTES.md`).

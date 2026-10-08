@@ -346,6 +346,8 @@ Function .onInit
     !endif
 
     Call RestorePreviousInstallLocation
+    ; YUVAL-CHANGE: no Yuval yet but an old CompanyIsland on another drive (E:\CompanyIsland): default to E:\Yuval.
+    !insertmacro YUVAL_FOLLOW_OLD_LOCATION
   ${EndIf}
 
 

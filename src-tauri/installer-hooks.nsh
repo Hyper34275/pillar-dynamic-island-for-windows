@@ -165,6 +165,31 @@ Section "-YuvalOsGate"
   ${EndIf}
 SectionEnd
 
+; ---- .onInit: the default folder follows an old CompanyIsland install ---------------------------------------
+; Expanded by the template inside "no /D= given", after RestorePreviousInstallLocation. When no Yuval was ever
+; installed ($INSTDIR is still the Program Files default) and CompanyIsland lives in, say, E:\CompanyIsland, the
+; default becomes E:\Yuval: an IT department that chose another drive keeps it. The folder of the old install
+; (InstallLocation, stored with quotes by older installers) must still exist; otherwise nothing changes.
+!macro YUVAL_FOLLOW_OLD_LOCATION
+  ${If} $INSTDIR == "$PROGRAMFILES64\${PRODUCTNAME}"
+    Push $0
+    SetRegView 64
+    ReadRegStr $0 HKLM "${YUVAL_OLD_UNINSTKEY}" "InstallLocation"
+    ${If} $0 != ""
+      Push $0
+      Call YuvalCleanPath
+      Pop $0
+      ${If} ${FileExists} "$0\*.*"
+        ${GetParent} $0 $0
+        ${If} $0 != ""
+          StrCpy $INSTDIR "$0\${PRODUCTNAME}"
+        ${EndIf}
+      ${EndIf}
+    ${EndIf}
+    Pop $0
+  ${EndIf}
+!macroend
+
 ; ---- .onInit: is Yuval already installed, and is this a downgrade? ----------------------------------------
 ; Expanded inside .onInit by the template, after $INSTDIR is known. .onInit is the one callback that also runs
 ; under /S (page callbacks do not), so the decision is made here for every mode.
