@@ -40,7 +40,7 @@
 {"id":"t040","text":"מה מתוכנן לי ביום רביאי","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-14"}},"tags":["he","calendar","typo"]}
 {"id":"t041","text":"תגיד לי אם יש לי משהו מחר בשעה 9","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T09:00"}},"tags":["he","indirect","multi-condition","calendar"]}
 {"id":"t042","text":"הלוח זמנים של איציק מחך","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"person":"איציק","date":"2026-10-09"}},"tags":["he","synonym","person","calendar","typo"]}
-{"id":"t043","text":"פגישות ביום ראשון הבא","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-18"}},"tags":["he","relative-date","calendar"]}
+{"id":"t043","text":"פגישות ביום ראשון הבא","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-11"}},"tags":["he","relative-date","calendar"]}
 {"id":"t044","text":"משה פרץ תפוס עכשיו?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"person":"משה פרץ","date":"2026-10-08"}},"tags":["he","person","calendar"]}
 {"id":"t045","text":"מה יש לי מחר בימון","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"tags":["he","typo","calendar"]}
 {"id":"t046","text":"פגשות שבוע שעבר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-09-27","to":"2026-10-04"}},"tags":["he","typo","relative-date","calendar"]}

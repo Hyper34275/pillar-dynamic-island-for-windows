@@ -97,11 +97,13 @@ pub struct Lexicon {
     dup: Vec<String>,
 }
 
-/// Concepts that the spelling correction may select. Opening, launching and write verbs, names
-/// and grammar words are left out on purpose: a wrong guess there would change what the engine
-/// does, not just what it understands. Search / show verbs only ever lead to a read.
+/// Concepts that the spelling correction may select. Opening and launching verbs, names and
+/// grammar words are left out on purpose: a wrong guess there would change what the engine does.
+/// Search / show verbs only ever lead to a read, and a misspelt write verb ("תמוחק", "תבתל") is
+/// read as the refusal it asks for, which fails safe.
 fn typo_eligible(concept: &str) -> bool {
     concept.starts_with("N_")
+        || concept == "VETO"
         || matches!(
             concept,
             "T_TODAY"
@@ -310,6 +312,8 @@ impl Lexicon {
         variants.extend(stem::prefix_splits(norm).into_iter().take(2));
         let real_word = self.is_real_word(norm);
         let mut best: Option<(f32, f32, Hit)> = None;
+        // the best guess that is not a refusal: it wins over a refusal that is barely cheaper
+        let mut best_other: Option<(f32, Hit)> = None;
         for (k, (prefix, w)) in variants.into_iter().enumerate() {
             let cs: Vec<char> = w.chars().collect();
             let n = cs.len();
@@ -329,6 +333,13 @@ impl Lexicon {
                     if concept.starts_with("V_") && (cost > 0.75 || !prefix.chars().all(|p| p == 'ו' || p == 'ש')) {
                         continue;
                     }
+                    // a refusal from a guess only for a cheap slip of a whole word
+                    if *concept == "VETO" && (cost > 0.75 || !prefix.is_empty() || n < 4) {
+                        continue;
+                    }
+                    if *concept != "VETO" && best_other.as_ref().map_or(true, |(c, _)| cost < *c - 1e-6) {
+                        best_other = Some((cost, Hit { concept, prefix: prefix.clone(), typo: true, cost, real_word, phrase: false }));
+                    }
                     let better = match &best {
                         None => true,
                         Some((bc, bp, _)) => cost < *bc - 1e-6 || ((cost - *bc).abs() < 1e-6 && *prior > *bp),
@@ -339,7 +350,13 @@ impl Lexicon {
                 }
             }
         }
-        best.map(|(_, _, h)| h)
+        match (best, best_other) {
+            (Some((c, _, h)), Some((oc, other))) if h.concept == "VETO" && oc <= c + 0.25 + 1e-6 => {
+                let _ = c;
+                Some(other)
+            }
+            (best, _) => best.map(|(_, _, h)| h),
+        }
     }
 
     /// The longest phrase starting at token `i` ("לוח זמנים", "איפה שמרתי"): its concept, the
