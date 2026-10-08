@@ -64,6 +64,12 @@ public sealed partial class SettingsPage : Page, ICenterPage
             InvitesToggle.IsOn = settings.MeetingInvitesEnabled;
             SilenceToggle.IsOn = settings.MeetingSilencePrompt;
             NotificationsToggle.IsOn = settings.NotificationsEnabled;
+            SearchEnabledToggle.IsOn = settings.AiSearchEnabled;
+            SearchButtonToggle.IsOn = settings.AiSearchButton;
+            SearchHotkeyToggle.IsOn = settings.AiSearchHotkey;
+            // The button and the hotkey only mean something while smart search is on.
+            SearchButtonRow.IsEnabled = settings.AiSearchEnabled;
+            SearchHotkeyRow.IsEnabled = settings.AiSearchEnabled;
             MinutesRow.IsEnabled = settings.MeetingReminderEnabled;
 
             RenderMinutes(settings.ReminderMinutes);
@@ -182,6 +188,9 @@ public sealed partial class SettingsPage : Page, ICenterPage
         else if (ReferenceEquals(toggle, InvitesToggle)) patch.MeetingInvitesEnabled(on);
         else if (ReferenceEquals(toggle, SilenceToggle)) patch.MeetingSilencePrompt(on);
         else if (ReferenceEquals(toggle, NotificationsToggle)) patch.NotificationsEnabled(on);
+        else if (ReferenceEquals(toggle, SearchEnabledToggle)) patch.AiSearchEnabled(on);
+        else if (ReferenceEquals(toggle, SearchButtonToggle)) patch.AiSearchButton(on);
+        else if (ReferenceEquals(toggle, SearchHotkeyToggle)) patch.AiSearchHotkey(on);
         _ = ApplyAsync(patch);
     }
 

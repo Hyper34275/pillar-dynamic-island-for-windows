@@ -11,7 +11,7 @@
 //! The dispatcher only knows the `CenterBackend` trait, so the tests run it against a fake.
 //! Nothing here ever logs a request or response body (only command names and counts).
 
-use crate::{debug_log, monitors, notes, notifications, rt, settings, window};
+use crate::{assistant, debug_log, monitors, notes, notifications, rt, settings, window};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -215,6 +215,13 @@ pub enum Cmd {
     OpenLogDir,
     ShowIsland(Option<String>),
     Log { level: LogLevel, message: String },
+    /// Smart search (docs/AI_SEARCH.md section 3, "Pipe"). The text is memory only, never logged.
+    SearchSubmit { text: String },
+    SearchChoose { query_id: String, option_id: String, remember: bool },
+    SearchExtend { query_id: String },
+    SearchOpen { query_id: String, item_id: String },
+    SearchResults { query_id: String },
+    SearchHistory,
 }
 
 impl Cmd {
@@ -231,6 +238,12 @@ impl Cmd {
             Cmd::OpenLogDir => "openLogDir",
             Cmd::ShowIsland(_) => "showIsland",
             Cmd::Log { .. } => "log",
+            Cmd::SearchSubmit { .. } => "searchSubmit",
+            Cmd::SearchChoose { .. } => "searchChoose",
+            Cmd::SearchExtend { .. } => "searchExtend",
+            Cmd::SearchOpen { .. } => "searchOpen",
+            Cmd::SearchResults { .. } => "searchResults",
+            Cmd::SearchHistory => "searchHistory",
         }
     }
 }
@@ -240,6 +253,16 @@ fn clip(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((cut, _)) => text[..cut].to_string(),
         None => text.to_string(),
+    }
+}
+
+/// A question: 1..=500 characters, not blank.
+const MAX_QUERY_CHARS: usize = 500;
+
+fn id_arg(args: &Value, name: &str) -> Result<String, String> {
+    match args.get(name) {
+        Some(Value::String(id)) if notes::valid_id(id) => Ok(id.clone()),
+        _ => Err(invalid_args()),
     }
 }
 
@@ -275,6 +298,26 @@ pub fn parse_command(cmd: &str, args: &Value) -> Result<Cmd, String> {
             let message = arg("message").and_then(Value::as_str).ok_or_else(invalid_args)?;
             Cmd::Log { level, message: clip(message, MAX_LOG_CHARS) }
         }
+        "searchSubmit" => {
+            let text = arg("text").and_then(Value::as_str).ok_or_else(invalid_args)?;
+            if text.trim().is_empty() || text.chars().count() > MAX_QUERY_CHARS {
+                return Err(invalid_args());
+            }
+            Cmd::SearchSubmit { text: text.to_string() }
+        }
+        "searchChoose" => Cmd::SearchChoose {
+            query_id: id_arg(args, "queryId")?,
+            option_id: id_arg(args, "optionId")?,
+            remember: match args.get("remember") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(b)) => *b,
+                Some(_) => return Err(invalid_args()),
+            },
+        },
+        "searchExtend" => Cmd::SearchExtend { query_id: id_arg(args, "queryId")? },
+        "searchOpen" => Cmd::SearchOpen { query_id: id_arg(args, "queryId")?, item_id: id_arg(args, "itemId")? },
+        "searchResults" => Cmd::SearchResults { query_id: id_arg(args, "queryId")? },
+        "searchHistory" => Cmd::SearchHistory,
         _ => return Err("APP-031: unknown command".to_string()),
     })
 }
@@ -343,8 +386,15 @@ fn run_sync(app: &AppHandle, cmd: Cmd) -> Result<Value, String> {
             debug_log::write(level, "center", &message);
             Ok(Value::Null)
         }
+        Cmd::SearchResults { query_id } => to_json(&assistant::results(&query_id)?),
+        Cmd::SearchHistory => to_json(&assistant::history()),
         // Answered by the async arms in `run`.
-        Cmd::GetNotificationStatus | Cmd::RequestNotificationAccess => Err("APP-001: unexpected command".to_string()),
+        Cmd::GetNotificationStatus
+        | Cmd::RequestNotificationAccess
+        | Cmd::SearchSubmit { .. }
+        | Cmd::SearchChoose { .. }
+        | Cmd::SearchExtend { .. }
+        | Cmd::SearchOpen { .. } => Err("APP-001: unexpected command".to_string()),
     }
 }
 
@@ -356,6 +406,18 @@ impl CenterBackend for AppBackend {
                 Cmd::GetNotificationStatus => notifications::notifications_get_status(app).await.map(Value::String),
                 Cmd::RequestNotificationAccess => {
                     notifications::notifications_request_access(app).await.map(Value::String)
+                }
+                Cmd::SearchSubmit { text } => {
+                    assistant::submit(app, text, "center".into()).await.and_then(|card| to_json(&card))
+                }
+                Cmd::SearchChoose { query_id, option_id, remember } => {
+                    assistant::choose(app, query_id, option_id, remember).await.and_then(|card| to_json(&card))
+                }
+                Cmd::SearchExtend { query_id } => {
+                    assistant::extend(app, query_id).await.and_then(|card| to_json(&card))
+                }
+                Cmd::SearchOpen { query_id, item_id } => {
+                    assistant::open_item(app, query_id, item_id).await.map(|_| Value::Null)
                 }
                 other => rt::run_blocking("center_command", move || run_sync(&app, other)).await,
             }
@@ -786,6 +848,11 @@ mod tests {
                 Cmd::Log { message, .. } => Ok(json!(message.chars().count())),
                 Cmd::GetNotificationStatus => Ok(json!("allowed")),
                 Cmd::OpenLogDir | Cmd::ShowIsland(_) => Ok(Value::Null),
+                Cmd::SearchSubmit { text } => Ok(json!({ "queryId": "q1", "echoChars": text.chars().count() })),
+                Cmd::SearchChoose { query_id, remember, .. } => Ok(json!({ "queryId": query_id, "remember": remember })),
+                Cmd::SearchExtend { query_id } | Cmd::SearchResults { query_id } => Ok(json!({ "queryId": query_id })),
+                Cmd::SearchOpen { .. } => Ok(Value::Null),
+                Cmd::SearchHistory => Ok(json!([])),
                 _ => Err("APP-001: not in the fake".to_string()),
             };
             Box::pin(async move { result })
@@ -898,6 +965,69 @@ mod tests {
         assert!(parse_command("showIsland", &json!({"tab": null})).is_ok());
         assert!(parse_command("showIsland", &json!({"tab": "mail"})).is_err());
         assert!(parse_command("showIsland", &json!({"tab": 3})).is_err());
+    }
+
+    #[test]
+    fn search_commands_are_validated() {
+        match parse_command("searchSubmit", &json!({"text": "מה יש לאיציק ביומן מחר?"})).unwrap() {
+            Cmd::SearchSubmit { text } => assert_eq!(text, "מה יש לאיציק ביומן מחר?"),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse_command("searchSubmit", &json!({"text": "ש".repeat(500)})).is_ok());
+        for bad in [json!({}), json!({"text": ""}), json!({"text": "  \n "}), json!({"text": 5}), json!({"text": "ש".repeat(501)})] {
+            assert_eq!(parse_command("searchSubmit", &bad).unwrap_err(), "APP-031: invalid arguments", "{bad}");
+        }
+
+        match parse_command("searchChoose", &json!({"queryId": "q-1", "optionId": "mb_2", "remember": true})).unwrap() {
+            Cmd::SearchChoose { query_id, option_id, remember } => {
+                assert_eq!((query_id.as_str(), option_id.as_str(), remember), ("q-1", "mb_2", true));
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse_command("searchChoose", &json!({"queryId": "q1", "optionId": "all"})).unwrap() {
+            Cmd::SearchChoose { remember, .. } => assert!(!remember),
+            other => panic!("{other:?}"),
+        }
+        for bad in [
+            json!({"queryId": "q1"}),
+            json!({"optionId": "a"}),
+            json!({"queryId": "q 1", "optionId": "a"}),
+            json!({"queryId": "q1", "optionId": "a/b"}),
+            json!({"queryId": "q1", "optionId": "a", "remember": "yes"}),
+            json!({"queryId": 7, "optionId": "a"}),
+        ] {
+            assert!(parse_command("searchChoose", &bad).is_err(), "{bad}");
+        }
+
+        assert!(parse_command("searchExtend", &json!({"queryId": "q1"})).is_ok());
+        assert!(parse_command("searchExtend", &json!({})).is_err());
+        assert!(parse_command("searchExtend", &json!({"queryId": "x".repeat(65)})).is_err());
+        assert!(parse_command("searchOpen", &json!({"queryId": "q1", "itemId": "i-9"})).is_ok());
+        assert!(parse_command("searchOpen", &json!({"queryId": "q1"})).is_err());
+        assert!(parse_command("searchOpen", &json!({"queryId": "q1", "itemId": "C:\\x.exe"})).is_err());
+        assert!(parse_command("searchResults", &json!({"queryId": "q1"})).is_ok());
+        assert!(parse_command("searchResults", &json!({"queryId": ""})).is_err());
+        assert_eq!(parse_command("searchHistory", &json!({})).unwrap().name(), "searchHistory");
+    }
+
+    #[test]
+    fn search_commands_reach_the_backend() {
+        block_on(async {
+            let fake = Arc::new(Fake::default());
+            let (mut session, _hub, _rx) = session_with(fake.clone());
+            ask(&mut session, r#"{"id": 1, "cmd": "hello", "args": {"client": "center", "protocol": 1}}"#).await;
+            let submit = ask(&mut session, r#"{"id": 2, "cmd": "searchSubmit", "args": {"text": "שלום"}}"#).await;
+            assert_eq!(submit["ok"], json!(true));
+            assert_eq!(submit["result"]["echoChars"], json!(4));
+            let bad = ask(&mut session, r#"{"id": 3, "cmd": "searchSubmit", "args": {"text": ""}}"#).await;
+            assert_eq!(bad, json!({"id": 3, "ok": false, "error": "APP-031: invalid arguments"}));
+            let open = ask(&mut session, r#"{"id": 4, "cmd": "searchOpen", "args": {"queryId": "q1", "itemId": "i1"}}"#).await;
+            assert_eq!(open, json!({"id": 4, "ok": true, "result": null}));
+            let history = ask(&mut session, r#"{"id": 5, "cmd": "searchHistory"}"#).await;
+            assert_eq!(history["result"], json!([]));
+            let calls = fake.calls.lock().unwrap().clone();
+            assert_eq!(calls, vec!["searchSubmit", "searchOpen", "searchHistory"]);
+        });
     }
 
     #[test]

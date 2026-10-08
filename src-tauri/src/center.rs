@@ -16,18 +16,24 @@ const CENTER_EXE: &str = "CompanyIsland.Center.exe";
 /// Debug builds only: absolute path of a Center exe built elsewhere.
 const EXE_OVERRIDE_ENV: &str = "COMPANYISLAND_CENTER_EXE";
 
-/// `welcome`, `tour`, `settings`, `notes`, `notes-new` or `note:<id>` (a valid note id).
+/// `welcome`, `tour`, `settings`, `notes`, `notes-new`, `search`, `note:<id>` (a valid note id)
+/// or `search:<id>` (a valid query id, the same rule as note ids).
 pub fn valid_page(page: &str) -> bool {
     match page {
-        "welcome" | "tour" | "settings" | "notes" | "notes-new" => true,
-        _ => page.strip_prefix("note:").is_some_and(notes::valid_id),
+        "welcome" | "tour" | "settings" | "notes" | "notes-new" | "search" => true,
+        _ => page
+            .strip_prefix("note:")
+            .or_else(|| page.strip_prefix("search:"))
+            .is_some_and(notes::valid_id),
     }
 }
 
-/// For logs: the page without a note id.
+/// For logs: the page without a note or query id.
 fn page_kind(page: &str) -> &str {
     if page.starts_with("note:") {
         "note"
+    } else if page.starts_with("search:") {
+        "search"
     } else {
         page
     }
@@ -105,7 +111,17 @@ mod tests {
 
     #[test]
     fn page_names() {
-        for page in ["welcome", "tour", "settings", "notes", "notes-new", "note:0123456789abcdef", "note:A_b-9"] {
+        for page in [
+            "welcome",
+            "tour",
+            "settings",
+            "notes",
+            "notes-new",
+            "search",
+            "note:0123456789abcdef",
+            "note:A_b-9",
+            "search:q1-2_X",
+        ] {
             assert!(valid_page(page), "{page}");
         }
         for page in [
@@ -120,16 +136,26 @@ mod tests {
             "notes-new ",
             "../tour",
             "welcome --x",
+            "search:",
+            "search:has space",
+            "search:a/b",
+            "search:a:b",
+            "search ",
+            "Search",
         ] {
             assert!(!valid_page(page), "{page}");
         }
         assert!(!valid_page(&format!("note:{}", "a".repeat(65))));
         assert!(valid_page(&format!("note:{}", "a".repeat(64))));
+        assert!(!valid_page(&format!("search:{}", "a".repeat(65))));
+        assert!(valid_page(&format!("search:{}", "a".repeat(64))));
     }
 
     #[test]
     fn logs_never_carry_a_note_id() {
         assert_eq!(page_kind("note:0123456789abcdef"), "note");
+        assert_eq!(page_kind("search:0123456789abcdef"), "search");
+        assert_eq!(page_kind("search"), "search");
         assert_eq!(page_kind("settings"), "settings");
     }
 

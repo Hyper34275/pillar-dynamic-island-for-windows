@@ -8,10 +8,11 @@ public enum CenterPageKind
     Notes,
     NotesNew,
     Note,
+    Search,
 }
 
-/// <summary>A page the Center can show: <c>welcome | tour | settings | notes | notes-new | note:&lt;id&gt;</c>.</summary>
-public readonly record struct CenterPage(CenterPageKind Kind, string? NoteId = null)
+/// <summary>A page the Center can show: <c>welcome | tour | settings | notes | notes-new | note:&lt;id&gt; | search | search:&lt;queryId&gt;</c>.</summary>
+public readonly record struct CenterPage(CenterPageKind Kind, string? NoteId = null, string? QueryId = null)
 {
     public static readonly CenterPage Welcome = new(CenterPageKind.Welcome);
 
@@ -22,6 +23,7 @@ public readonly record struct CenterPage(CenterPageKind Kind, string? NoteId = n
         CenterPageKind.Notes => "notes",
         CenterPageKind.NotesNew => "notes-new",
         CenterPageKind.Note => "note:" + NoteId,
+        CenterPageKind.Search => QueryId is null ? "search" : "search:" + QueryId,
         _ => "welcome",
     };
 
@@ -50,6 +52,9 @@ public readonly record struct CenterPage(CenterPageKind Kind, string? NoteId = n
             case "notes-new":
                 page = new CenterPage(CenterPageKind.NotesNew);
                 return true;
+            case "search":
+                page = new CenterPage(CenterPageKind.Search);
+                return true;
         }
 
         const string notePrefix = "note:";
@@ -59,6 +64,18 @@ public readonly record struct CenterPage(CenterPageKind Kind, string? NoteId = n
             if (NoteOps.IsValidId(id))
             {
                 page = new CenterPage(CenterPageKind.Note, id);
+                return true;
+            }
+        }
+
+        // Query ids follow the note id rules (1..64 of A-Z a-z 0-9 _ -).
+        const string searchPrefix = "search:";
+        if (value.StartsWith(searchPrefix, StringComparison.Ordinal))
+        {
+            string id = value[searchPrefix.Length..];
+            if (NoteOps.IsValidId(id))
+            {
+                page = new CenterPage(CenterPageKind.Search, QueryId: id);
                 return true;
             }
         }

@@ -59,6 +59,9 @@ public sealed class CenterModel : IDisposable
 
     public event Action<CenterPage>? NavigateRequested;
 
+    /// <summary>A search finished anywhere (search bar, island or this Center). The payload is the query id, or null if it was malformed.</summary>
+    public event Action<string?>? SearchReady;
+
     public void Start() => Client.Start();
 
     public void Dispose()
@@ -97,6 +100,9 @@ public sealed class CenterModel : IDisposable
                     break;
                 case IslandEventNames.NotesChanged:
                     _notes.Receive(IslandClient.ReadNotes(e.Payload));
+                    break;
+                case IslandEventNames.SearchReady:
+                    SearchReady?.Invoke(IslandClient.ReadSearchReady(e.Payload));
                     break;
                 case IslandEventNames.Navigate:
                     if (e.Payload.ValueKind == JsonValueKind.Object &&

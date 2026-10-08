@@ -15,6 +15,58 @@ public static class Strings
     public static string NavNotes => "פתקים";
     public static string NavSettings => "הגדרות";
     public static string NavTour => "סיור במערכת";
+    public static string NavSearch => "חיפוש חכם";
+
+    // Smart search (everything local: see docs/AI_SEARCH.md)
+    public static string SearchTitle => "חיפוש חכם";
+    public static string SearchSubtitle => "שאל על היומן, המיילים, הקבצים והפתקים. הכול מתבצע על המחשב הזה.";
+    public static string SearchInputPlaceholder => "מה לחפש? למשל: מה יש לי ביומן מחר?";
+    public static string SearchSend => "שלח";
+    public static string SearchWorking => "מחפש...";
+    public static string SearchEmptyHeading => "נסה לשאול";
+    public static IReadOnlyList<string> SearchExamples() =>
+    [
+        "מה יש לי ביומן מחר?",
+        "מה יש לאיציק ביומן מחר?",
+        "תמצא את המייל עם המילה תקציב",
+        "תמצא קובץ בשם דוח חודשי",
+    ];
+    public static string SearchExtend => "חפש עוד 10 שניות";
+    public static string SearchOpen => "פתח";
+    public static string SearchRemember => "זכור את הבחירה";
+    public static string SearchUnread => "לא נקרא";
+    public static string SearchPartial => "החיפוש לא הושלם. מוצגות התוצאות שנמצאו עד כה.";
+    public static string SearchNoResults => "לא נמצאו תוצאות.";
+    public static string SearchGroupFailed => "המקור הזה לא ענה";
+    public static string SearchGroupCalendar => "יומן";
+    public static string SearchGroupMail => "מיילים";
+    public static string SearchGroupNotes => "פתקים";
+    public static string SearchGroupFiles => "קבצים";
+    public static string SearchGroupApps => "אפליקציות";
+    public static string SearchGroupCalc => "חישוב";
+    public static string SearchGroupOther => "מידע";
+    public static string SearchToday => "היום";
+    public static string SearchTomorrow => "מחר";
+    public static string SearchYesterday => "אתמול";
+    public static string SearchFailed => "החיפוש נכשל. נסה שוב.";
+    public static string SearchOffTitle => "החיפוש החכם כבוי";
+    public static string SearchOffMessage => "אפשר להפעיל אותו בהגדרות, בסעיף \"חיפוש חכם\".";
+    public static string SearchOpenFailed => "לא ניתן לפתוח את הפריט";
+    public static string SearchExpired => "התוצאות האלה כבר לא זמינות. שאל שוב.";
+    public static string SearchHistoryFailed => "לא ניתן לטעון את השיחה";
+    public static string SearchShownOfTotal(int shown, int total) => $"מוצגות {shown} מתוך {total} תוצאות";
+    public static string SearchYouSaid => "שאלת";
+    public static string SearchAnswer => "תשובה";
+
+    // Settings: smart search section
+    public static string SettingsSearchHeading => "חיפוש חכם";
+    public static string SettingsSearchEnabled => "הפעל חיפוש חכם";
+    public static string SettingsSearchEnabledDescription => "שאל שאלות בעברית או באנגלית על היומן, המיילים, הקבצים והפתקים.";
+    public static string SettingsSearchButton => "כפתור AI בפס החיפוש";
+    public static string SettingsSearchButtonDescription => "מציג כפתור חיפוש חכם בפס החיפוש של שורת המשימות.";
+    public static string SettingsSearchHotkey => "קיצור מקלדת Ctrl+Alt+Space";
+    public static string SettingsSearchHotkeyDescription => "פותח את שורת החיפוש החכם מכל מקום.";
+    public static string SettingsSearchPrivacy => "הכול מקומי: השאלות והתוצאות לא נשמרות ולא נשלחות לשום שירות";
     public static string VersionFooter(string version) => $"גרסה {version}";
 
     public static string DisconnectedTitle => "האי לא פועל כרגע";

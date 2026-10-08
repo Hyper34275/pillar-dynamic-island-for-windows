@@ -109,6 +109,11 @@
                         <FontIcon Glyph="&#xE70B;" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem x:Name="NavSearch" Tag="search" Content="{x:Bind s:Strings.NavSearch}">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE721;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem x:Name="NavSettings" Tag="settings" Content="{x:Bind s:Strings.NavSettings}">
                     <NavigationViewItem.Icon>
                         <FontIcon Glyph="&#xE713;" />

@@ -21,6 +21,7 @@ public static class IslandEventNames
     public const string SettingsChanged = "settings-changed";
     public const string NotesChanged = "notes-changed";
     public const string Navigate = "navigate";
+    public const string SearchReady = "search-ready";
 }
 
 public sealed class IslandClientOptions
@@ -311,6 +312,64 @@ public sealed class IslandClient : IAsyncDisposable
             .ConfigureAwait(false);
         return NotificationAccessParser.Parse(result.ValueKind == JsonValueKind.String ? result.GetString() : null);
     }
+
+    /// <summary>A search runs 10 s per budget and an extension adds 10 s more, so searches wait longer than other requests.</summary>
+    public static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(45);
+
+    /// <summary>Asks a question. The text goes to the island and is never logged.</summary>
+    public async Task<AssistantCard> SearchSubmitAsync(string text, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        JsonElement result = await RequestAsync("searchSubmit", new JsonObject { ["text"] = text }, SearchTimeout, ct)
+            .ConfigureAwait(false);
+        return ReadCard(result);
+    }
+
+    /// <summary>Answers a clarification by option id. <paramref name="remember"/> saves a mailbox choice as the preference.</summary>
+    public async Task<AssistantCard> SearchChooseAsync(string queryId, string optionId, bool remember, CancellationToken ct = default)
+    {
+        var args = new JsonObject { ["queryId"] = queryId, ["optionId"] = optionId, ["remember"] = remember };
+        JsonElement result = await RequestAsync("searchChoose", args, SearchTimeout, ct).ConfigureAwait(false);
+        return ReadCard(result);
+    }
+
+    /// <summary>Continues a partial search for another budget.</summary>
+    public async Task<AssistantCard> SearchExtendAsync(string queryId, CancellationToken ct = default)
+    {
+        JsonElement result = await RequestAsync("searchExtend", new JsonObject { ["queryId"] = queryId }, SearchTimeout, ct)
+            .ConfigureAwait(false);
+        return ReadCard(result);
+    }
+
+    /// <summary>Opens one result after an explicit click. Only the opaque ids travel; the island resolves the target.</summary>
+    public Task SearchOpenAsync(string queryId, string itemId, CancellationToken ct = default) =>
+        RequestAsync("searchOpen", new JsonObject { ["queryId"] = queryId, ["itemId"] = itemId }, SearchTimeout, ct);
+
+    public async Task<SearchResults> SearchResultsAsync(string queryId, CancellationToken ct = default)
+    {
+        JsonElement result = await RequestAsync("searchResults", new JsonObject { ["queryId"] = queryId }, ct: ct)
+            .ConfigureAwait(false);
+        return result.Deserialize(CenterJson.Default.SearchResults)
+            ?? throw new IslandException("client-protocol", "empty search results");
+    }
+
+    /// <summary>The conversation so far, newest last.</summary>
+    public async Task<IReadOnlyList<SearchResults>> SearchHistoryAsync(CancellationToken ct = default)
+    {
+        JsonElement result = await RequestAsync("searchHistory", ct: ct).ConfigureAwait(false);
+        return result.ValueKind == JsonValueKind.Array ? result.Deserialize(CenterJson.Default.SearchResultsArray) ?? [] : [];
+    }
+
+    public static AssistantCard ReadCard(JsonElement element) =>
+        element.Deserialize(CenterJson.Default.AssistantCard)
+        ?? throw new IslandException("client-protocol", "empty search card");
+
+    /// <summary>The query id of a <c>search-ready</c> payload, or null when it is missing or not a valid id.</summary>
+    public static string? ReadSearchReady(JsonElement payload) =>
+        payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty("queryId", out JsonElement id) &&
+        id.ValueKind == JsonValueKind.String && NoteOps.IsValidId(id.GetString())
+            ? id.GetString()
+            : null;
 
     public Task OpenLogDirAsync(CancellationToken ct = default) => RequestAsync("openLogDir", ct: ct);
 

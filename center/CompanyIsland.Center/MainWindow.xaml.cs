@@ -61,6 +61,7 @@ public sealed partial class MainWindow : Window
         // x:Bind on a Window is evaluated once at load; set the few texts explicitly so they never depend on that.
         NavWelcome.Content = Strings.NavWelcome;
         NavNotes.Content = Strings.NavNotes;
+        NavSearch.Content = Strings.NavSearch;
         NavSettings.Content = Strings.NavSettings;
         NavTour.Content = Strings.NavTour;
         VersionText.Text = Strings.VersionFooter(AppVersion());
@@ -233,6 +234,7 @@ public sealed partial class MainWindow : Window
         {
             CenterPageKind.Settings => new SettingsPage(_model),
             CenterPageKind.Notes => new NotesPage(_model),
+            CenterPageKind.Search => new SmartSearchPage(_model),
             CenterPageKind.Tour => new TourPage(),
             _ => new WelcomePage(),
         };
@@ -247,6 +249,7 @@ public sealed partial class MainWindow : Window
         NavigationViewItem item = _currentKind switch
         {
             CenterPageKind.Notes => NavNotes,
+            CenterPageKind.Search => NavSearch,
             CenterPageKind.Settings => NavSettings,
             CenterPageKind.Tour => NavTour,
             _ => NavWelcome,

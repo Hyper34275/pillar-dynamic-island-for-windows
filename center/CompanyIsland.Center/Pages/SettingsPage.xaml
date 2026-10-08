@@ -95,6 +95,20 @@
                 </StackPanel>
 
                 <StackPanel Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SettingsSearchHeading}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <controls:SettingRow x:Name="SearchEnabledRow" Glyph="&#xE721;" Title="{x:Bind s:Strings.SettingsSearchEnabled}" Description="{x:Bind s:Strings.SettingsSearchEnabledDescription}">
+                        <ToggleSwitch x:Name="SearchEnabledToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.SettingsSearchEnabled}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="SearchButtonRow" Glyph="&#xE71E;" Title="{x:Bind s:Strings.SettingsSearchButton}" Description="{x:Bind s:Strings.SettingsSearchButtonDescription}">
+                        <ToggleSwitch x:Name="SearchButtonToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.SettingsSearchButton}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow x:Name="SearchHotkeyRow" Glyph="&#xE765;" Title="{x:Bind s:Strings.SettingsSearchHotkey}" Description="{x:Bind s:Strings.SettingsSearchHotkeyDescription}">
+                        <ToggleSwitch x:Name="SearchHotkeyToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.SettingsSearchHotkey}" />
+                    </controls:SettingRow>
+                    <controls:SettingRow Glyph="&#xE72E;" Title="{x:Bind s:Strings.SettingsSearchPrivacy}" />
+                </StackPanel>
+
+                <StackPanel Spacing="4">
                     <TextBlock Text="{x:Bind s:Strings.SectionTools}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
                     <controls:SettingRow Glyph="&#xE838;" Title="{x:Bind s:Strings.OpenLogDir}" Description="{x:Bind s:Strings.OpenLogDirHint}">
                         <Button x:Name="LogDirButton" Content="{x:Bind s:Strings.Open}" Click="OnOpenLogDirClick" AutomationProperties.Name="{x:Bind s:Strings.OpenLogDir}" />

@@ -17,6 +17,18 @@ namespace CompanyIsland.Center.Core;
 [JsonSerializable(typeof(IslandSettings))]
 [JsonSerializable(typeof(MonitorInfo))]
 [JsonSerializable(typeof(MonitorInfo[]))]
+[JsonSerializable(typeof(AssistantCard))]
+[JsonSerializable(typeof(AssistantItem))]
+[JsonSerializable(typeof(Choice))]
+[JsonSerializable(typeof(ResultGroup))]
+[JsonSerializable(typeof(MailboxRef))]
+[JsonSerializable(typeof(SearchResults))]
+[JsonSerializable(typeof(List<AssistantItem>))]
+[JsonSerializable(typeof(List<Choice>))]
+[JsonSerializable(typeof(List<ResultGroup>))]
+[JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(List<SearchResults>))]
+[JsonSerializable(typeof(SearchResults[]))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(JsonObject))]
 public sealed partial class CenterJson : JsonSerializerContext
@@ -39,6 +51,9 @@ public sealed class SettingsPatch
     public SettingsPatch MeetingInvitesEnabled(bool value) => Put("meetingInvitesEnabled", JsonValue.Create(value));
     public SettingsPatch DebugLogging(bool value) => Put("debugLogging", JsonValue.Create(value));
     public SettingsPatch OnboardingDone(bool value) => Put("onboardingDone", JsonValue.Create(value));
+    public SettingsPatch AiSearchEnabled(bool value) => Put("aiSearchEnabled", JsonValue.Create(value));
+    public SettingsPatch AiSearchButton(bool value) => Put("aiSearchButton", JsonValue.Create(value));
+    public SettingsPatch AiSearchHotkey(bool value) => Put("aiSearchHotkey", JsonValue.Create(value));
     public SettingsPatch IslandDisplay(string value) => Put("islandDisplay", JsonValue.Create(IslandDisplays.Normalize(value)));
 
     /// <summary>A present-but-null monitor id selects the primary display, so null is sent as JSON null.</summary>
@@ -70,6 +85,9 @@ public sealed class SettingsPatch
                 case "meetingInvitesEnabled": next = next with { MeetingInvitesEnabled = node!.GetValue<bool>() }; break;
                 case "debugLogging": next = next with { DebugLogging = node!.GetValue<bool>() }; break;
                 case "onboardingDone": next = next with { OnboardingDone = node!.GetValue<bool>() }; break;
+                case "aiSearchEnabled": next = next with { AiSearchEnabled = node!.GetValue<bool>() }; break;
+                case "aiSearchButton": next = next with { AiSearchButton = node!.GetValue<bool>() }; break;
+                case "aiSearchHotkey": next = next with { AiSearchHotkey = node!.GetValue<bool>() }; break;
                 case "islandDisplay": next = next with { IslandDisplay = node!.GetValue<string>() }; break;
                 case "monitorId": next = next with { MonitorId = node?.GetValue<string>() }; break;
             }

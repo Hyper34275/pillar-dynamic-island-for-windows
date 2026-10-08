@@ -40,6 +40,9 @@ public sealed record IslandSettings
     public bool DebugLogging { get; set; }
     public bool OnboardingDone { get; set; }
     public string IslandDisplay { get; set; } = IslandDisplays.Full;
+    public bool AiSearchEnabled { get; set; } = true;
+    public bool AiSearchButton { get; set; } = true;
+    public bool AiSearchHotkey { get; set; } = true;
 
     /// <summary>The same settings with <see cref="IslandDisplay"/> forced to a known value.</summary>
     public IslandSettings Normalized() => this with { IslandDisplay = IslandDisplays.Normalize(IslandDisplay) };
