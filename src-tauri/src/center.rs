@@ -124,6 +124,7 @@ fn guard() -> std::sync::MutexGuard<'static, SpawnGuard> {
 /// A Center connected to the island's pipe (called by `center_ipc`): the start worked.
 pub fn note_connected() {
     guard().connected();
+    crate::center_diag::note_connected();
 }
 
 const NOT_OPENED: &str = "APP-033: island center did not open";
@@ -156,12 +157,17 @@ fn spawn(page: &str) -> Result<u32, String> {
     if let Some(dir) = exe.parent() {
         command.current_dir(dir);
     }
-    // Not waited on: the Center lives its own life, and its handle is closed right away.
+    // A fatal .NET error leaves a crash report the watcher below turns into a message box.
+    crate::center_diag::crash_report_env(&mut command);
+    let started = std::time::SystemTime::now();
     let child = command.spawn().map_err(|e| {
         dlog!("WARN", "center", "APP-030 center app could not start: {}", e);
         unavailable()
     })?;
-    Ok(child.id())
+    let pid = child.id();
+    // Followed (not waited on by the caller): a Center that dies before connecting is explained.
+    crate::center_diag::watch(child, started);
+    Ok(pid)
 }
 
 /// Show the Center on `page`.

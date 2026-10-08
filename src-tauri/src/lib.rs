@@ -3,6 +3,7 @@ pub mod debug_log;
 mod calendar;
 mod calendar_diag;
 mod center;
+mod center_diag;
 mod center_ipc;
 mod com;
 mod autostart;
