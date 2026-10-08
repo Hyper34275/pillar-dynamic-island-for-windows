@@ -1131,6 +1131,35 @@ pub async fn calendar_get_range(from_utc: String, to_utc: String) -> Result<Vec<
 }
 
 // =============================================================================
+// Smart search (CONTRACT, used by `assistant`)
+// =============================================================================
+
+/// Events of `[from, to)` for smart search, read through the same worker and watchdog as the
+/// island's own range reads. Longer stretches than [`MAX_RANGE_DAYS`] (up to 31 days) are read in
+/// chunks. `only`: read exactly these calendar ids (ids from [`known_sources`]), also ones not
+/// checked in Outlook; `None` = the active calendars, as the island shows them. Blocking.
+pub fn query_range(from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
+    let _ = (from, to, only);
+    Err("OUTLOOK-102: calendar service not running".into())
+}
+
+/// Result of [`query_range`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct RangeRead {
+    pub events: Vec<CalendarEventDto>,
+    /// Some events were cut (per-read cap) or some calendars could not be read in time.
+    pub truncated: bool,
+    /// Calendars of `only` that could not be read, with their code ("CAL-SHARED-101"...).
+    pub failed: Vec<(String, String)>,
+}
+
+/// The calendars of the latest discovery, from the published snapshot (no Outlook call).
+pub fn known_sources(app: &tauri::AppHandle) -> Vec<CalendarSourceDto> {
+    use tauri::Manager;
+    app.state::<CalendarState>().get().sources.map(|r| r.sources).unwrap_or_default()
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 

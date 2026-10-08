@@ -23,6 +23,11 @@ mod settings;
 mod tray;
 mod window;
 mod backdrop;
+mod assistant;
+mod intent;
+mod local;
+mod outlook_mail;
+mod search_bar;
 
 use tauri::utils::config::AppDirectoriesOverride;
 use tauri::{Manager, RunEvent};
@@ -31,7 +36,7 @@ use tauri::{Manager, RunEvent};
 /// those are repeated first: no "mini menu", no PDF toolbar, no SmartScreen reputation
 /// lookups. `--disable-background-networking` stops the runtime's own background traffic
 /// (component updates, variations, safe-browsing lists): the page is local and offline.
-const WEBVIEW_ARGS: &str =
+pub(crate) const WEBVIEW_ARGS: &str =
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-networking";
 
 /// Config that is only known at runtime: the WebView2 profile (cache, cookies, crash dumps)
@@ -138,6 +143,14 @@ pub fn run() {
             outlook::open_meeting_url,
             backdrop::get_island_backdrop,
             backdrop::refresh_island_backdrop,
+            assistant::assistant_submit,
+            assistant::assistant_choose,
+            assistant::assistant_extend,
+            assistant::assistant_open_item,
+            assistant::assistant_open_center,
+            assistant::assistant_dismiss,
+            search_bar::search_bar_state,
+            search_bar::search_bar_close,
         ])
         .on_window_event(|window, event| window::on_window_event(window, event))
         .setup(|app| {
@@ -152,6 +165,7 @@ pub fn run() {
             calendar::start(handle.clone());
             center_ipc::start(handle.clone());
             backdrop::start(handle.clone());
+            search_bar::start(handle.clone());
             first_run_welcome(&handle);
 
             // Registry read/write and the hook install handshake stay off the UI thread. Each step
@@ -159,6 +173,7 @@ pub fn run() {
             std::thread::spawn(move || {
                 debug_log::catch("startup autostart", || settings::sync_autostart(&handle));
                 debug_log::catch("startup fullscreen", || fullscreen::start(handle.clone()));
+                debug_log::catch("startup apps cache", local::warm_up);
             });
             Ok(())
         })

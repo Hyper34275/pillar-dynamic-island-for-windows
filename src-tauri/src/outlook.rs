@@ -1445,7 +1445,7 @@ const RESPOND_TIMEOUT_SECS: u64 = 60;
 /// Run `action` against the user's own running classic Outlook, on a fresh STA thread (pool
 /// threads may already be MTA), giving up after `timeout_secs`. Attach-only: an Outlook that
 /// is not running is never started.
-fn run_on_outlook<T: Send + 'static>(
+pub(crate) fn run_on_outlook<T: Send + 'static>(
     thread: &'static str,
     timeout_secs: u64,
     action: impl FnOnce(u32) -> ComResult<T> + Send + 'static,

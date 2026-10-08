@@ -6,7 +6,7 @@
 //! `settings.json.corrupt` (APP-003) and defaults are used. If the data folder is
 //! unavailable the store works in memory only.
 
-use crate::{autostart, center_ipc, debug_log, fullscreen, notifications, paths, rt, window};
+use crate::{autostart, center_ipc, debug_log, fullscreen, notifications, paths, rt, search_bar, window};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs::{self, File};
 use std::io::Write;
@@ -59,6 +59,13 @@ pub struct Settings {
     /// What the collapsed island shows: `"full"` (date, time, weekday), `"clock"` or `"date"`.
     #[serde(deserialize_with = "de_island_display")]
     pub island_display: String,
+    /// Smart search (AI Mode): questions typed in the search bar overlay are answered in the island.
+    /// Off turns the whole feature off (no button, no hotkey, no overlay).
+    pub ai_search_enabled: bool,
+    /// The small AI button on the Windows 10 taskbar search box.
+    pub ai_search_button: bool,
+    /// Ctrl+Alt+Space opens the smart search input (also where there is no search box).
+    pub ai_search_hotkey: bool,
 }
 
 impl Default for Settings {
@@ -77,6 +84,9 @@ impl Default for Settings {
             debug_logging: false,
             onboarding_done: false,
             island_display: DEFAULT_ISLAND_DISPLAY.to_string(),
+            ai_search_enabled: true,
+            ai_search_button: true,
+            ai_search_hotkey: true,
         }
     }
 }
@@ -100,6 +110,9 @@ pub struct SettingsPatch {
     debug_logging: Option<bool>,
     onboarding_done: Option<bool>,
     island_display: Option<String>,
+    ai_search_enabled: Option<bool>,
+    ai_search_button: Option<bool>,
+    ai_search_hotkey: Option<bool>,
 }
 
 fn clamp_minutes(value: f64) -> u32 {
@@ -227,6 +240,15 @@ impl Settings {
         }
         if let Some(v) = patch.island_display {
             next.island_display = v;
+        }
+        if let Some(v) = patch.ai_search_enabled {
+            next.ai_search_enabled = v;
+        }
+        if let Some(v) = patch.ai_search_button {
+            next.ai_search_button = v;
+        }
+        if let Some(v) = patch.ai_search_hotkey {
+            next.ai_search_hotkey = v;
         }
         next.sanitized()
     }
@@ -368,6 +390,11 @@ pub fn apply_patch(app: &AppHandle, patch: SettingsPatch) -> Settings {
     if old.notifications_enabled != new.notifications_enabled {
         notifications::on_enabled_changed(app);
     }
+    if (old.ai_search_enabled, old.ai_search_button, old.ai_search_hotkey)
+        != (new.ai_search_enabled, new.ai_search_button, new.ai_search_hotkey)
+    {
+        search_bar::apply_settings(app, &new);
+    }
     new
 }
 
@@ -430,6 +457,17 @@ mod tests {
         assert_eq!(s.monitor, "primary");
         assert!(s.notifications_enabled && s.meeting_invites_enabled && s.meeting_silence_prompt);
         assert!(!s.debug_logging);
+        assert!(s.ai_search_enabled && s.ai_search_button && s.ai_search_hotkey);
+    }
+
+    #[test]
+    fn ai_search_settings_round_trip_and_default_on_for_old_files() {
+        let old: Settings = serde_json::from_str(r#"{"schemaVersion":1,"launchWithWindows":true}"#).unwrap();
+        assert!(old.ai_search_enabled && old.ai_search_button && old.ai_search_hotkey);
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(json.get("aiSearchEnabled"), Some(&serde_json::Value::Bool(true)));
+        let next = Settings::default().patched(patch(r#"{"aiSearchButton": false, "aiSearchHotkey": false}"#));
+        assert!(next.ai_search_enabled && !next.ai_search_button && !next.ai_search_hotkey);
     }
 
     #[test]

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "search",
+  "description": "The smart search bar page may subscribe to backend events (assistant-update, settings-changed); everything else it does is an app command.",
+  "windows": ["search"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

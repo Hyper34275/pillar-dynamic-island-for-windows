@@ -71,6 +71,18 @@ describe("normalizeSettings", () => {
       monitorId: "2",
       onboardingDone: false,
       islandDisplay: "full",
+      aiSearchEnabled: true,
+      aiSearchButton: true,
+      aiSearchHotkey: true,
+    });
+  });
+
+  it("defaults the smart search switches to on and keeps explicit booleans", () => {
+    expect(normalizeSettings({})).toMatchObject({ aiSearchEnabled: true, aiSearchButton: true, aiSearchHotkey: true });
+    expect(normalizeSettings({ aiSearchEnabled: false, aiSearchButton: "no", aiSearchHotkey: false })).toMatchObject({
+      aiSearchEnabled: false,
+      aiSearchButton: true,
+      aiSearchHotkey: false,
     });
   });
 

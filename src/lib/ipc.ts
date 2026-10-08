@@ -8,6 +8,7 @@ import { isTauriAvailable, tauriInvoke, type InvokeOptions } from "./tauri";
 import { dlog } from "./debugLog";
 import { describeError } from "./errors";
 import { NO_LIMITS, parseIslandLimits, type IslandLimits } from "./island/limits";
+import { normalizeAssistantCard, type AssistantCard, type SearchBarState } from "./assistant/types";
 
 // -----------------------------------------------------------------------------
 // Types (camelCase over IPC)
@@ -61,6 +62,12 @@ export type Settings = {
   onboardingDone: boolean;
   /** What the collapsed island shows: date + clock + weekday, the time only, or date + weekday. */
   islandDisplay: IslandDisplay;
+  /** Smart search (AI Mode) on at all. */
+  aiSearchEnabled: boolean;
+  /** The AI button on the Windows 10 taskbar search box. */
+  aiSearchButton: boolean;
+  /** Ctrl+Alt+Space opens the smart search input. */
+  aiSearchHotkey: boolean;
 };
 
 export type IslandDisplay = "full" | "clock" | "date";
@@ -81,6 +88,9 @@ export const SETTINGS_DEFAULTS: Settings = {
   monitorId: null,
   onboardingDone: false,
   islandDisplay: "full",
+  aiSearchEnabled: true,
+  aiSearchButton: true,
+  aiSearchHotkey: true,
 };
 
 /** A note, kept only on this computer. Times are unix ms. */
@@ -93,7 +103,7 @@ export type Note = {
 };
 
 /** Pages the Island Center can be opened on; `note:<id>` opens one note for editing. */
-export type CenterPage = "welcome" | "tour" | "settings" | "notes" | "notes-new" | `note:${string}`;
+export type CenterPage = "welcome" | "tour" | "settings" | "notes" | "notes-new" | `note:${string}` | "search" | `search:${string}`;
 
 /** How the user answers a meeting invitation from the island. */
 export type InviteResponse = "accept" | "tentative" | "decline";
@@ -163,6 +173,9 @@ export function normalizeSettings(raw: unknown): Settings {
     monitorId: typeof r.monitorId === "string" ? r.monitorId : typeof r.monitorId === "number" ? String(r.monitorId) : null,
     onboardingDone: bool(r.onboardingDone, SETTINGS_DEFAULTS.onboardingDone),
     islandDisplay: ISLAND_DISPLAYS.includes(r.islandDisplay as IslandDisplay) ? (r.islandDisplay as IslandDisplay) : SETTINGS_DEFAULTS.islandDisplay,
+    aiSearchEnabled: bool(r.aiSearchEnabled, SETTINGS_DEFAULTS.aiSearchEnabled),
+    aiSearchButton: bool(r.aiSearchButton, SETTINGS_DEFAULTS.aiSearchButton),
+    aiSearchHotkey: bool(r.aiSearchHotkey, SETTINGS_DEFAULTS.aiSearchHotkey),
   };
 }
 
@@ -417,6 +430,26 @@ export const ipc = {
   getIslandBackdrop: () => call<number | null>("get_island_backdrop", undefined, { timeoutMs: 3000 }),
   /** Sample the backdrop now (the island has settled); the answer arrives as the `island-backdrop` event. */
   refreshIslandBackdrop: () => call<void>("refresh_island_backdrop", undefined, { timeoutMs: 3000 }),
+
+  // --- Smart search (src-tauri/src/assistant, search_bar). Answers also arrive as the
+  // "assistant-update" event; the returned card is the final one. Mail search runs up to 10 s
+  // (+10 s per extension) and Outlook may be slow to attach, hence the long timeouts.
+  async assistantSubmit(text: string, origin: "searchBar" | "island" | "center"): Promise<AssistantCard | null> {
+    return normalizeAssistantCard(await call<unknown>("assistant_submit", { text, origin }, { timeoutMs: 45_000 }));
+  },
+  async assistantChoose(queryId: string, optionId: string, remember = false): Promise<AssistantCard | null> {
+    return normalizeAssistantCard(await call<unknown>("assistant_choose", { queryId, optionId, remember }, { timeoutMs: 45_000 }));
+  },
+  async assistantExtend(queryId: string): Promise<AssistantCard | null> {
+    return normalizeAssistantCard(await call<unknown>("assistant_extend", { queryId }, { timeoutMs: 45_000 }));
+  },
+  /** Only ever from an explicit click on a result. */
+  assistantOpenItem: (queryId: string, itemId: string) => callVoid("assistant_open_item", { queryId, itemId }, { timeoutMs: 20_000 }),
+  /** "הצג את כל התוצאות": the Island Center's smart search page for this query. Explicit click only. */
+  assistantOpenCenter: (queryId: string) => callVoid("assistant_open_center", { queryId }, { timeoutMs: 10_000 }),
+  assistantDismiss: (queryId: string) => callVoid("assistant_dismiss", { queryId }, { timeoutMs: 3000 }),
+  searchBarState: () => call<SearchBarState>("search_bar_state", undefined, { timeoutMs: 3000 }),
+  searchBarClose: () => callVoid("search_bar_close", undefined, { timeoutMs: 3000 }),
 };
 
 // -----------------------------------------------------------------------------

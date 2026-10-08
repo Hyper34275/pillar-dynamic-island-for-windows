@@ -31,11 +31,13 @@ export default defineConfig({
   // color-mix() can ship untranspiled.
   build: {
     target: "chrome111",
-    // Two pages: the island itself and the tour (tour.html, shown by the Island Center).
+    // Three pages: the island, the tour (tour.html, shown by the Island Center) and the smart search bar.
     rollupOptions: {
       input: {
         main: "index.html",
         tour: "tour.html",
+        // The smart search input + glow (search_bar window, label "search").
+        search: "search.html",
       },
     },
   },
