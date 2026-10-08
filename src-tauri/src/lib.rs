@@ -29,6 +29,7 @@ mod intent;
 mod local;
 mod outlook_mail;
 mod search_bar;
+mod sticky_notes;
 
 use tauri::utils::config::AppDirectoriesOverride;
 use tauri::{Manager, RunEvent};
@@ -153,6 +154,8 @@ pub fn run() {
             assistant::assistant_dismiss,
             search_bar::search_bar_state,
             search_bar::search_bar_close,
+            sticky_notes::sticky_notes_list,
+            sticky_notes::sticky_notes_open,
         ])
         .on_window_event(|window, event| window::on_window_event(window, event))
         .setup(|app| {
