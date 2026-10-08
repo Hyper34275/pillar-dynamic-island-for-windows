@@ -118,6 +118,9 @@ public static class Strings
     public static string MeetingReminders => "תזכורות לפגישות";
     public static string ReminderMinutes => "הזכר לי לפני";
     public static string Minutes(int n) => $"{n} דק׳";
+    public static string CalendarPrefetch => "הורדת לו״ז מראש";
+    public static string CalendarPrefetchHint => "היומן שלך וכל היומנים המשותפים, N ימים קדימה, בלי קשר להגדרות המטמון של Outlook. נשמר בזיכרון בלבד.";
+    public static string PrefetchDays(int n) => n == 0 ? "כבוי" : $"{n} ימים";
     public static string Notifications => "הצג התראות";
     public static string NotificationsHint => "התראות Windows מוצגות באי.";
     public static string MeetingInvites => "זימונים לפגישות";

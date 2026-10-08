@@ -43,6 +43,7 @@ public sealed record IslandSettings
     public bool AiSearchEnabled { get; set; } = true;
     public bool AiSearchButton { get; set; } = true;
     public bool AiSearchHotkey { get; set; } = true;
+    public int CalendarPrefetchDays { get; set; } = 7;
 
     /// <summary>The same settings with <see cref="IslandDisplay"/> forced to a known value.</summary>
     public IslandSettings Normalized() => this with { IslandDisplay = IslandDisplays.Normalize(IslandDisplay) };

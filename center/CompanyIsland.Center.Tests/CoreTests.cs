@@ -262,6 +262,20 @@ public class SettingsModelTests
     }
 
     [Fact]
+    public void CalendarPrefetchDays_defaults_patches_and_round_trips()
+    {
+        Assert.Equal(7, new IslandSettings().CalendarPrefetchDays);
+        var patch = new SettingsPatch().CalendarPrefetchDays(14);
+        Assert.Equal(14, patch.ToJson()["calendarPrefetchDays"]!.GetValue<int>());
+        Assert.Equal(14, patch.ApplyTo(new IslandSettings()).CalendarPrefetchDays);
+        Assert.Equal(0, new SettingsPatch().CalendarPrefetchDays(0).ApplyTo(new IslandSettings()).CalendarPrefetchDays);
+        string json = JsonSerializer.Serialize(new IslandSettings { CalendarPrefetchDays = 30 }, CenterJson.Default.IslandSettings);
+        Assert.Contains("\"calendarPrefetchDays\":30", json);
+        Assert.Equal(30, JsonSerializer.Deserialize(json, CenterJson.Default.IslandSettings)!.CalendarPrefetchDays);
+        Assert.Equal(7, JsonSerializer.Deserialize("{}", CenterJson.Default.IslandSettings)!.CalendarPrefetchDays);
+    }
+
+    [Fact]
     public void Patch_serialises_only_what_was_set()
     {
         var patch = new SettingsPatch().NotificationsEnabled(false);

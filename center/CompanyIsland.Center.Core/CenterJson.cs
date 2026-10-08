@@ -54,6 +54,7 @@ public sealed class SettingsPatch
     public SettingsPatch AiSearchEnabled(bool value) => Put("aiSearchEnabled", JsonValue.Create(value));
     public SettingsPatch AiSearchButton(bool value) => Put("aiSearchButton", JsonValue.Create(value));
     public SettingsPatch AiSearchHotkey(bool value) => Put("aiSearchHotkey", JsonValue.Create(value));
+    public SettingsPatch CalendarPrefetchDays(int value) => Put("calendarPrefetchDays", JsonValue.Create(value));
     public SettingsPatch IslandDisplay(string value) => Put("islandDisplay", JsonValue.Create(IslandDisplays.Normalize(value)));
 
     /// <summary>A present-but-null monitor id selects the primary display, so null is sent as JSON null.</summary>
@@ -88,6 +89,7 @@ public sealed class SettingsPatch
                 case "aiSearchEnabled": next = next with { AiSearchEnabled = node!.GetValue<bool>() }; break;
                 case "aiSearchButton": next = next with { AiSearchButton = node!.GetValue<bool>() }; break;
                 case "aiSearchHotkey": next = next with { AiSearchHotkey = node!.GetValue<bool>() }; break;
+                case "calendarPrefetchDays": next = next with { CalendarPrefetchDays = node!.GetValue<int>() }; break;
                 case "islandDisplay": next = next with { IslandDisplay = node!.GetValue<string>() }; break;
                 case "monitorId": next = next with { MonitorId = node?.GetValue<string>() }; break;
             }

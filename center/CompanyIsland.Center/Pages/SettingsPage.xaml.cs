@@ -73,6 +73,7 @@ public sealed partial class SettingsPage : Page, ICenterPage
             MinutesRow.IsEnabled = settings.MeetingReminderEnabled;
 
             RenderMinutes(settings.ReminderMinutes);
+            RenderPrefetch(settings.CalendarPrefetchDays);
             RenderMonitors(settings.MonitorId);
             RenderDisplay(settings.IslandDisplay);
             RenderAccess(settings.NotificationsEnabled);
@@ -100,6 +101,36 @@ public sealed partial class SettingsPage : Page, ICenterPage
         }
 
         MinutesCombo.SelectedIndex = choices.IndexOf(current);
+    }
+
+    private static readonly int[] PrefetchChoices = [0, 3, 7, 14, 30];
+
+    private void RenderPrefetch(int current)
+    {
+        // The listed choices, plus the stored value (shown as its number) when it is something else.
+        var choices = PrefetchChoices.Contains(current) ? PrefetchChoices.ToList() : [.. PrefetchChoices, current];
+        choices.Sort();
+        bool same = PrefetchCombo.Items.Count == choices.Count &&
+                    choices.Select((n, i) => (PrefetchCombo.Items[i] as ComboBoxItem)?.Tag is int tag && tag == n).All(b => b);
+        if (!same)
+        {
+            PrefetchCombo.Items.Clear();
+            foreach (int days in choices)
+            {
+                string label = PrefetchChoices.Contains(days) ? Strings.PrefetchDays(days) : days.ToString();
+                PrefetchCombo.Items.Add(new ComboBoxItem { Content = label, Tag = days });
+            }
+        }
+
+        PrefetchCombo.SelectedIndex = choices.IndexOf(current);
+    }
+
+    private void OnPrefetchChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (!_updating && PrefetchCombo.SelectedItem is ComboBoxItem { Tag: int days })
+        {
+            _ = ApplyAsync(new SettingsPatch().CalendarPrefetchDays(days));
+        }
     }
 
     private void RenderMonitors(string? selectedId)

@@ -47,6 +47,9 @@
                     <controls:SettingRow x:Name="MinutesRow" Glyph="&#xE916;" Title="{x:Bind s:Strings.ReminderMinutes}">
                         <ComboBox x:Name="MinutesCombo" MinWidth="120" SelectionChanged="OnMinutesChanged" AutomationProperties.Name="{x:Bind s:Strings.ReminderMinutes}" />
                     </controls:SettingRow>
+                    <controls:SettingRow x:Name="PrefetchRow" Glyph="&#xE787;" Title="{x:Bind s:Strings.CalendarPrefetch}" Description="{x:Bind s:Strings.CalendarPrefetchHint}">
+                        <ComboBox x:Name="PrefetchCombo" MinWidth="120" SelectionChanged="OnPrefetchChanged" AutomationProperties.Name="{x:Bind s:Strings.CalendarPrefetch}" />
+                    </controls:SettingRow>
                     <controls:SettingRow x:Name="InvitesRow" Glyph="&#xE715;" Title="{x:Bind s:Strings.MeetingInvites}">
                         <ToggleSwitch x:Name="InvitesToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.MeetingInvites}" />
                     </controls:SettingRow>
