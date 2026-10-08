@@ -37,18 +37,74 @@ const WINDOWS_11_BUILD: u32 = 22000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Foreground {
     Other,
-    /// The Windows search flyout (Win+S) covers the box.
+    /// The Start menu (StartMenuExperienceHost). On Windows 10 it opens above the Start button and
+    /// leaves the search box visible, so the button stays.
+    Start,
+    /// The Windows search flyout (SearchApp / SearchUI). It opens above the box; only the part of
+    /// it that overlaps the button hides the button.
     SearchFlyout,
     /// Alt+Tab / Task View.
     TaskSwitcher,
 }
 
+/// The shell windows that make Explorer re-raise the taskbar when they come to the front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellSurface {
+    Tray,
+    Start,
+    Search,
+    ShellHost,
+    Other,
+}
+
+fn file_name(image: &str) -> &str {
+    image.rsplit(['\\', '/']).next().unwrap_or(image)
+}
+
+/// Pure classification of a window by class and executable name. Start
+/// (StartMenuExperienceHost.exe) and Search (SearchApp.exe / SearchUI.exe) share the class
+/// `Windows.UI.Core.CoreWindow` and are told apart by the image.
+pub fn classify_shell_surface(class: &str, image: &str) -> ShellSurface {
+    match class {
+        "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" => return ShellSurface::Tray,
+        "Windows.UI.Core.CoreWindow" => {}
+        _ => return ShellSurface::Other,
+    }
+    let name = file_name(image);
+    if name.eq_ignore_ascii_case("StartMenuExperienceHost.exe") {
+        ShellSurface::Start
+    } else if name.eq_ignore_ascii_case("SearchApp.exe") || name.eq_ignore_ascii_case("SearchUI.exe") {
+        ShellSurface::Search
+    } else if name.eq_ignore_ascii_case("ShellExperienceHost.exe") {
+        ShellSurface::ShellHost
+    } else {
+        ShellSurface::Other
+    }
+}
+
+pub fn rects_intersect(a: &Bounds, b: &Bounds) -> bool {
+    a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
+}
+
+/// Whether what is in front hides the button. Start and the taskbar never do; the task switcher
+/// always does; the search flyout only where it overlaps the button (unknown rectangle: hide).
+pub fn foreground_covers_button(fg: Foreground, fg_rect: Option<Bounds>, button: Bounds) -> bool {
+    match fg {
+        Foreground::Other | Foreground::Start => false,
+        Foreground::TaskSwitcher => true,
+        Foreground::SearchFlyout => fg_rect.is_none_or(|r| rects_intersect(&r, &button)),
+    }
+}
+
 /// Pure classification of the foreground window (class and executable name, both injectable).
 pub fn classify_foreground(class: &str, image: &str, flyout_class: &str, flyout_images: &[&str]) -> Foreground {
     if class == flyout_class {
-        let name = image.rsplit(['\\', '/']).next().unwrap_or(image);
+        let name = file_name(image);
         if flyout_images.iter().any(|f| f.eq_ignore_ascii_case(name)) {
             return Foreground::SearchFlyout;
+        }
+        if name.eq_ignore_ascii_case("StartMenuExperienceHost.exe") {
+            return Foreground::Start;
         }
     }
     match class {
@@ -66,6 +122,10 @@ pub trait ShellProbe {
     fn monitors(&self) -> Vec<MonitorGeom>;
     fn high_contrast(&self) -> bool;
     fn foreground(&self) -> Foreground;
+    /// Screen rectangle of the foreground window, when it matters (the search flyout).
+    fn foreground_rect(&self) -> Option<Bounds> {
+        None
+    }
     fn anchor_supported(&self) -> bool;
 }
 
@@ -116,13 +176,13 @@ fn bounds(r: RECT) -> Bounds {
     Bounds::from(r)
 }
 
-fn class_of(hwnd: HWND) -> String {
+pub(super) fn class_of(hwnd: HWND) -> String {
     let mut buf = [0u16; 128];
     let len = unsafe { GetClassNameW(hwnd, &mut buf) }.max(0) as usize;
     String::from_utf16_lossy(&buf[..len])
 }
 
-fn image_of(hwnd: HWND) -> String {
+pub(super) fn image_of(hwnd: HWND) -> String {
     unsafe {
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
@@ -292,6 +352,16 @@ impl ShellProbe for Win32Probe {
         classify_foreground(&class, &image, &self.flyout_class, &images)
     }
 
+    fn foreground_rect(&self) -> Option<Bounds> {
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(hwnd, &mut r) }.ok()?;
+        Some(bounds(r))
+    }
+
     fn anchor_supported(&self) -> bool {
         self.support_override.unwrap_or_else(|| os_build() < WINDOWS_11_BUILD)
     }
@@ -323,6 +393,37 @@ mod tests {
         assert_eq!(classify_foreground(fly, "", fly, &images), Foreground::Other);
         assert_eq!(classify_foreground("Chrome_WidgetWin_1", "SearchApp.exe", fly, &images), Foreground::Other);
         assert_eq!(classify_foreground("MultitaskingViewFrame", "", fly, &images), Foreground::TaskSwitcher);
+    }
+
+    #[test]
+    fn start_is_told_apart_from_search() {
+        let images = ["SearchApp.exe", "SearchUI.exe"];
+        let fly = "Windows.UI.Core.CoreWindow";
+        let start = r"C:\Windows\SystemApps\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\StartMenuExperienceHost.exe";
+        assert_eq!(classify_foreground(fly, start, fly, &images), Foreground::Start);
+        assert_eq!(classify_shell_surface(fly, start), ShellSurface::Start);
+        assert_eq!(classify_shell_surface(fly, r"C:\x\SearchApp.exe"), ShellSurface::Search);
+        assert_eq!(classify_shell_surface(fly, r"C:\x\searchui.exe"), ShellSurface::Search);
+        assert_eq!(classify_shell_surface(fly, r"C:\x\ShellExperienceHost.exe"), ShellSurface::ShellHost);
+        assert_eq!(classify_shell_surface(fly, r"C:\x\Other.exe"), ShellSurface::Other);
+        assert_eq!(classify_shell_surface("Shell_TrayWnd", ""), ShellSurface::Tray);
+        assert_eq!(classify_shell_surface("Shell_SecondaryTrayWnd", ""), ShellSurface::Tray);
+        assert_eq!(classify_shell_surface("Chrome_WidgetWin_1", "StartMenuExperienceHost.exe"), ShellSurface::Other);
+    }
+
+    #[test]
+    fn only_overlap_with_the_search_flyout_or_the_task_switcher_hides_the_button() {
+        let button = Bounds { left: 300, top: 1000, right: 324, bottom: 1024 };
+        let above = Bounds { left: 0, top: 300, right: 700, bottom: 1000 }; // ends where the box begins
+        let over = Bounds { left: 0, top: 300, right: 700, bottom: 1060 };
+        // Start and the taskbar (Other) never hide it
+        assert!(!foreground_covers_button(Foreground::Start, Some(over), button));
+        assert!(!foreground_covers_button(Foreground::Other, Some(over), button));
+        // the search flyout opens above the box on Windows 10: no overlap, the button stays
+        assert!(!foreground_covers_button(Foreground::SearchFlyout, Some(above), button));
+        assert!(foreground_covers_button(Foreground::SearchFlyout, Some(over), button));
+        assert!(foreground_covers_button(Foreground::SearchFlyout, None, button));
+        assert!(foreground_covers_button(Foreground::TaskSwitcher, Some(above), button));
     }
 
     #[test]

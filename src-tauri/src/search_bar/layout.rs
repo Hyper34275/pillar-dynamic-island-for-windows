@@ -19,11 +19,39 @@ pub const FLOAT_WIDTH_DIP: f64 = 560.0;
 pub const FLOAT_HEIGHT_DIP: f64 = 48.0;
 pub const FLOAT_GAP_DIP: f64 = 16.0;
 pub const FLOAT_RADIUS_DIP: f64 = 24.0;
+/// Spotlight (centre of the screen): bar size, the margin around it for the page's shadow/glow,
+/// where the bar's top sits in the work area, and the bar's corner radius (DIP).
+pub const SPOT_WIDTH_DIP: f64 = 680.0;
+pub const SPOT_HEIGHT_DIP: f64 = 60.0;
+pub const SPOT_MARGIN_DIP: f64 = 28.0;
+pub const SPOT_TOP_FRACTION: f64 = 0.26;
+pub const SPOT_RADIUS_DIP: f64 = 20.0;
 /// A rectangle smaller than this is not a search box (a collapsed or half-animated control).
 const MIN_BOX_WIDTH_DIP: f64 = 80.0;
 const MIN_BOX_HEIGHT_DIP: f64 = 20.0;
 /// Room kept above and below the button inside the box (DIP, each side).
 const BUTTON_VERTICAL_PAD_DIP: f64 = 2.0;
+
+/// Which of the three shapes the search window has (camelCase string to the page).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Variant {
+    /// Anchored on the Windows 10 search box.
+    Taskbar,
+    /// The fallback bar above the taskbar.
+    Floating,
+    /// Centre of the screen (Alt + backtick).
+    Spotlight,
+}
+
+impl Variant {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Variant::Taskbar => "taskbar",
+            Variant::Floating => "floating",
+            Variant::Spotlight => "spotlight",
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
@@ -93,6 +121,7 @@ pub struct Inputs {
 /// Result: physical px everywhere.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Layout {
+    pub variant: Variant,
     pub anchored: bool,
     /// The AI button (only when anchored).
     pub button: Option<Bounds>,
@@ -110,12 +139,14 @@ pub struct Layout {
 
 impl Layout {
     pub fn to_state(&self, high_contrast: bool) -> SearchBarState {
+        let scale = if self.scale > 0.0 { self.scale } else { 1.0 };
         SearchBarState {
+            variant: self.variant.as_str().to_string(),
             anchored: self.anchored,
-            width: self.window.width() as f64 / self.scale,
-            height: self.window.height() as f64 / self.scale,
+            width: self.window.width() as f64 / scale,
+            height: self.window.height() as f64 / scale,
             radius: self.radius_dip,
-            scale: self.scale,
+            scale,
             high_contrast,
             edge: self.edge.as_str().to_string(),
         }
@@ -169,6 +200,7 @@ fn anchored(i: &Inputs) -> Option<Layout> {
     // box in place (same size, same square corners) and the glow is drawn inside its edge, so
     // the taskbar looks unchanged apart from the light ring.
     Some(Layout {
+        variant: Variant::Taskbar,
         anchored: true,
         button: Some(button),
         window: rect,
@@ -202,6 +234,7 @@ fn floating(i: &Inputs) -> Layout {
     // the bar the page draws (window minus the margin) has the same size in both modes.
     let bar = Bounds { left, top, right: left + width, bottom: top + height };
     Layout {
+        variant: Variant::Floating,
         anchored: false,
         button: None,
         window: inflate(bar, margin),
@@ -216,6 +249,47 @@ fn floating(i: &Inputs) -> Layout {
 
 pub fn compute_layout(i: &Inputs) -> Layout {
     anchored(i).unwrap_or_else(|| floating(i))
+}
+
+/// The centred "spotlight" bar: on the monitor that contains `cursor` (physical px; the primary
+/// monitor when it is on none), horizontally centred in that monitor's work area, the bar's top at
+/// 26% of the work height. The window is the bar plus a margin on every side (the page draws its
+/// shadow and glow there), clamped into the work area; the window region is the whole rectangle.
+pub fn spotlight_layout(monitors: &[MonitorGeom], cursor: (i32, i32), edge: Option<Edge>) -> Layout {
+    let fallback = MonitorGeom {
+        bounds: Bounds { left: 0, top: 0, right: 1920, bottom: 1080 },
+        work: Bounds { left: 0, top: 0, right: 1920, bottom: 1040 },
+        dpi: 96,
+        primary: true,
+    };
+    let (cx, cy) = cursor;
+    let monitor = monitors
+        .iter()
+        .find(|m| cx >= m.bounds.left && cx < m.bounds.right && cy >= m.bounds.top && cy < m.bounds.bottom)
+        .or_else(|| monitors.iter().find(|m| m.primary))
+        .or_else(|| monitors.first())
+        .copied()
+        .unwrap_or(fallback);
+    let scale = scale_of(monitor.dpi);
+    let work = if monitor.work.width() > 0 && monitor.work.height() > 0 { monitor.work } else { monitor.bounds };
+    let margin = px(SPOT_MARGIN_DIP, scale);
+    let width = (px(SPOT_WIDTH_DIP, scale) + 2 * margin).min(work.width()).max(1);
+    let height = (px(SPOT_HEIGHT_DIP, scale) + 2 * margin).min(work.height()).max(1);
+    let left = work.left + (work.width() - width) / 2;
+    let wanted_top = work.top + (SPOT_TOP_FRACTION * work.height() as f64).round() as i32 - margin;
+    let top = wanted_top.min(work.bottom - height).max(work.top);
+    Layout {
+        variant: Variant::Spotlight,
+        anchored: false,
+        button: None,
+        window: Bounds { left, top, right: left + width, bottom: top + height },
+        scale,
+        dpi: monitor.dpi,
+        radius_dip: SPOT_RADIUS_DIP,
+        region_radius_px: 0,
+        edge: edge.unwrap_or(Edge::Bottom),
+        monitor: monitor.bounds,
+    }
 }
 
 /// Whether the AI button is shown at all. `flyout`: the Windows search flyout / task switcher is
@@ -540,5 +614,64 @@ mod tests {
         let c = compute_layout(&i);
         assert_eq!(c.button.unwrap().left - a.button.unwrap().left, 40);
         assert_eq!(c.window.left - a.window.left, 40);
+    }
+
+    #[test]
+    fn spotlight_geometry_at_every_dpi() {
+        for dpi in [96, 120, 144, 192] {
+            let m = monitor(0, 0, dpi, true);
+            let l = spotlight_layout(&[m], (10, 10), Some(Edge::Bottom));
+            let s = scale_of(dpi);
+            assert_eq!(l.variant, Variant::Spotlight);
+            assert!(!l.anchored && l.button.is_none());
+            let st = l.to_state(false);
+            assert_eq!(st.variant, "spotlight");
+            assert!((st.width - 736.0).abs() < 1.0, "dpi {dpi}: {}", st.width);
+            assert!((st.height - 116.0).abs() < 1.0, "dpi {dpi}: {}", st.height);
+            assert_eq!(l.region_radius_px, 0);
+            let w = m.work;
+            assert!(((l.window.left - w.left) - (w.right - l.window.right)).abs() <= 1, "dpi {dpi}");
+            let margin = (28.0 * s).round() as i32;
+            let expected = w.top + (0.26 * w.height() as f64).round() as i32;
+            assert_eq!(l.window.top + margin, expected, "dpi {dpi}");
+            assert!(w.contains(&l.window));
+        }
+    }
+
+    #[test]
+    fn spotlight_follows_the_cursor_to_the_second_monitor() {
+        let a = monitor(0, 0, 96, true);
+        let b = monitor(1920, 0, 144, false);
+        let l = spotlight_layout(&[a, b], (2500, 300), None);
+        assert_eq!(l.monitor, b.bounds);
+        assert_eq!(l.dpi, 144);
+        assert!(b.work.contains(&l.window));
+        let l = spotlight_layout(&[a, b], (100, 300), None);
+        assert_eq!(l.monitor, a.bounds);
+        // the cursor on no monitor: the primary one
+        let l = spotlight_layout(&[b, a], (-5000, 9000), None);
+        assert_eq!(l.monitor, a.bounds);
+    }
+
+    #[test]
+    fn spotlight_is_clamped_in_a_small_work_area() {
+        let mut m = monitor(0, 0, 96, true);
+        m.work = b(0, 0, 500, 100);
+        let l = spotlight_layout(&[m], (1, 1), None);
+        assert!(m.work.contains(&l.window), "{:?}", l.window);
+        assert_eq!((l.window.width(), l.window.height()), (500, 100));
+        m.work = b(0, 0, 1920, 130);
+        let l = spotlight_layout(&[m], (1, 1), None);
+        assert!(m.work.contains(&l.window));
+        let l = spotlight_layout(&[], (0, 0), None);
+        assert_eq!(l.window.width(), 736);
+    }
+
+    #[test]
+    fn variants_are_named_for_the_page() {
+        assert_eq!(compute_layout(&inputs(monitor(0, 0, 96, true))).to_state(false).variant, "taskbar");
+        let mut i = inputs(monitor(0, 0, 96, true));
+        i.edge = Some(Edge::Left);
+        assert_eq!(compute_layout(&i).to_state(false).variant, "floating");
     }
 }

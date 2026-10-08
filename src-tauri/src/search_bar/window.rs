@@ -13,7 +13,8 @@
 //! built on the thread that has to process the request).
 
 use super::anchor::{gather, ShellProbe, Win32Probe};
-use super::layout::{compute_layout, Layout};
+use super::guard::guarded;
+use super::layout::{compute_layout, spotlight_layout, Layout, Variant};
 use super::{thread, SearchBarState, WINDOW_LABEL};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -24,7 +25,7 @@ use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowR
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
     GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, WA_INACTIVE, WM_ACTIVATE, WM_NCACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_EX_APPWINDOW,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
@@ -41,6 +42,42 @@ static STATE: Mutex<Option<SearchBarState>> = Mutex::new(None);
 static LAST: Mutex<Option<(Layout, bool)>> = Mutex::new(None);
 /// One open/create at a time.
 static CREATE: Mutex<()> = Mutex::new(());
+/// The shape the window has (or last had).
+static VARIANT: Mutex<Variant> = Mutex::new(Variant::Floating);
+
+fn current_variant() -> Variant {
+    *lock(&VARIANT)
+}
+
+/// What Alt+` does, given whether the bar is open and its current shape.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SpotlightAction {
+    Open,
+    Close,
+    Switch,
+}
+
+fn spotlight_action(open: bool, current: Variant) -> SpotlightAction {
+    if !open {
+        SpotlightAction::Open
+    } else if current == Variant::Spotlight {
+        SpotlightAction::Close
+    } else {
+        SpotlightAction::Switch
+    }
+}
+
+/// The layout for a wanted shape: the measured taskbar one, or the centred spotlight on the
+/// monitor under the cursor.
+fn build_layout(probe: &Win32Probe, spotlight: bool) -> Layout {
+    if spotlight {
+        let mut p = windows::Win32::Foundation::POINT::default();
+        let cursor = if unsafe { GetCursorPos(&mut p) }.is_ok() { (p.x, p.y) } else { (i32::MIN, i32::MIN) };
+        spotlight_layout(&probe.monitors(), cursor, probe.taskbar_edge())
+    } else {
+        compute_layout(&gather(probe))
+    }
+}
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -94,9 +131,17 @@ unsafe extern "system" fn subclass_proc(
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
-    _id: usize,
-    _data: usize,
+    id: usize,
+    data: usize,
 ) -> LRESULT {
+    // A panic must not cross the FFI boundary: fall back to the default handling.
+    match guarded("search window subclass", None, || Some(subclass_inner(hwnd, msg, wparam, lparam, id, data))) {
+        Some(result) => result,
+        None => DefSubclassProc(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn subclass_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
     match msg {
         WM_STYLECHANGING if wparam.0 as i32 == GWL_EXSTYLE.0 => {
             let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
@@ -161,13 +206,14 @@ pub fn layout_changed(layout: &Layout, high_contrast: bool) {
         *last = Some((layout.clone(), high_contrast));
         changed
     };
-    if !changed || !is_open() {
+    // The centred spotlight does not follow the taskbar.
+    if !changed || !is_open() || current_variant() == Variant::Spotlight {
         return;
     }
     let Some(app) = super::app() else { return };
     let (app2, layout) = (app.clone(), layout.clone());
     let _ = app.run_on_main_thread(move || {
-        if !is_open() {
+        if !is_open() || current_variant() == Variant::Spotlight {
             return;
         }
         if let Some(win) = app2.get_webview_window(WINDOW_LABEL) {
@@ -270,14 +316,17 @@ fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_cont
     thread::post(thread::CMD_ACTIVE);
 }
 
-fn open_blocking(app: &AppHandle) {
+fn open_blocking(app: &AppHandle, spotlight: bool) {
     let _serial = lock(&CREATE);
     if is_open() || !thread::enabled() {
         return;
     }
     let probe = Win32Probe::default();
-    let layout = compute_layout(&gather(&probe));
+    let layout = build_layout(&probe, spotlight);
     let high_contrast = probe.high_contrast();
+    // The page asks for the state when it loads: make that reply the shape being opened.
+    *lock(&VARIANT) = layout.variant;
+    *lock(&STATE) = Some(layout.to_state(high_contrast));
     let win = match ensure_window(app) {
         Ok(w) => w,
         Err(e) => {
@@ -304,8 +353,59 @@ pub fn open(app: &AppHandle) {
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        crate::debug_log::catch("search_bar", || open_blocking(&app));
+        crate::debug_log::catch("search_bar", || open_blocking(&app, false));
     });
+}
+
+/// Move an open bar to the spotlight shape (or back to the measured one). Off the main thread.
+fn switch_blocking(app: &AppHandle, spotlight: bool) {
+    let _serial = lock(&CREATE);
+    if !is_open() || !thread::enabled() {
+        return;
+    }
+    let probe = Win32Probe::default();
+    let layout = build_layout(&probe, spotlight);
+    let high_contrast = probe.high_contrast();
+    *lock(&VARIANT) = layout.variant;
+    *lock(&STATE) = Some(layout.to_state(high_contrast));
+    *lock(&OPENED_AT) = Some(Instant::now());
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if !is_open() {
+            return;
+        }
+        if let Some(win) = handle.get_webview_window(WINDOW_LABEL) {
+            if let Some(hwnd) = hwnd_of(&win) {
+                apply_geometry(hwnd, &layout);
+                publish_state(&handle, &layout, high_contrast);
+                let _ = win.set_focus();
+                force_foreground(hwnd);
+            }
+        }
+    });
+}
+
+/// Alt+`: closed -> open the spotlight; another shape open -> switch to the spotlight; spotlight
+/// open -> close. Safe from any thread.
+pub fn toggle_spotlight(app: &AppHandle) {
+    if !thread::enabled() {
+        return;
+    }
+    match spotlight_action(is_open(), current_variant()) {
+        SpotlightAction::Close => close(app),
+        SpotlightAction::Open => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                crate::debug_log::catch("search_bar", || open_blocking(&app, true));
+            });
+        }
+        SpotlightAction::Switch => {
+            let app = app.clone();
+            std::thread::spawn(move || {
+                crate::debug_log::catch("search_bar", || switch_blocking(&app, true));
+            });
+        }
+    }
 }
 
 /// Hide the input (AI Mode off). Keeps the webview for a fast reopen. Safe from any thread.
@@ -388,6 +488,24 @@ mod tests {
         reset_failed_open(&open, |c| posted.push(c));
         assert!(!open.load(Ordering::Acquire));
         assert_eq!(posted, vec![thread::CMD_IDLE_ARM]);
+    }
+
+    #[test]
+    fn spotlight_hotkey_semantics() {
+        // closed: open it; another shape open: switch; spotlight open: close
+        assert_eq!(spotlight_action(false, Variant::Floating), SpotlightAction::Open);
+        assert_eq!(spotlight_action(false, Variant::Spotlight), SpotlightAction::Open);
+        assert_eq!(spotlight_action(true, Variant::Taskbar), SpotlightAction::Switch);
+        assert_eq!(spotlight_action(true, Variant::Floating), SpotlightAction::Switch);
+        assert_eq!(spotlight_action(true, Variant::Spotlight), SpotlightAction::Close);
+    }
+
+    #[test]
+    fn the_spotlight_layout_is_built_from_the_live_monitors() {
+        let l = build_layout(&Win32Probe::default(), true);
+        assert_eq!(l.variant, Variant::Spotlight);
+        assert!(l.window.width() > 0 && l.window.height() > 0);
+        assert_eq!(l.to_state(false).variant, "spotlight");
     }
 
     #[test]

@@ -244,6 +244,8 @@ fn palette_for(high_contrast: bool) -> Palette {
 
 /// Push the current look into the layered window; `at` moves it in the same call.
 unsafe fn present(hwnd: HWND, look: &Look, at: Option<(i32, i32)>) {
+    // a DIB is never 0x0 (or negative): CreateDIBSection and the pixel copy would fail
+    let look = &Look { width: look.width.clamp(1, 4096), height: look.height.clamp(1, 4096), ..*look };
     let pixels = render(look.width as u32, look.height as u32, variant_of(look), &palette_for(look.high_contrast));
     let screen = GetDC(None);
     let memory = CreateCompatibleDC(screen);
@@ -295,6 +297,14 @@ fn redraw(hwnd: HWND) {
 }
 
 unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // A panic must not cross the FFI boundary: fall back to the default handling.
+    match super::guard::guarded("button window proc", None, || Some(proc_inner(hwnd, msg, wparam, lparam))) {
+        Some(result) => result,
+        None => DefWindowProcW(hwnd, msg, wparam, lparam),
+    }
+}
+
+unsafe fn proc_inner(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
         WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
         WM_SETCURSOR => {
@@ -420,7 +430,11 @@ impl Button {
             )
             .unwrap_or_default();
             if !tooltip.0.is_null() {
-                TOOLTIP_TEXT.with(|t| *t.borrow_mut() = TOOLTIP.encode_utf16().chain(std::iter::once(0)).collect());
+                TOOLTIP_TEXT.with(|t| {
+                    if let Ok(mut text) = t.try_borrow_mut() {
+                        *text = TOOLTIP.encode_utf16().chain(std::iter::once(0)).collect();
+                    }
+                });
                 let info = TTTOOLINFOW {
                     cb_size: std::mem::size_of::<TTTOOLINFOW>() as u32,
                     flags: TTF_IDISHWND | TTF_SUBCLASS | TTF_RTLREADING,
@@ -428,7 +442,7 @@ impl Button {
                     id: hwnd.0 as usize,
                     rect: RECT::default(),
                     instance: HINSTANCE::default(),
-                    text: PWSTR(TOOLTIP_TEXT.with(|t| t.borrow_mut().as_mut_ptr())),
+                    text: PWSTR(TOOLTIP_TEXT.with(|t| t.try_borrow_mut().map_or(std::ptr::null_mut(), |mut v| v.as_mut_ptr()))),
                     param: LPARAM(0),
                     reserved: std::ptr::null_mut(),
                 };

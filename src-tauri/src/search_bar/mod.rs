@@ -5,14 +5,18 @@
 //!   injection, nothing inside explorer.exe, Windows' own search untouched.
 //! - Ctrl+Alt+Space (RegisterHotKey) opens the same input anywhere (fallback, Windows 11, icon-only
 //!   or hidden search box, taskbar on the side).
+//! - Alt+` (the key left of 1) opens a centred "spotlight" bar on the monitor under the cursor;
+//!   pressing it again closes it. Both hotkeys follow `aiSearchHotkey`.
 //! - The input + glow is a lazily created Tauri window, label `search`, page `search.html`.
 //!
 //! CONTRACT: `start`, `apply_settings`, `open`, `close` and the Tauri commands below.
 
 mod anchor;
 mod button;
+mod guard;
 mod hotkey;
 mod layout;
+mod raise;
 mod thread;
 mod window;
 
@@ -33,6 +37,9 @@ pub(crate) fn app() -> Option<&'static AppHandle> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchBarState {
+    /// "taskbar" (anchored on the Windows 10 box), "floating" (above the taskbar) or "spotlight"
+    /// (centre of the screen).
+    pub variant: String,
     /// The input sits over the real Windows search box (else: a floating bar above the taskbar).
     pub anchored: bool,
     /// Size of the search window in DIPs (the page lays out to it).
@@ -98,6 +105,14 @@ pub fn toggle(app: &AppHandle) {
 pub(crate) fn on_hotkey() {
     if let Some(app) = app() {
         toggle(app);
+    }
+}
+
+/// Alt+` (the key left of 1), delivered on the search-bar thread: the centred spotlight bar.
+/// Closed -> opens it; another variant open -> switches to it; spotlight open -> closes it.
+pub(crate) fn on_spotlight_hotkey() {
+    if let Some(app) = app() {
+        window::toggle_spotlight(app);
     }
 }
 
