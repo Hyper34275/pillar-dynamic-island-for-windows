@@ -7,6 +7,8 @@
 mod apps;
 mod files;
 mod note_search;
+/// Windows-side actions of the explicit commands (web search/open, settings, folders, lock, new mail).
+pub mod system_actions;
 
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
