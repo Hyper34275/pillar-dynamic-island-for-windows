@@ -93,25 +93,26 @@ describe("installer hooks keep center\\ clean (installer-hooks.nsh)", () => {
     return hooks.slice(start, hooks.indexOf("!macroend", start));
   };
 
-  it("wipes the old center folder on install, after the Center is stopped", () => {
+  it("wipes the old center folder on install, after the programs are stopped", () => {
     const pre = macro("NSIS_HOOK_PREINSTALL");
-    expect(pre).toContain("CompanyIslandStopCenter");
-    expect(pre).toContain("COMPANYISLAND_REMOVE_CENTER_DIR");
-    expect(pre.indexOf("CompanyIslandStopCenter")).toBeLessThan(pre.indexOf("COMPANYISLAND_REMOVE_CENTER_DIR"));
+    expect(pre).toContain("YUVAL_STOP_PRODUCT");
+    expect(pre).toContain("YUVAL_REMOVE_CENTER_DIR");
+    expect(pre.indexOf("YUVAL_STOP_PRODUCT")).toBeLessThan(pre.indexOf("YUVAL_REMOVE_CENTER_DIR"));
   });
 
   it("wipes center\\ and then the install folder on uninstall", () => {
     const post = macro("NSIS_HOOK_POSTUNINSTALL");
-    expect(post).toContain("COMPANYISLAND_REMOVE_CENTER_DIR");
+    expect(post).toContain("YUVAL_REMOVE_CENTER_DIR");
     expect(post).toContain('RMDir "$INSTDIR"');
     expect(post).not.toContain("RMDir /r");
   });
 
-  it("only ever deletes recursively below a non-empty $INSTDIR\\center", () => {
-    const remove = macro("COMPANYISLAND_REMOVE_CENTER_DIR");
-    expect(remove).toContain('$INSTDIR != ""');
-    expect(remove).toContain('RMDir /r "$INSTDIR\\center"');
+  it("only ever deletes recursively below a non-empty <folder>\\center", () => {
+    // One macro does it for the install folder and for the folder of the old (CompanyIsland) product.
+    const remove = macro("YUVAL_REMOVE_CENTER_DIR");
+    expect(remove).toContain('${DIR} != ""');
+    expect(remove).toContain('RMDir /r "${DIR}\\center"');
     const recursive = hooks.match(/RMDir \/r .*/g) ?? [];
-    expect(recursive).toEqual(['RMDir /r "$INSTDIR\\center"']);
+    expect(recursive).toEqual(['RMDir /r "${DIR}\\center"']);
   });
 });
