@@ -74,7 +74,7 @@ public sealed class FileLog
     private static string MutexName(string path)
     {
         byte[] hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(path.ToUpperInvariant()));
-        return @"LocalCompanyIsland.CenterLog." + Convert.ToHexString(hash, 0, 8);
+        return @"Local\CompanyIsland.CenterLog." + Convert.ToHexString(hash, 0, 8);
     }
 
     private void Rotate(int incoming)
