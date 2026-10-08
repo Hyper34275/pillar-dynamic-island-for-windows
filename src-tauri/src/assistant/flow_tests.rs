@@ -685,3 +685,67 @@ fn the_log_line_has_no_query_text_names_or_subjects() {
     let line = log_line(&err, "execute:email.search", 3);
     assert!(line.contains("code=MAIL-101") && !line.contains("secret"));
 }
+
+// ----- end to end: the real intent engine in front of the orchestrator ------------------------
+
+/// The spec's final scenario, typed text all the way (intent::interpret is real here).
+#[test]
+fn end_to_end_final_scenario_with_real_understanding() {
+    let e = Engine::new();
+    let mut f = itzik_fake();
+    f.boxes = three_boxes();
+
+    // 1. "מה יש לאיציק ביומן מחר?" -> Itzik's shared calendar, tomorrow, count + times
+    let card = e.submit(&f, "מה יש לאיציק ביומן מחר?", "q1", now());
+    assert_eq!(card.phase, CardPhase::Answer, "{card:?}");
+    assert_eq!(card.title, "מחר יש לאיציק 3 פגישות");
+    assert_eq!(card.summary, "09:00 · 11:30 · 14:00");
+    assert_eq!(f.ranges.lock().unwrap().as_slice(), &[Some(vec!["c-itzik".to_string()])]);
+
+    // 2. "תמצא את המייל עם המילה תקציב." with three mailboxes -> which mailbox?
+    let partial = MailSearchResult {
+        hits: vec![hit("k1", "m1", "תקציב 2027", 9), hit("k2", "m2", "re: תקציב", 8)],
+        per_mailbox: vec![done("m1"), MailboxOutcome { mailbox_id: "m2".into(), complete: false, error: None }],
+        partial: true,
+        cursor: Some(MailCursor { pending: vec!["rest".into()] }),
+    };
+    f.mail.lock().unwrap().push_back(Ok(partial));
+    let card = e.submit(&f, "תמצא את המייל עם המילה תקציב.", "q2", now());
+    assert_eq!(card.phase, CardPhase::Choices, "{card:?}");
+    assert_eq!(card.question.as_deref(), Some("באיזו תיבת דואר לחפש?"));
+    assert_eq!(card.choices.len(), 4);
+    assert_eq!(card.choices.last().unwrap().kind, ChoiceKind::AllMailboxes);
+    assert!(f.queries.lock().unwrap().is_empty(), "nothing is searched before the answer");
+
+    // 3. typed answer "אני לא יודע" -> every permitted mailbox, 10 s budget, partial results shown
+    let Route::Choose { query_id, option_id } = e.route("אני לא יודע", now().timestamp_millis()) else {
+        panic!("the typed reply must answer the pending question")
+    };
+    assert_eq!(query_id, "q2");
+    let card = e.choose(&f, &query_id, &option_id, false, now()).unwrap();
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert!(card.partial && card.can_extend, "{card:?}");
+    assert_eq!(card.total, 2);
+    {
+        let q = f.queries.lock().unwrap();
+        assert_eq!(q[0].0.mailboxes.len(), 3);
+        assert_eq!(q[0].0.budget_ms, 10_000);
+        assert!(q[0].0.terms.iter().flatten().any(|t| t == "תקציב"), "{:?}", q[0].0.terms);
+    }
+
+    // 4. "search 10 more seconds" continues from the cursor
+    let card = e.extend(&f, "q2", now()).unwrap();
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert!(f.queries.lock().unwrap()[1].1, "the extension passes the cursor back");
+
+    // 5. "רק מהשבוע שעבר" refines the last mail search (same mailboxes, same term, last week)
+    let card = e.submit(&f, "רק מהשבוע שעבר", "q3", now());
+    assert!(card.follow_up, "{card:?}");
+    let q = f.queries.lock().unwrap();
+    let last = &q.last().unwrap().0;
+    assert_eq!(last.mailboxes.len(), 3, "the mailbox plan is inherited");
+    assert!(last.terms.iter().flatten().any(|t| t == "תקציב"));
+    // now = Wed 10.3.2027: last week = Sun 28.2 .. Sun 7.3 (exclusive)
+    assert_eq!(last.since, Some(Local.with_ymd_and_hms(2027, 2, 28, 0, 0, 0).unwrap().with_timezone(&Utc)));
+    assert_eq!(last.until, Some(Local.with_ymd_and_hms(2027, 3, 7, 0, 0, 0).unwrap().with_timezone(&Utc)));
+}
