@@ -122,6 +122,17 @@ impl Store {
         }
     }
 
+    /// The user acts on this query again (a reply, a choice, extend): it is shown again.
+    pub fn undismiss(&mut self, id: &str) {
+        self.dismissed.retain(|d| d != id);
+    }
+
+    /// Forget everything (smart search was switched off).
+    pub fn clear(&mut self) {
+        self.entries.clear();
+        self.dismissed.clear();
+    }
+
     pub fn is_dismissed(&self, id: &str) -> bool {
         self.dismissed.iter().any(|d| d == id)
     }

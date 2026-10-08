@@ -327,6 +327,17 @@ fn window(interp: &Interpretation, cap: CapId, now: DateTime<Local>) -> (DateTim
     (today, tomorrow, Grain::Day)
 }
 
+/// Cut a window longer than the calendar's read limit to its first `MAX_QUERY_DAYS` days. The
+/// flag is true when days were really dropped; an excess of up to two hours (a month across the
+/// end of daylight saving time is 31 days + 1 h) is not announced.
+pub(super) fn clamp_window(from: DateTime<Local>, to: DateTime<Local>) -> (DateTime<Local>, bool) {
+    let limit = Duration::days(crate::calendar::MAX_QUERY_DAYS);
+    if to - from <= limit {
+        return (to, false);
+    }
+    (from + limit, to - from > limit + Duration::hours(2))
+}
+
 fn tokens(folded: &str) -> Vec<String> {
     folded.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).map(str::to_string).collect()
 }
@@ -382,7 +393,9 @@ fn person_of(interp: &Interpretation) -> Option<&str> {
 
 fn calendar(r: &Run, interp: &Interpretation, cap: CapId, chosen: Option<&str>) -> Outcome {
     let lang = r.lang;
-    let (from, to, grain) = window(interp, cap, r.now);
+    let (from, wanted_to, grain) = window(interp, cap, r.now);
+    // The calendar reads at most MAX_QUERY_DAYS at once: a longer question gets the first days, and says so.
+    let (to, clamped) = clamp_window(from, wanted_to);
     let (from_u, to_u) = (from.with_timezone(&Utc), to.with_timezone(&Utc));
     let person = person_of(interp);
     let cals = r.src.calendars();
@@ -460,6 +473,9 @@ fn calendar(r: &Run, interp: &Interpretation, cap: CapId, chosen: Option<&str>) 
     if read.truncated {
         o.partial = true;
         o.summary = join_lines(&o.summary, answer::partial_note(lang));
+    }
+    if clamped {
+        o.summary = join_lines(&o.summary, &answer::range_clamped_note(crate::calendar::MAX_QUERY_DAYS, lang));
     }
     if let Some(code) = failed_code {
         o.error_code = Some(code.clone());

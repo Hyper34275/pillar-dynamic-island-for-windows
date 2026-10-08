@@ -301,6 +301,25 @@ impl Engine {
         lock(&self.store).dismiss(query_id);
     }
 
+    /// The user acts on a stored query again (a typed reply, a choice, extend): a card they closed
+    /// earlier is shown again. Returns the text and language, like [`Engine::query_of`].
+    pub fn resume(&self, query_id: &str, now_ms: i64) -> Option<(String, Lang)> {
+        let mut store = lock(&self.store);
+        let found = store.get(query_id, now_ms).map(|e| (e.card.query.clone(), e.card.lang));
+        if found.is_some() {
+            store.undismiss(query_id);
+        }
+        found
+    }
+
+    /// Forget the stored queries and the conversation (smart search was switched off).
+    pub fn clear(&self) {
+        lock(&self.store).clear();
+        let mut session = lock(&self.session);
+        session.ctx.clear();
+        session.last_plan = None;
+    }
+
     pub fn is_dismissed(&self, query_id: &str) -> bool {
         lock(&self.store).is_dismissed(query_id)
     }

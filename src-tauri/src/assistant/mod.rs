@@ -32,7 +32,7 @@ use crate::local::{AppHit, FileSearch, NoteHit};
 use crate::outlook_mail::{FreeBusy, MailCursor, MailQuery, MailSearchResult, MailboxInfo};
 use crate::{calendar, center, center_ipc, intent, local, outlook, outlook_mail, rt, window};
 use chrono::{DateTime, Local, Utc};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -58,11 +58,25 @@ fn new_query_id() -> String {
     flow::mint_query_id(COUNTER.fetch_add(1, Ordering::Relaxed), nanos)
 }
 
+/// Set when smart search was switched off: the stored queries are gone and stay unreadable until
+/// the next accepted question (`enabled` clears it).
+static OFF: AtomicBool = AtomicBool::new(false);
+
+const OFF_ERROR: &str = "APP-040: smart search is off";
+
+/// Smart search was switched off in the settings: forget every stored query and the conversation
+/// context, and refuse to show anything until a question is accepted again.
+pub fn on_disabled() {
+    OFF.store(true, Ordering::SeqCst);
+    engine().clear();
+}
+
 fn enabled(app: &AppHandle) -> Result<(), String> {
     if app.state::<crate::settings::SettingsStore>().get().ai_search_enabled {
+        OFF.store(false, Ordering::SeqCst);
         Ok(())
     } else {
-        Err("APP-040: smart search is off".into())
+        Err(OFF_ERROR.into())
     }
 }
 
@@ -95,6 +109,12 @@ where
 {
     let live = Live { app: app.clone() };
     match rt::run_blocking(name, move || work(&live)).await {
+        Ok(_) if OFF.load(Ordering::SeqCst) => {
+            // Switched off while this search ran: its result must not outlive the switch.
+            engine().clear();
+            emit_card(app, &flow::error_card(query_id, query, lang, "APP-040", now_ms()));
+            Err(OFF_ERROR.into())
+        }
         Ok(card) => Ok(publish(app, card)),
         Err(e) => {
             let code = answer::code_of(&e, "APP-001");
@@ -120,7 +140,7 @@ pub async fn submit(app: AppHandle, text: String, origin: String) -> Result<Assi
     let route = eng.route(&text, now_ms());
     let (query_id, query, lang, option) = match route {
         flow::Route::Choose { query_id, option_id } => {
-            let (query, lang) = eng.query_of(&query_id, now_ms()).unwrap_or_else(|| (String::new(), intent::detect_lang(&text)));
+            let (query, lang) = eng.resume(&query_id, now_ms()).unwrap_or_else(|| (String::new(), intent::detect_lang(&text)));
             (query_id, query, lang, Some(option_id))
         }
         flow::Route::New => (new_query_id(), text.clone(), intent::detect_lang(&text), None),
@@ -141,7 +161,7 @@ pub async fn submit(app: AppHandle, text: String, origin: String) -> Result<Assi
 pub async fn choose(app: AppHandle, query_id: String, option_id: String, remember: bool) -> Result<AssistantCard, String> {
     enabled(&app)?;
     let eng = engine();
-    let (query, lang) = eng.query_of(&query_id, now_ms()).ok_or("APP-041: search expired")?;
+    let (query, lang) = eng.resume(&query_id, now_ms()).ok_or("APP-041: search expired")?;
     emit_card(&app, &flow::processing_card(&query_id, &query, lang, now_ms()));
     let id = query_id.clone();
     run_query(&app, "assistant_choose", &query_id, &query, lang, move |live| eng.choose(live, &id, &option_id, remember, Local::now())).await
@@ -151,7 +171,7 @@ pub async fn choose(app: AppHandle, query_id: String, option_id: String, remembe
 pub async fn extend(app: AppHandle, query_id: String) -> Result<AssistantCard, String> {
     enabled(&app)?;
     let eng = engine();
-    let (query, lang) = eng.query_of(&query_id, now_ms()).ok_or("APP-041: search expired")?;
+    let (query, lang) = eng.resume(&query_id, now_ms()).ok_or("APP-041: search expired")?;
     emit_card(&app, &flow::processing_card(&query_id, &query, lang, now_ms()));
     let id = query_id.clone();
     run_query(&app, "assistant_extend", &query_id, &query, lang, move |live| eng.extend(live, &id, Local::now())).await
@@ -159,17 +179,24 @@ pub async fn extend(app: AppHandle, query_id: String) -> Result<AssistantCard, S
 
 /// Open one result (mail, event, note, file, app) after an explicit click.
 pub async fn open_item(app: AppHandle, query_id: String, item_id: String) -> Result<(), String> {
+    enabled(&app)?;
     let live = Live { app };
     rt::run_blocking("assistant_open_item", move || engine().open(&live, &query_id, &item_id, now_ms())).await
 }
 
-/// The full results of a query, for the Center.
+/// The full results of a query, for the Center. Nothing is shown while smart search is off.
 pub fn results(query_id: &str) -> Result<SearchResults, String> {
+    if OFF.load(Ordering::SeqCst) {
+        return Err(OFF_ERROR.into());
+    }
     engine().results(query_id, now_ms())
 }
 
 /// The conversation so far (newest last), for the Center's chat page. Memory only.
 pub fn history() -> Vec<SearchResults> {
+    if OFF.load(Ordering::SeqCst) {
+        return Vec::new();
+    }
     engine().history(now_ms())
 }
 
@@ -212,6 +239,14 @@ pub fn assistant_dismiss(query_id: String) {
 // The real data sources
 // =============================================================================
 
+/// At most this many organizer names go to the intent parser.
+const MAX_PEOPLE: usize = 200;
+
+fn cap_people(mut people: Vec<String>) -> Vec<String> {
+    people.truncate(MAX_PEOPLE);
+    people
+}
+
 /// [`exec::Sources`] over the running app: Outlook, the calendar worker, local search.
 struct Live {
     app: AppHandle,
@@ -237,18 +272,7 @@ impl exec::Sources for Live {
         calendar::known_sources(&self.app)
     }
     fn people(&self) -> Vec<String> {
-        const MAX_PEOPLE: usize = 200;
-        let snapshot = calendar::calendar_get_snapshot(self.app.state::<calendar::CalendarState>());
-        let mut people: Vec<String> = Vec::new();
-        for name in snapshot.events.iter().filter_map(|e| e.organizer.as_deref()) {
-            if people.len() >= MAX_PEOPLE {
-                break;
-            }
-            if !name.trim().is_empty() && !people.iter().any(|p| p == name) {
-                people.push(name.to_string());
-            }
-        }
-        people
+        cap_people(calendar::organizers_recent(&self.app))
     }
     fn query_range(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
         calendar::query_range(from, to, only)
@@ -314,5 +338,30 @@ mod tests {
         assert!(a.bytes().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
         assert!(valid_query_id(&a));
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn people_are_capped() {
+        let many: Vec<String> = (0..500).map(|i| format!("p{i}")).collect();
+        assert_eq!(cap_people(many).len(), MAX_PEOPLE);
+        assert_eq!(cap_people(vec!["Dana".into()]), vec!["Dana".to_string()]);
+    }
+
+    #[test]
+    fn nothing_is_readable_after_switching_off() {
+        // the only test that touches the process-wide engine and the off flag
+        let ms = now_ms();
+        on_disabled();
+        assert!(history().is_empty());
+        assert_eq!(results("anything").unwrap_err().split(':').next(), Some("APP-040"));
+        assert!(engine().history(ms).is_empty());
+        OFF.store(false, Ordering::SeqCst);
+        // back on: the lookup reaches the (empty) store and reports an expired search
+        assert_eq!(results("anything").unwrap_err().split(':').next(), Some("APP-041"));
     }
 }

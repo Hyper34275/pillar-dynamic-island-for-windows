@@ -277,6 +277,15 @@ pub fn no_title(lang: Lang) -> &'static str {
     if lang == Lang::He { "(ללא נושא)" } else { "(no subject)" }
 }
 
+/// The asked range was longer than the calendar can read at once.
+pub fn range_clamped_note(days: i64, lang: Lang) -> String {
+    if lang == Lang::He {
+        format!("הטווח ארוך מדי — מוצגים {days} הימים הראשונים.")
+    } else {
+        format!("That range is too long — showing the first {days} days.")
+    }
+}
+
 pub fn partial_note(lang: Lang) -> &'static str {
     if lang == Lang::He {
         "החיפוש לא הסתיים — מוצגות התוצאות שנמצאו עד כה."

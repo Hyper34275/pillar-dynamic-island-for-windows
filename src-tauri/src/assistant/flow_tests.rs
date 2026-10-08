@@ -22,6 +22,7 @@ struct Fake {
     events: Vec<CalendarEventDto>,
     range_err: Option<String>,
     ranges: Mutex<Vec<Option<Vec<String>>>>,
+    windows: Mutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
     fb: Mutex<Option<Result<FreeBusy, String>>>,
     files: Vec<FileHit>,
     notes: Vec<NoteHit>,
@@ -53,7 +54,8 @@ impl Sources for Fake {
     fn people(&self) -> Vec<String> {
         Vec::new()
     }
-    fn query_range(&self, _from: DateTime<Utc>, _to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
+    fn query_range(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
+        self.windows.lock().unwrap().push((from, to));
         self.ranges.lock().unwrap().push(only);
         if let Some(e) = &self.range_err {
             return Err(e.clone());
@@ -748,4 +750,115 @@ fn end_to_end_final_scenario_with_real_understanding() {
     // now = Wed 10.3.2027: last week = Sun 28.2 .. Sun 7.3 (exclusive)
     assert_eq!(last.since, Some(Local.with_ymd_and_hms(2027, 2, 28, 0, 0, 0).unwrap().with_timezone(&Utc)));
     assert_eq!(last.until, Some(Local.with_ymd_and_hms(2027, 3, 7, 0, 0, 0).unwrap().with_timezone(&Utc)));
+}
+
+// ----- review fixes --------------------------------------------------------------------------
+
+#[test]
+fn a_window_longer_than_the_calendar_limit_is_cut_and_says_so() {
+    let f = Fake { events: Vec::new(), ..Fake::default() };
+    let year = TimeSpec { from: at(1, 0, 0), to: at(1, 0, 0) + Duration::days(365), grain: Grain::Range };
+    let slots = Slots { time: Some(year), ..Slots::default() };
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, slots.clone()));
+    // the read is cut to the first MAX_QUERY_DAYS days (not rejected with OUTLOOK-108)
+    let (from, to) = f.windows.lock().unwrap()[0];
+    assert_eq!(to - from, Duration::days(crate::calendar::MAX_QUERY_DAYS));
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert!(card.error_code.is_none());
+    assert!(card.summary.contains("31 הימים הראשונים"), "{}", card.summary);
+    let mut en = exec_cap(caps::CALENDAR_LIST_EVENTS, slots);
+    en.lang = Lang::En;
+    let card = engine_run(&Engine::new(), &f, "q2", &en);
+    assert!(card.summary.contains("first 31 days"), "{}", card.summary);
+}
+
+#[test]
+fn a_month_across_the_end_of_daylight_saving_is_cut_without_a_note() {
+    use super::exec::clamp_window;
+    let from = at(1, 0, 0);
+    // 31 days + 1 h (October in Israel): cut to the limit the calendar accepts, nothing announced
+    let (to, announced) = clamp_window(from, from + Duration::days(31) + Duration::hours(1));
+    assert_eq!(to, from + Duration::days(31));
+    assert!(!announced);
+    assert_eq!(clamp_window(from, from + Duration::days(30)), (from + Duration::days(30), false));
+    assert_eq!(clamp_window(from, from + Duration::days(31)), (from + Duration::days(31), false));
+    assert!(clamp_window(from, from + Duration::days(34)).1);
+}
+
+#[test]
+fn answering_a_closed_card_shows_the_query_again() {
+    let e = Engine::new();
+    let f = Fake::default();
+    engine_run(&e, &f, "q1", &interp(Decision::NoMatch, Slots::default()));
+    let ms = now().timestamp_millis();
+    e.dismiss("q1");
+    assert!(e.is_dismissed("q1"));
+    assert!(e.resume("q1", ms).is_some());
+    assert!(!e.is_dismissed("q1"));
+    // an unknown or expired id changes nothing
+    e.dismiss("gone");
+    assert!(e.resume("gone", ms).is_none());
+    assert!(e.is_dismissed("gone"));
+}
+
+#[test]
+fn switching_off_forgets_the_queries_and_the_conversation() {
+    let e = Engine::new();
+    let f = Fake { events: Vec::new(), ..Fake::default() };
+    engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, Slots::default()));
+    e.dismiss("q1");
+    let ms = now().timestamp_millis();
+    assert_eq!(e.history(ms).len(), 1);
+    assert!(lock(&e.session).ctx.last(ms).is_some());
+    e.clear();
+    assert!(e.history(ms).is_empty());
+    assert!(e.results("q1", ms).is_err());
+    assert!(e.query_of("q1", ms).is_none());
+    assert!(!e.is_dismissed("q1"));
+    assert!(lock(&e.session).ctx.last(ms).is_none());
+    assert!(lock(&e.session).last_plan.is_none());
+}
+
+#[test]
+fn an_expired_mail_key_is_a_clear_card_text() {
+    assert_eq!(answer::code_of("MAIL-104: mail no longer available", "APP-001"), "MAIL-104");
+    assert_eq!(answer::error_text("MAIL-104", Lang::He), "המייל כבר לא זמין");
+    assert_eq!(answer::error_text("MAIL-104", Lang::En), "The mail is no longer available");
+    let card = error_card("q1", "x", Lang::He, "MAIL-104", 0);
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.title, "המייל כבר לא זמין");
+}
+
+#[test]
+fn fifty_concurrent_submits_do_not_deadlock_and_each_gets_a_final_card() {
+    use super::super::store::MAX_QUERIES;
+    let e = Engine::new();
+    let f = Fake { cals: vec![cal("c-me", "היומן שלי")], events: vec![event("e1", "סטטוס", at(10, 9, 0), 60, BusyStatus::Busy)], ..Fake::default() };
+    let started = std::time::Instant::now();
+    let cards: Vec<AssistantCard> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..50)
+            .map(|i| {
+                let (e, f) = (&e, &f);
+                s.spawn(move || {
+                    let text = if i % 2 == 0 { "מה יש לי היום ביומן" } else { "what is on my calendar today" };
+                    let card = e.submit(f, text, &format!("load{i:02}"), now());
+                    // readers run alongside the writers
+                    let _ = e.history(now().timestamp_millis());
+                    let _ = e.results(&card.query_id, now().timestamp_millis());
+                    card
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().expect("a submit panicked")).collect()
+    });
+    let elapsed = started.elapsed();
+    assert_eq!(cards.len(), 50);
+    for c in &cards {
+        assert_ne!(c.phase, CardPhase::Processing, "every query ends in a final card");
+    }
+    let ids: std::collections::HashSet<_> = cards.iter().map(|c| c.query_id.clone()).collect();
+    assert_eq!(ids.len(), 50);
+    assert_eq!(lock(&e.store).len(), MAX_QUERIES);
+    println!("LOAD50 elapsed_ms={}", elapsed.as_millis());
+    assert!(elapsed < std::time::Duration::from_secs(10));
 }
