@@ -8,7 +8,7 @@ import { color, control, icon } from "../../../design/tokens";
 import { textDirection } from "../../../design/direction";
 import { islandTyping, noteDraft } from "../../../lib/notes/typing";
 import { ActionButton, RoundButton } from "../ui/controls";
-import { CopyIcon, NoteIcon, PinIcon, TrashIcon } from "../ui/icons";
+import { CopyIcon, NoteIcon, PencilIcon, PinIcon, TrashIcon } from "../ui/icons";
 import { EmptyState, ErrorState, STATE_ICON } from "../ui/states";
 import { HeaderActionButton } from "../HeaderAction";
 
@@ -174,7 +174,10 @@ export function NoteComposer({ value, onChange, onSave, onFocus, onBlur, saving 
   };
   return (
     <div className="ci-surface ci-field rounded-surface p-card-pad flex flex-col gap-2 flex-shrink-0" data-note-composer>
-      <textarea
+      {/* A pen at the leading edge and a placeholder at secondary contrast: the box reads as the place to write. */}
+      <label className="flex items-start gap-2 cursor-text">
+        <PencilIcon size={icon.small} className="flex-shrink-0 text-fg-secondary" style={{ marginTop: 2 }} aria-hidden="true" />
+        <textarea
         ref={textareaRef}
         value={value}
         rows={value ? 4 : 2}
@@ -183,14 +186,15 @@ export function NoteComposer({ value, onChange, onSave, onFocus, onBlur, saving 
         aria-label={t("notes.composerLabel")}
         spellCheck={false}
         dir={textDirection(value)}
-        className="bidi block w-full resize-none bg-transparent text-body text-fg placeholder:text-fg-tertiary outline-none"
+        className="bidi block w-full min-w-0 flex-1 resize-none bg-transparent text-body text-fg placeholder:text-fg-secondary outline-none"
         onChange={(e) => onChange(e.target.value)}
         // A click in a window that is not active may not move the page's focus; the press itself asks too.
         onPointerDown={onFocus}
         onFocus={onFocus}
         onBlur={onBlur}
         onKeyDown={onKeyDown}
-      />
+        />
+      </label>
       {/* An empty box is just the field, so the list keeps the room; the row comes with the first character. */}
       {(value || justSaved) && (
         <div className="flex items-center gap-2">
@@ -260,6 +264,7 @@ function NotesList({
   loadFailed = false,
   onRetry,
   onOpenApp,
+  composer,
 }: NotesViewProps) {
   if (loading && notes.length === 0) return <div className="flex-1" aria-busy="true" />;
   if (loadFailed && notes.length === 0) {
@@ -270,7 +275,7 @@ function NotesList({
       <EmptyState
         icon={<NoteIcon size={STATE_ICON} />}
         title={t("notes.empty")}
-        hint={t("notes.emptyHint")}
+        hint={t(composer ? "notes.emptyHintComposer" : "notes.emptyHint")}
         action={{ label: t(onOpenApp ? "notes.openApp" : "notes.new"), onPress: onOpenApp ?? onNew }}
       />
     );

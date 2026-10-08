@@ -288,6 +288,16 @@ body {
 .ci-field textarea:focus-visible {
   outline: none;
 }
+/* At rest a field shows an edge, so a dark card on the black island still reads as "type here";
+   the edge brightens under the pointer and the focus ring takes over while typing. */
+.ci-surface.ci-field {
+  box-shadow: inset 0 0 0 1px var(--ci-field-edge);
+  cursor: text;
+  transition: box-shadow 150ms ease-out;
+}
+.ci-surface.ci-field:hover {
+  box-shadow: inset 0 0 0 1px var(--ci-field-edge-hover);
+}
 
 /* A raised surface inside the panel (cards, dock, groups): the hairline only shows in high contrast. */
 .ci-surface {

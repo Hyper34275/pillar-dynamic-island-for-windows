@@ -106,6 +106,9 @@ export const palette = {
   destructiveSoft: "rgba(255,69,58,0.18)",
   destructiveSoftHover: "rgba(255,69,58,0.26)",
   warning: "#FF9F0A",
+  /** The resting edge of a text field: enough to read as "type here" on the black island. */
+  fieldEdge: "rgba(255,255,255,0.24)",
+  fieldEdgeHover: "rgba(255,255,255,0.36)",
   /** Keyboard focus ring. */
   focus: "rgba(255,255,255,0.75)",
   /** A hairline around surfaces: transparent normally, visible in high contrast. */
@@ -129,6 +132,8 @@ export const paletteHighContrast: Partial<Record<ColorName, string>> = {
   fill: "rgba(255,255,255,0.2)",
   outline: "rgba(255,255,255,0.6)",
   islandEdge: "rgba(255,255,255,0.6)",
+  fieldEdge: "rgba(255,255,255,0.7)",
+  fieldEdgeHover: "rgba(255,255,255,0.85)",
   /** prefers-contrast: more asks for a visible edge: the keyline is then always drawn. */
   islandKeyline: "rgba(255,255,255,0.6)",
   focus: "#FFFFFF",

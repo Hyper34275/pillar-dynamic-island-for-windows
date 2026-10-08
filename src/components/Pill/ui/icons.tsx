@@ -125,6 +125,14 @@ export const NoteIcon = (p: IconProps) => (
   </Svg>
 );
 
+/** A pen writing: where a note is written. */
+export const PencilIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M16.5 3.8a2.1 2.1 0 0 1 3 3L8 18.3 4 19.5l1.2-4L16.5 3.8Z" />
+    <path d="M14.5 5.8l3 3" />
+  </Svg>
+);
+
 /** A push-pin; pass `fill="currentColor"` for the pinned state. */
 export const PinIcon = (p: IconProps) => (
   <Svg {...p}>

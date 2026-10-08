@@ -12,7 +12,7 @@ import { NotificationToast } from "../components/Pill/NotificationToast";
 import { AboutView } from "../components/Pill/panels/AboutTab";
 import { CalendarView } from "../components/Pill/panels/CalendarTab";
 import { DayTimeline } from "../components/Pill/panels/DayTimeline";
-import { NotesView } from "../components/Pill/panels/NotesTab";
+import { NoteComposer, NotesView } from "../components/Pill/panels/NotesTab";
 import { NotificationsView } from "../components/Pill/panels/NotificationsTab";
 import { SettingsView } from "../components/Pill/panels/SettingsTab";
 import { WeekStrip } from "../components/Pill/panels/WeekStrip";
@@ -233,6 +233,7 @@ function exhibits(): Exhibit[] {
     { id: "panel-calendar", label: "Panel · calendar", size: expandedSize(), node: <ExpandedPreview tab="calendar" /> },
     { id: "panel-notes", label: "Panel · notes", size: expandedSize(), node: <ExpandedPreview tab="notes" /> },
     { id: "panel-notes-empty", label: "Panel · notes empty", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={[]} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} />} /> },
+    { id: "panel-notes-composer", label: "Panel · notes empty, writing in the island", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={[]} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} onOpenApp={noop} composer={<NoteComposer value="" onChange={noop} onSave={noop} />} />} /> },
     { id: "panel-settings", label: "Panel · settings", size: expandedSize(), node: <ExpandedPreview tab="settings" /> },
     { id: "panel-about", label: "Panel · about", size: expandedSize(), node: <ExpandedPreview tab="about" /> },
   ];
