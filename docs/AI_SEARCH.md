@@ -24,7 +24,9 @@ runs locally:
           │       ── executes capabilities (calendar, outlook_mail, local::{files,apps,notes}, calc)
           │       ── keeps results in memory (opaque ids → EntryIDs/paths/AUMIDs)
           ├─ event "assistant-update" (AssistantCard) ──► island: processing → answer/choices
-          │                                            ──► search page: glow state
+          │                                            ──► search page: glow state; in the centre glass bar
+          │                                                (Alt+`) the sheet shows the answer itself and the
+          │                                                island gets nothing for that question (4.4)
           └─ pipe event "search-ready" {queryId} ──► Island Center (pulls searchResults/searchHistory)
  island "הצג את כל התוצאות" → assistant_open_center(queryId) → center::open("search:<id>")
  Center Smart Search page (chat) → pipe searchSubmit/searchChoose/searchExtend/searchOpen
@@ -234,7 +236,14 @@ The intent engine is pure Rust with no dependencies, and its lexicon is compiled
 - These cover Windows 11, an icon-only or hidden search box, a vertical taskbar, and any failure of the anchor probe.
 - In AI Mode off, nothing is intercepted.
 
-**Glow** (inspired by brunnolou/glowing; no code copied, see THIRD_PARTY_NOTICES.md)
+**The centre bar (Alt+`) shows the answer in its own sheet**
+- Alt+` opens the "Spotlight glass" variant (`variant: "spotlight"`): a frosted sheet in the centre of the monitor under the cursor, with the answer unfolding under the question (look and values: `docs/DESIGN_SYSTEM.md`, "Spotlight glass").
+- **Window:** fixed at 760×640 DIP (the 680 DIP sheet, its shadow margins and the tallest sheet, 552 DIP); never resized while an answer arrives. The sheet grows downward in CSS. Its window region is a rectangle over the sheet and its shadow, resized as the page reports the sheet's height (`search_bar_region`), so the transparent rest does not take clicks.
+- **Backdrop:** before the window shows, `search_bar/snapshot.rs` captures the screen under it (window hidden, GDI `StretchBlt` HALFTONE 4x smaller, BMP data URL), and sends it as `search-bar-backdrop` with its brightness and the Windows theme / transparency flags. Memory only, never logged or stored; dropped on close. No picture (transparency effects off, high contrast, a refused or all black capture) gives a near-opaque tint.
+- **The answer is in the sheet, not in the island.** The sheet renders the same `assistant-update` cards the island does: the working line (playful lines, a screen reader hears "מחפש…"), the headline and summary with up to five rows (time, title, source, the calendar's colour), a question with its buttons (`assistant_choose`, "remember my choice"), the error text. A click on a row, or ArrowUp/ArrowDown then Enter, calls `assistant_open_item` (the explicit user action: the confirm policy is unchanged, an `action` item still runs only from that click or Enter); "הצג את כל התוצאות" calls `assistant_open_center` and closes the sheet; Esc closes; typing a new question replaces the answer.
+- **The island stays out of it.** `assistant::submit` notes the query id when the open bar is the centre glass (origin `searchBar` and `search_bar::glass_open()`), does not wake the island for it, and `emit_card` sends that query's cards to the `search` window only (`glass::route_for`). If the sheet is closed before the answer arrives, the card goes to every window as before and wakes the island (`CardRoute::IslandAfterGlass`). The noted ids are cleared at the next open. Questions from the taskbar-anchored or floating bar (origin `searchBar` with another variant), the island and the Center keep today's behaviour: the island's card.
+
+**Glow** (inspired by brunnolou/glowing; no code copied, see THIRD_PARTY_NOTICES.md). Used by the taskbar-anchored and floating bars; the centre glass has no glow.
 - A conic-gradient ring (Cyan #40C8E0, Violet #BF5AF2, Indigo #5E5CE6, Magenta #E040C8, Soft Pink #FFA3C7) behind an opaque light plate that has the bar's own size.
 - A pre-blurred aura.
 - Only `transform` and `opacity` animate. Nothing animates while Idle or Disabled.

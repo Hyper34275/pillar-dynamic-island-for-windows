@@ -238,14 +238,31 @@ compact content starts at progress 0.72 (shape ≈ 220×140) while the panel bod
 frame shows less than ~29 % content; the shape never leaves [compact, panel], never snaps and never
 plateaus inside a motion.
 
-## Spotlight search bar ("Aurora capsule")
+## Spotlight glass (the centre search bar)
 
-Variant `spotlight` of the smart search bar (`SearchBarState.variant`, Alt + `` ` ``). Source: `src/search/SpotlightCapsule.tsx`, `src/search/spotlight.css`, tokens `spotlight` in `src/design/tokens.ts`.
+Variant `spotlight` of the smart search bar (`SearchBarState.variant`, Alt + `` ` ``). It replaced the black "Aurora capsule" after it was judged "shoved onto the screen": this one is a quiet frosted sheet that sits on what is behind it, and the answer opens inside the same sheet, under the question. Source: `src/search/GlassSearch.tsx`, `src/search/glass.css`, the pure model `src/search/glassModel.ts`, tokens `spotlight` in `src/design/tokens.ts`; native side `src-tauri/src/search_bar/{snapshot,glass,layout,window}.rs`. The approved mock is direction 2, "Spotlight glass" (three states on a dark and a light wallpaper); the values below are its.
 
-- Geometry: capsule 680x60 DIP, radius 30; the window adds a 28 DIP transparent margin on every side (736x116) for the under-glow and shadow. Nothing paints outside the window.
-- Always dark ink (`#161833` to `#0E0F1A`), so it floats over any wallpaper; 1.25 px iridescent rim from the glow palette (cyan, violet, indigo, magenta, soft pink) that drifts slowly.
-- Leading AI spark (breathes while submitting/processing, pulses once on completed); 21 px text, `dir="auto"`; a frosted key chip shows `Alt + `` ` ``` when empty and `Enter` once there is text. No suggestion chips (the window is fixed-size).
-- States reuse the eight glow states: processing speeds the rim up (playback rate, never a jump); error turns rim, spark and glow red; completed pulses.
-- Budget: at most three composited layers (rim transform, under-glow opacity, spark transform). Nothing animates when idle, hidden, reduced-motion or plain.
-- `prefers-reduced-motion`: static rim, opacity-only. Forced colours / high contrast: Canvas/CanvasText, 2 px ring, no glow.
-- Dev preview: `search.html?preview=1&variant=spotlight&state=processing&text=...`.
+**The glass.** WebView2 cannot blur what is behind its own transparent window, so the native side captures it. Before the window shows (it is hidden, so the picture holds only what the user sees) `snapshot.rs` takes the screen rectangle under the window in physical pixels, `StretchBlt`s it 4x smaller with `HALFTONE`, reads it with `GetDIBits` and encodes a 24 bpp BMP data URL (about 100 KB; no crate). It goes to the page as the event `search-bar-backdrop` (and the command `search_bar_backdrop`, for a page that is not loaded yet) with the picture's mean luma, the Windows app theme and the "transparency effects" flag. Memory only: never written to disk or logged (only its size and the time it took), dropped when the bar closes, and the page drops its copy when the window hides.
+
+- The page draws one background layer: the picture at WINDOW coordinates behind the sheet (so the glass lines up with what is really there), `filter: blur(14px) saturate(1.8)`, faded in over 120 ms once decoded (the tinted panel never waits for it), then the tint, the sheen, a 1 px stroke and the shadow. Corners are CSS (radius 16) in a transparent window.
+- Tint: the mock's (dark `rgba(22,30,48,.46)`, light `rgba(255,255,255,.66)`), following the system theme; raised to at most .72 / .88 when the picture is the opposite of the theme (`tintAlpha`), so the text keeps its contrast.
+- Sheet: 680 DIP wide, field 72 DIP high (22 px text, 28 px spark, `dir` follows the text), the content inside the 1 px stroke (a sheet is the content plus 2). Under the field, separated by a hairline: the working line (60 DIP: ring and a playful line from `lib/assistant/funnyStatus.ts`, a screen reader hears "מחפש…"), or the answer: headline (17/600, spark), up to two summary lines, up to five rows (62 DIP: a 38 DIP tile in the calendar's colour, title 16, source 13, time column 14 as an LTR run), a 48 DIP footer ("הצג את כל התוצאות ›" and `Esc`). A clarification shows its question and buttons (and "remember my choice" for mailboxes); an error its text and code.
+- Hints (plain 12 px text, as in the mock): `Alt + `` ` ``` when the field is empty, `Enter ↵` when there is text or an answer.
+- Keys: ArrowUp/ArrowDown select a row (openable ones only, wrapping), Enter on a selected row opens it (`assistant_open_item`, the explicit action; the confirm policy is unchanged), a click does the same, Esc closes, typing a new question replaces the answer. A question's buttons answer with a click or the arrows and Enter while the field is empty. ARIA: the field is a combobox over a listbox (`aria-activedescendant`).
+
+**Growth and clicks.** The window is fixed at the tallest sheet (552 DIP) plus margins (40 at the sides, 24 above, 64 below for the shadow): 760 x 640 DIP. It is never resized while an answer arrives; the sheet grows downward in CSS (220 ms). `SetWindowRgn` is a rectangle over the sheet and its shadow that follows the sheet's height, so the transparent rest never swallows a click. The page reports the height through `search_bar_region`: growing, it calls first and grows when the window answered (the new area is clickable from its first frame); shrinking, the sheet goes first and the window follows once it has finished. Heights are measured (`offsetHeight` of the content, never a transformed rect) and `estimateSheetHeight` counts the same metrics where nothing can be measured.
+
+**Fallbacks.**
+
+| Case | What happens |
+|---|---|
+| "Transparency effects" off, capture failed (secure desktop, no DC, an all black picture) | no picture, tint alpha .96 (`gl-opaque`) |
+| Forced colours / high contrast | `gl-plain`: `Canvas`/`CanvasText`, a 2 px border, no picture, no shadow, the selection is a `Highlight` outline |
+| Reduced motion | `gl-reduced`: no scale-in, no height animation, no turning ring or sweep; opacity only |
+| Hidden window | nothing rotates or animates |
+
+Budget: nothing animates when idle; the page is one static background layer plus the sheet (the ring and the sweep run only while working, in full motion).
+
+**The island.** A question asked from this bar is not also shown as a card in the island: `assistant::submit` notes the query id when the open bar is the centre glass (`search_bar::glass`), and `assistant-update` cards of that query go to the search window only; the island does not wake for it. If the sheet is closed before the answer arrives the card goes to the island as before. Questions from the taskbar-anchored or floating bar, the island and the Center are unchanged.
+
+Dev preview (needs `npm run dev`): `search.html?preview=1&variant=spotlight&state=ready|typing|processing|answer|choices|error&theme=dark|light&bg=<image url>&rows=3&hc=1&opaque=1`. `bg` stands for the captured screen.
