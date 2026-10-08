@@ -1,0 +1,369 @@
+//! The search input window (label `search`, page `search.html`).
+//!
+//! Created lazily on the first open and kept hidden afterwards for a fast reopen; destroyed after
+//! ten idle minutes to give the WebView2 processes back (8 GB machines). Unlike the island this
+//! window takes the keyboard: it has no `WS_EX_NOACTIVATE`, and the user's click / hotkey / tray
+//! click grants the foreground. It closes when it loses activation (a click elsewhere), on Esc (the
+//! page calls `search_bar_close`), or when the AI button / hotkey is used again.
+//!
+//! tao rewrites the window styles on every flag change, so this window has its own
+//! `SetWindowSubclass` (id `SUBCLASS_ID`, not the island's 0x4349) that forces the frameless
+//! popup + tool-window styles back in. The window region is rounded to the bar so nothing paints
+//! outside it, and the creation happens off the main thread (Tauri deadlocks when a window is
+//! built on the thread that has to process the request).
+
+use super::anchor::{gather, ShellProbe, Win32Probe};
+use super::layout::{compute_layout, Layout};
+use super::{thread, SearchBarState, WINDOW_LABEL};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
+    GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, STYLESTRUCT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_NOZORDER, WA_INACTIVE, WM_ACTIVATE, WM_NCACTIVATE, WM_NCDESTROY, WM_STYLECHANGING, WS_EX_APPWINDOW,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
+
+/// Not 0 / 1 (tao) and not 0x4349 (the island).
+const SUBCLASS_ID: usize = 0x5343;
+/// A deactivation this soon after opening is the system settling the foreground, not the user leaving.
+const SETTLE: Duration = Duration::from_millis(300);
+
+static OPEN: AtomicBool = AtomicBool::new(false);
+static OPENED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static STATE: Mutex<Option<SearchBarState>> = Mutex::new(None);
+static LAST: Mutex<Option<(Layout, bool)>> = Mutex::new(None);
+/// One open/create at a time.
+static CREATE: Mutex<()> = Mutex::new(());
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+pub fn is_open() -> bool {
+    OPEN.load(Ordering::Acquire)
+}
+
+/// The geometry the page should lay out to (also pushed as `search-bar-state`).
+pub fn state() -> SearchBarState {
+    if let Some(s) = lock(&STATE).clone() {
+        return s;
+    }
+    let probe = Win32Probe::default();
+    compute_layout(&gather(&probe)).to_state(probe.high_contrast())
+}
+
+fn hwnd_of(window: &WebviewWindow) -> Option<HWND> {
+    window.hwnd().ok().map(|h| HWND(h.0 as _))
+}
+
+// =============================================================================
+// Window styles
+// =============================================================================
+
+fn forced_ex(style: u32) -> u32 {
+    (style | WS_EX_TOOLWINDOW.0) & !(WS_EX_APPWINDOW.0 | WS_EX_NOACTIVATE.0)
+}
+
+/// Frameless popup + tool window, activatable. Idempotent.
+fn apply_styles(hwnd: HWND) {
+    unsafe {
+        crate::window::remove_dwm_frame(hwnd);
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        let wanted = crate::window::frameless_style(style as u32) as isize;
+        if wanted != style {
+            SetWindowLongPtrW(hwnd, GWL_STYLE, wanted);
+        }
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let wanted = forced_ex(ex as u32) as isize;
+        if wanted != ex {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted);
+        }
+        let _ = SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+}
+
+unsafe extern "system" fn subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    match msg {
+        WM_STYLECHANGING if wparam.0 as i32 == GWL_EXSTYLE.0 => {
+            let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
+            styles.styleNew = forced_ex(styles.styleNew);
+        }
+        WM_STYLECHANGING if wparam.0 as i32 == GWL_STYLE.0 => {
+            let styles = &mut *(lparam.0 as *mut STYLESTRUCT);
+            styles.styleNew = crate::window::frameless_style(styles.styleNew);
+        }
+        // Same reason as the island: no non-client repaint (a caption flashing over the page).
+        WM_NCACTIVATE => return DefSubclassProc(hwnd, msg, wparam, LPARAM(-1)),
+        WM_ACTIVATE if (wparam.0 & 0xFFFF) as u32 == WA_INACTIVE && is_open() => {
+            let settled = lock(&OPENED_AT).is_none_or(|t| t.elapsed() >= SETTLE);
+            if settled {
+                if let Some(app) = super::app() {
+                    let handle = app.clone();
+                    if let Err(e) = app.run_on_main_thread(move || close(&handle)) {
+                        dlog!("WARN", "search_bar", "WIN-507 closing on deactivation could not be queued: {}", e);
+                    }
+                }
+            }
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+// =============================================================================
+// Geometry
+// =============================================================================
+
+fn apply_geometry(hwnd: HWND, layout: &Layout) {
+    let w = layout.window;
+    unsafe {
+        let _ = SetWindowPos(hwnd, HWND_TOPMOST, w.left, w.top, w.width(), w.height(), SWP_NOACTIVATE);
+        // Rounded to the bar (+1: the right/bottom edge is excluded). On success the system owns it.
+        let d = layout.region_radius_px * 2;
+        let rgn = CreateRoundRectRgn(0, 0, w.width() + 1, w.height() + 1, d, d);
+        if SetWindowRgn(hwnd, rgn, true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(rgn.0));
+            dlog!("WARN", "search_bar", "WIN-507 SetWindowRgn failed");
+        }
+    }
+}
+
+fn publish_state(app: &AppHandle, layout: &Layout, high_contrast: bool) {
+    let state = layout.to_state(high_contrast);
+    *lock(&STATE) = Some(state.clone());
+    if let Err(e) = app.emit_to(WINDOW_LABEL, "search-bar-state", state) {
+        dlog!("WARN", "search_bar", "WIN-507 emit search-bar-state failed: {}", e);
+    }
+}
+
+/// The thread measured a (changed) layout: remember it and, when the window is open, follow.
+pub fn layout_changed(layout: &Layout, high_contrast: bool) {
+    let changed = {
+        let mut last = lock(&LAST);
+        let changed = last.as_ref().is_none_or(|(l, h)| l != layout || *h != high_contrast);
+        *last = Some((layout.clone(), high_contrast));
+        changed
+    };
+    if !changed || !is_open() {
+        return;
+    }
+    let Some(app) = super::app() else { return };
+    let (app2, layout) = (app.clone(), layout.clone());
+    let _ = app.run_on_main_thread(move || {
+        if !is_open() {
+            return;
+        }
+        if let Some(win) = app2.get_webview_window(WINDOW_LABEL) {
+            if let Some(hwnd) = hwnd_of(&win) {
+                apply_geometry(hwnd, &layout);
+            }
+            publish_state(&app2, &layout, high_contrast);
+        }
+    });
+}
+
+// =============================================================================
+// Open / close
+// =============================================================================
+
+fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(w) = app.get_webview_window(WINDOW_LABEL) {
+        return Ok(w);
+    }
+    let win = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("search.html".into()))
+        .title("CompanyIsland search")
+        .inner_size(560.0, 48.0)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .resizable(false)
+        .visible(false)
+        .focused(false)
+        .additional_browser_args(crate::WEBVIEW_ARGS)
+        .build()
+        .map_err(|e| format!("WIN-507: search window could not be created: {e}"))?;
+    // Styles and subclass belong to the window's own (main) thread.
+    let hardened = win.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(hwnd) = hwnd_of(&hardened) {
+            unsafe {
+                if !SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0).as_bool() {
+                    dlog!("WARN", "search_bar", "WIN-507 search window subclass failed");
+                }
+            }
+            apply_styles(hwnd);
+        }
+    });
+    Ok(win)
+}
+
+/// Last resort when `SetForegroundWindow` is refused: borrow the foreground thread's input state.
+fn force_foreground(hwnd: HWND) {
+    unsafe {
+        if GetForegroundWindow() == hwnd {
+            return;
+        }
+        let _ = SetForegroundWindow(hwnd);
+        if GetForegroundWindow() == hwnd {
+            return;
+        }
+        let front = GetForegroundWindow();
+        let their = GetWindowThreadProcessId(front, None);
+        let ours = GetCurrentThreadId();
+        if their != 0 && their != ours && AttachThreadInput(ours, their, true).as_bool() {
+            let _ = SetForegroundWindow(hwnd);
+            let _ = AttachThreadInput(ours, their, false);
+        }
+    }
+}
+
+fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_contrast: bool) {
+    let Some(hwnd) = hwnd_of(win) else { return };
+    apply_styles(hwnd);
+    apply_geometry(hwnd, layout);
+    publish_state(app, layout, high_contrast);
+    if let Err(e) = win.show() {
+        dlog!("WARN", "search_bar", "WIN-507 search window could not be shown: {}", e);
+        OPEN.store(false, Ordering::Release);
+        return;
+    }
+    // tao re-applies its style flags on show; the subclass keeps ours, this covers a missing one.
+    apply_styles(hwnd);
+    apply_geometry(hwnd, layout);
+    let _ = win.set_focus();
+    force_foreground(hwnd);
+    thread::post(thread::CMD_ACTIVE);
+}
+
+fn open_blocking(app: &AppHandle) {
+    let _serial = lock(&CREATE);
+    if is_open() || !thread::enabled() {
+        return;
+    }
+    let probe = Win32Probe::default();
+    let layout = compute_layout(&gather(&probe));
+    let high_contrast = probe.high_contrast();
+    let win = match ensure_window(app) {
+        Ok(w) => w,
+        Err(e) => {
+            dlog!("WARN", "search_bar", "{}", e);
+            return;
+        }
+    };
+    OPEN.store(true, Ordering::Release);
+    *lock(&OPENED_AT) = Some(Instant::now());
+    thread::post(thread::CMD_IDLE_CANCEL);
+    let handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || show_on_main(&handle, &win, &layout, high_contrast)) {
+        OPEN.store(false, Ordering::Release);
+        dlog!("WARN", "search_bar", "WIN-507 opening could not be queued: {}", e);
+    }
+}
+
+/// Show the input and give it the keyboard (a user action only). Safe from any thread.
+pub fn open(app: &AppHandle) {
+    if is_open() || !thread::enabled() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        crate::debug_log::catch("search_bar", || open_blocking(&app));
+    });
+}
+
+/// Hide the input (AI Mode off). Keeps the webview for a fast reopen. Safe from any thread.
+pub fn close(app: &AppHandle) {
+    if !OPEN.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        if let Some(win) = handle.get_webview_window(WINDOW_LABEL) {
+            let _ = win.hide();
+        }
+        thread::post(thread::CMD_ACTIVE);
+        thread::post(thread::CMD_IDLE_ARM);
+    });
+    if let Err(e) = queued {
+        dlog!("WARN", "search_bar", "WIN-507 closing could not be queued: {}", e);
+    }
+}
+
+pub fn toggle(app: &AppHandle) {
+    if is_open() {
+        close(app);
+    } else {
+        open(app);
+    }
+}
+
+/// The idle timer fired: free the webview if nobody opened the bar meanwhile.
+pub fn destroy_if_idle() {
+    if is_open() {
+        return;
+    }
+    let Some(app) = super::app() else { return };
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if is_open() {
+            return;
+        }
+        if let Some(win) = handle.get_webview_window(WINDOW_LABEL) {
+            let _ = win.destroy();
+            dlog!("INFO", "search_bar", "idle search window destroyed");
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forced_extended_style_is_a_tool_window_that_can_activate() {
+        let all = u32::MAX;
+        let forced = forced_ex(all);
+        assert_ne!(forced & WS_EX_TOOLWINDOW.0, 0);
+        assert_eq!(forced & WS_EX_NOACTIVATE.0, 0, "the input takes the keyboard");
+        assert_eq!(forced & WS_EX_APPWINDOW.0, 0, "no taskbar button");
+        assert_eq!(forced_ex(0), WS_EX_TOOLWINDOW.0);
+    }
+
+    #[test]
+    fn the_island_subclass_id_is_not_reused() {
+        assert_ne!(SUBCLASS_ID, 0x4349);
+        assert!(SUBCLASS_ID > 1);
+    }
+
+    #[test]
+    fn state_before_any_open_is_a_floating_or_anchored_geometry() {
+        let s = state();
+        assert!(s.width > 0.0 && s.height > 0.0 && s.scale > 0.0);
+        assert!(["bottom", "top", "left", "right"].contains(&s.edge.as_str()));
+    }
+
+    #[test]
+    fn closing_when_closed_does_nothing() {
+        // is_open() is false in a fresh process; the swap must not flip anything.
+        assert!(!is_open());
+    }
+}

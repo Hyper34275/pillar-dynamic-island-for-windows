@@ -139,7 +139,7 @@ fn forced_ex_style() -> u32 {
 /// caption, system menu or sizing frame; the activation repaint is refused in `subclass_proc`
 /// (WM_NCACTIVATE). tao rewrites GWL_STYLE from its flags on every flag change (show/hide,
 /// focusable, topmost) and never reads the bits back, so this is forced into every write.
-fn frameless_style(style: u32) -> u32 {
+pub(crate) fn frameless_style(style: u32) -> u32 {
     (style & !(WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0) | WS_POPUP.0
 }
 
@@ -177,7 +177,7 @@ const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
 /// dark wallpaper, the rounding as a second, different, corner under the island's own). Border
 /// colour NONE and corner preference DO-NOT-ROUND remove both; on Windows 10 the attributes do
 /// not exist and the call just fails, which is the right answer there too.
-fn remove_dwm_frame(hwnd: HWND) {
+pub(crate) fn remove_dwm_frame(hwnd: HWND) {
     unsafe {
         let corner = DWMWCP_DONOTROUND;
         let border = DWMWA_COLOR_NONE;
