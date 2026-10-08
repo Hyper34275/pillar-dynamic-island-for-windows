@@ -754,6 +754,24 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             }
         }
     }
+    // ---- a misspelt search word also finds its common spelling ("ביתוח" | "ביטוח") ----
+    // Never for an exact word or a quoted phrase, never for a name the machine knows; the word as
+    // typed stays the first alternative.
+    if !e.exact {
+        for g in e.terms.iter_mut() {
+            let Some(typed) = g.first().cloned() else { continue };
+            if typed.contains(' ') || lex.is_known_name(&fold(&typed)) || known_name(known, &fold(&typed)) {
+                continue;
+            }
+            for fix in crate::intent::spell::correct_term(&typed) {
+                for v in term_variants(&fix) {
+                    if !g.iter().any(|x| fold(x) == fold(&v)) {
+                        g.push(v);
+                    }
+                }
+            }
+        }
+    }
     e
 }
 

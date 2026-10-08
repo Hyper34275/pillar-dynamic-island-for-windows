@@ -9,14 +9,19 @@
 //!   ("קצבים" -> "קבצים");
 //! - 1: any other edit.
 //!
-//! Word frequencies (`lexicon/freq_he.tsv`, Zipf scale) break ties between candidates and mark a
-//! typed word as a real word. The file shipped holds no third-party data (see
-//! `docs/HEBREW_ENGINE.md`); an empty table only means ties fall back to the lexicon order.
+//! Word frequencies (`lexicon/freq_he.tsv`, Zipf scale, derived from wordfreq by Robyn Speer, CC BY-SA
+//! 4.0: see `lexicon/freq_he.LICENSE.txt`) break ties between candidates, mark a typed word as a
+//! real word, and give misspelt search words a likely spelling ([`correct_term`]).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
 const FREQ: &str = include_str!("lexicon/freq_he.tsv");
+/// Office words (hand-written, `lexicon/office_words.txt`): correction targets and real words even
+/// where general Hebrew rarely uses them ("חשבונית" is not in the top 50,000).
+const OFFICE: &str = include_str!("lexicon/office_words.txt");
+/// The frequency an office word counts with: common enough to win a tie against a rare listed word.
+const OFFICE_ZIPF: f32 = 4.0;
 
 /// Pairs that are confused by sound, by habit or by their look (ד/ר, ה/ח).
 const CONFUSABLE: [(char, char); 10] =
@@ -149,23 +154,100 @@ pub fn first_letters(c: char) -> impl Iterator<Item = char> {
     std::iter::once(c).chain(CONFUSABLE.iter().filter_map(move |&(x, y)| if x == c { Some(y) } else if y == c { Some(x) } else { None }))
 }
 
-fn table() -> &'static HashMap<String, f32> {
-    static T: OnceLock<HashMap<String, f32>> = OnceLock::new();
+/// The frequency table, built on first use (the first question, off the UI thread).
+struct Freq {
+    /// Folded word -> Zipf (the highest when two spellings fold together).
+    zipf: HashMap<String, f32>,
+    /// Correction targets for search words, by (length, first letter): (folded letters, letter
+    /// mask, the word as listed, Zipf). Only words common enough to be what someone meant.
+    targets: HashMap<(usize, char), Vec<(Vec<char>, u32, String, f32)>>,
+}
+
+/// One bit per Hebrew letter (finals folded). One edit changes at most two bits, so two words
+/// whose masks differ in more than `2 x edits` bits cannot be that close: a cheap filter before
+/// the edit distance.
+fn letter_mask(cs: &[char]) -> u32 {
+    cs.iter().fold(0u32, |m, &c| {
+        let i = (c as u32).wrapping_sub(0x05D0);
+        if i < 27 {
+            m | (1 << i)
+        } else {
+            m | (1 << 31)
+        }
+    })
+}
+
+/// A misspelt search word is only corrected towards a word at least this common.
+const TARGET_ZIPF: f32 = 3.5;
+
+fn table() -> &'static Freq {
+    static T: OnceLock<Freq> = OnceLock::new();
     T.get_or_init(|| {
-        FREQ.lines()
-            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-            .filter_map(|l| {
-                let (w, z) = l.split_once('\t')?;
-                let z: f32 = z.trim().parse().ok()?;
-                Some((super::normalize::fold(w), z / 100.0))
-            })
-            .collect()
+        let mut zipf: HashMap<String, f32> = HashMap::new();
+        let mut targets: HashMap<(usize, char), Vec<(Vec<char>, u32, String, f32)>> = HashMap::new();
+        let listed = FREQ.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()).filter_map(|l| {
+            let (w, z) = l.split_once('\t')?;
+            Some((w, z.trim().parse::<f32>().ok()? / 100.0))
+        });
+        let office = OFFICE.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(|w| (w, OFFICE_ZIPF));
+        for (w, z) in listed.chain(office) {
+            let f = super::normalize::fold(w);
+            if zipf.get(&f).map_or(true, |old| z > *old) {
+                zipf.insert(f.clone(), z);
+            }
+            let cs: Vec<char> = f.chars().collect();
+            let known = targets.get(&(cs.len(), cs.first().copied().unwrap_or(' '))).map_or(false, |v| v.iter().any(|t| t.0 == cs));
+            if z >= TARGET_ZIPF && cs.len() >= 3 && cs.len() < MAX_WORD && !known {
+                let mask = letter_mask(&cs);
+                targets.entry((cs.len(), cs[0])).or_default().push((cs, mask, w.to_string(), z));
+            }
+        }
+        Freq { zipf, targets }
     })
 }
 
 /// Zipf frequency (log10 per billion words) of a folded word, when the table knows it.
 pub fn zipf(norm: &str) -> Option<f32> {
-    table().get(norm).copied()
+    table().zipf.get(norm).copied()
+}
+
+/// The likely spellings of a misspelt Hebrew search word ("ביתוח" -> "ביטוח", "התקצב" -> "התקציב";
+/// "חשבונת" -> both "חשבונות" and "חשבונית", which are equally close), empty when the word is itself
+/// listed (a real word is never "corrected"), is short, or no common word is one cheap slip away.
+/// The caller adds them as alternatives: the word as typed is always searched too.
+pub fn correct_term(word: &str) -> Vec<String> {
+    let f = super::normalize::fold(word);
+    let cs: Vec<char> = f.chars().collect();
+    let n = cs.len();
+    if n < 4 || n >= MAX_WORD || !cs.iter().all(|c| super::normalize::is_he(*c)) {
+        return Vec::new();
+    }
+    let t = table();
+    // listed as typed, or with its proclitics off ("והתקציב"): a real word
+    if t.zipf.contains_key(&f) || super::stem::prefix_splits(&f).iter().any(|(_, rest)| t.zipf.contains_key(rest)) {
+        return Vec::new();
+    }
+    let max = if n <= 5 { 0.75 } else { 1.0 };
+    let mask = letter_mask(&cs);
+    // (cost, zipf, word) of every candidate within the budget
+    let mut found: Vec<(f32, f32, &str)> = Vec::new();
+    for len in n - 1..=n + 1 {
+        for first in first_letters(cs[0]) {
+            for (form, m, listed, z) in t.targets.get(&(len, first)).into_iter().flatten() {
+                if (mask ^ m).count_ones() > 4 {
+                    continue;
+                }
+                if let Some(cost) = weighted(&cs, form, max) {
+                    found.push((cost, *z, listed.as_str()));
+                }
+            }
+        }
+    }
+    let Some(best) = found.iter().map(|c| c.0).fold(None, |m: Option<f32>, c| Some(m.map_or(c, |m| m.min(c)))) else { return Vec::new() };
+    // the cheapest ones, most frequent first, at most two
+    found.retain(|c| c.0 <= best + 1e-6);
+    found.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    found.into_iter().take(2).map(|c| c.2.to_string()).collect()
 }
 
 /// A typed word this common is a real word and is not corrected without support from context.
@@ -197,6 +279,19 @@ mod tests {
         assert!(!neighbours('ש', 'ת'));
         assert_eq!(sub_cost('ג', 'ד'), 0.75);
         assert_eq!(sub_cost('מ', 'ת'), 1.0);
+    }
+
+    #[test]
+    fn misspelt_search_words_get_the_common_spelling() {
+        assert_eq!(correct_term("ביתוח"), vec!["ביטוח"]);
+        // equally close: both, the more frequent first; an office word counts even when rare in general text
+        let both = correct_term("חשבונת");
+        assert!(both.contains(&"חשבונית".to_string()) && both.contains(&"חשבונות".to_string()), "{both:?}");
+        assert_eq!(correct_term("פרוטוקל"), vec!["פרוטוקול"]);
+        // real words and short words are left alone
+        for w in ["חושב", "קצבים", "התקציב", "דנה", "budget"] {
+            assert!(correct_term(w).is_empty(), "{w}");
+        }
     }
 
     #[test]
