@@ -227,25 +227,29 @@ fn start_menu_links(roots: &[PathBuf]) -> Vec<(String, Target)> {
 }
 
 /// Enumerate `shell:AppsFolder` on a fresh STA thread (Shell.Application needs one).
-fn apps_folder_sources() -> Vec<(String, Target)> {
+/// `None` means the shell could not be read (COM or enumeration failed).
+fn apps_folder_sources() -> Option<Vec<(String, Target)>> {
     lower_priority();
     match ComApartment::init_sta() {
         Ok(_apt) => match apps_folder() {
-            Ok(v) => v,
+            Ok(v) => Some(v),
             Err(e) => {
                 dlog!("WARN", "local", "APPS-101 AppsFolder enumeration failed: {}", e);
-                Vec::new()
+                None
             }
         },
         Err(e) => {
             dlog!("WARN", "local", "APPS-101 COM init failed: {}", e);
-            Vec::new()
+            None
         }
     }
 }
 
 /// An enumeration thread that has not returned yet (stuck): no second one is started behind it.
 static COM_RUNNING: AtomicBool = AtomicBool::new(false);
+/// The Apps-folder enumeration failed, panicked or timed out once: for the rest of the session only
+/// the Start menu shortcuts are used (no retry storm, no shell extension loaded again).
+static COM_FAILED: AtomicBool = AtomicBool::new(false);
 
 struct ClearOnDrop(&'static AtomicBool);
 
@@ -258,13 +262,18 @@ impl Drop for ClearOnDrop {
 /// The Apps-folder sources from `com` (run on its own thread, waited for at most `timeout`) merged
 /// behind the Start menu `lnk` sources. `complete` is false when `com` was skipped (the previous
 /// one is still stuck) or timed out: the list is then only the Start menu and must not be cached
-/// as fresh. The stuck thread is abandoned, never joined.
+/// as fresh. The stuck thread is abandoned, never joined. A failure (`None`, panic or timeout) is
+/// remembered in `failed`: later builds use the Start menu only and count as complete.
 fn collect_sources(
     running: &'static AtomicBool,
+    failed: &'static AtomicBool,
     timeout: Duration,
-    com: impl FnOnce() -> Vec<(String, Target)> + Send + 'static,
+    com: impl FnOnce() -> Option<Vec<(String, Target)>> + Send + 'static,
     lnk: impl FnOnce() -> Vec<(String, Target)>,
 ) -> (Vec<(String, Target)>, bool) {
+    if failed.load(Ordering::SeqCst) {
+        return (lnk(), true);
+    }
     if running.swap(true, Ordering::SeqCst) {
         dlog!("WARN", "local", "APPS-102 previous AppsFolder enumeration still running, using the Start menu only");
         return (lnk(), false);
@@ -272,7 +281,11 @@ fn collect_sources(
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("local-apps".into()).spawn(move || {
         let _clear = ClearOnDrop(running);
-        let _ = tx.send(com());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(com));
+        if result.is_err() {
+            dlog!("ERROR", "local", "APPS-103 AppsFolder enumeration panicked");
+        }
+        let _ = tx.send(result.ok().flatten());
     });
     if spawned.is_err() {
         running.store(false, Ordering::SeqCst);
@@ -281,13 +294,18 @@ fn collect_sources(
     // The Start menu scan runs here while the shell enumerates.
     let lnk = lnk();
     match rx.recv_timeout(timeout) {
-        Ok(mut v) => {
+        Ok(Some(mut v)) => {
             v.extend(lnk);
             (v, true)
         }
+        Ok(None) => {
+            failed.store(true, Ordering::SeqCst);
+            (lnk, true)
+        }
         Err(_) => {
-            dlog!("WARN", "local", "APPS-102 AppsFolder enumeration timed out, using the Start menu only");
-            (lnk, false)
+            dlog!("WARN", "local", "APPS-102 AppsFolder enumeration timed out, using the Start menu only for this session");
+            failed.store(true, Ordering::SeqCst);
+            (lnk, true)
         }
     }
 }
@@ -295,7 +313,7 @@ fn collect_sources(
 /// Build the whole list: `(entries, complete)`. Never waits longer than [`COM_TIMEOUT`] for the shell.
 fn build_now() -> (Vec<AppEntry>, bool) {
     let started = Instant::now();
-    let (sources, complete) = collect_sources(&COM_RUNNING, COM_TIMEOUT, apps_folder_sources, || start_menu_links(&super::start_menu_roots()));
+    let (sources, complete) = collect_sources(&COM_RUNNING, &COM_FAILED, COM_TIMEOUT, apps_folder_sources, || start_menu_links(&super::start_menu_roots()));
     let entries = build_entries(sources);
     dlog!("INFO", "local", "apps cache: {} entries, complete={}, {} ms", entries.len(), complete, started.elapsed().as_millis());
     (entries, complete)
@@ -365,15 +383,6 @@ fn current() -> Vec<AppEntry> {
         }
     }
     entries
-}
-
-pub(super) fn warm_up() {
-    let _ = std::thread::Builder::new().name("local-apps-warm".into()).spawn(|| {
-        crate::debug_log::catch("local-apps-warm", || {
-            lower_priority();
-            rebuild();
-        });
-    });
 }
 
 pub(super) fn search(names: &[String], limit: usize) -> Result<Vec<AppHit>, String> {
@@ -503,33 +512,73 @@ mod tests {
     }
 
     #[test]
-    fn a_hung_apps_folder_does_not_block_the_build() {
+    fn a_hung_apps_folder_does_not_block_the_build_and_is_remembered() {
         static RUNNING: AtomicBool = AtomicBool::new(false);
+        static FAILED: AtomicBool = AtomicBool::new(false);
         let t = Instant::now();
         let (src, complete) = collect_sources(
             &RUNNING,
+            &FAILED,
             Duration::from_millis(150),
             || {
                 std::thread::sleep(Duration::from_secs(30));
-                vec![("Never".to_string(), Target::Aumid("Never.App".into()))]
+                Some(vec![("Never".to_string(), Target::Aumid("Never.App".into()))])
             },
             lnk_list,
         );
         assert!(t.elapsed() < Duration::from_secs(5), "build waited for the stuck enumeration");
-        assert!(!complete);
+        assert!(complete, "a remembered failure is final, not retried in the background");
+        assert!(FAILED.load(Ordering::SeqCst));
         assert_eq!(src.len(), 1);
         assert_eq!(src[0].0, "Calc"); // the Start menu list still works
-        // The stuck thread is still running: a second build does not start another one.
+        // No second enumeration is ever started this session.
         let t = Instant::now();
-        let (src, complete) = collect_sources(&RUNNING, Duration::from_secs(60), || panic!("second enumeration started"), lnk_list);
-        assert!(!complete && src.len() == 1 && t.elapsed() < Duration::from_secs(1));
+        let (src, complete) = collect_sources(&RUNNING, &FAILED, Duration::from_secs(60), || panic!("second enumeration started"), lnk_list);
+        assert!(complete && src.len() == 1 && t.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_stuck_previous_enumeration_is_not_stacked() {
+        static RUNNING: AtomicBool = AtomicBool::new(true);
+        static FAILED: AtomicBool = AtomicBool::new(false);
+        let (src, complete) = collect_sources(&RUNNING, &FAILED, Duration::from_secs(60), || panic!("started behind a stuck one"), lnk_list);
+        assert!(!complete && src.len() == 1);
+        assert!(!FAILED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_panicking_apps_folder_is_contained_and_remembered() {
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        static FAILED: AtomicBool = AtomicBool::new(false);
+        let (src, complete) = collect_sources(&RUNNING, &FAILED, Duration::from_secs(5), || panic!("shell extension blew up"), lnk_list);
+        assert!(complete && src.len() == 1);
+        assert!(FAILED.load(Ordering::SeqCst));
+        let (_, complete) = collect_sources(&RUNNING, &FAILED, Duration::from_secs(5), || panic!("retried"), lnk_list);
+        assert!(complete);
+    }
+
+    #[test]
+    fn a_failed_apps_folder_is_remembered() {
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        static FAILED: AtomicBool = AtomicBool::new(false);
+        let (_, complete) = collect_sources(&RUNNING, &FAILED, Duration::from_secs(5), || None, lnk_list);
+        assert!(complete && FAILED.load(Ordering::SeqCst));
+    }
+
+    /// Nothing builds the cache at startup: it stays empty until the first apps query.
+    #[test]
+    fn the_cache_is_built_lazily_not_at_startup() {
+        let c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        // Only `search()`/`current()` fill it; no test in this module calls them (the live probe is ignored).
+        assert!(c.entries.is_empty() && c.built.is_none());
     }
 
     #[test]
     fn a_finished_enumeration_comes_first_and_is_complete() {
         static RUNNING: AtomicBool = AtomicBool::new(false);
-        let (src, complete) = collect_sources(&RUNNING, Duration::from_secs(5), || vec![("Excel".to_string(), Target::Aumid("Ex.App".into()))], lnk_list);
-        assert!(complete);
+        static FAILED: AtomicBool = AtomicBool::new(false);
+        let (src, complete) = collect_sources(&RUNNING, &FAILED, Duration::from_secs(5), || Some(vec![("Excel".to_string(), Target::Aumid("Ex.App".into()))]), lnk_list);
+        assert!(complete && !FAILED.load(Ordering::SeqCst));
         assert_eq!(src.iter().map(|s| s.0.as_str()).collect::<Vec<_>>(), vec!["Excel", "Calc"]);
         // The thread ends and frees the flag, so the next build can enumerate again.
         let mut freed = false;

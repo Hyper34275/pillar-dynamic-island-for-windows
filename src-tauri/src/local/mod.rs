@@ -69,11 +69,6 @@ pub fn launch_app(key: &str) -> Result<(), String> {
     apps::launch(key)
 }
 
-/// Build the app cache in the background (called once at startup, low priority).
-pub fn warm_up() {
-    apps::warm_up();
-}
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct NoteHit {
     /// The note id (valid for `center::open(app, "note:<id>")`).

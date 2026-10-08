@@ -166,7 +166,11 @@ pub fn run() {
             calendar::start(handle.clone());
             center_ipc::start(handle.clone());
             backdrop::start(handle.clone());
-            search_bar::start(handle.clone());
+            // New in 1.0.12: a panic here must not stop the app from opening.
+            {
+                let h = handle.clone();
+                debug_log::catch("startup search bar", move || search_bar::start(h));
+            }
             first_run_welcome(&handle);
 
             // Registry read/write and the hook install handshake stay off the UI thread. Each step
@@ -174,7 +178,6 @@ pub fn run() {
             std::thread::spawn(move || {
                 debug_log::catch("startup autostart", || settings::sync_autostart(&handle));
                 debug_log::catch("startup fullscreen", || fullscreen::start(handle.clone()));
-                debug_log::catch("startup apps cache", local::warm_up);
             });
             Ok(())
         })
