@@ -1,3 +1,4 @@
+# SUPERSEDED: the product icon now comes from assets/brand/*.svg via scripts/make-brand-assets.cjs. This script draws the old black-pill icon.
 # Generates the 1024x1024 CompanyIsland source icon (black pill, white date dot and line).
 #
 # Usage:  powershell -File scripts/make-icon.ps1 [-Out app-icon.png]

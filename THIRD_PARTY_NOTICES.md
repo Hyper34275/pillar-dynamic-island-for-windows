@@ -7,6 +7,14 @@ The Smart Search glow was inspired by https://github.com/brunnolou/glowing (insp
 and an Apache-2.0 file was added and then removed (commit `970a83d`). Because the licence is unclear, **no code
 from Glowing was copied**. Our glow is an original implementation of the general idea (a rotating gradient ring).
 
+## Brand wordmark: Mr Dafoe (outlines only)
+
+The Yuval wordmark (`assets/brand/wordmark-b*.svg`, and the same path in `src/components/brand/paths.ts`, the installer images and the
+icon's Y) is an outline drawing derived from the **Mr Dafoe** font by Alejandro Paul (Sudtipos), Copyright (c) 2011 Alejandro
+Paul, with Reserved Font Name "Mr Dafoe". Mr Dafoe is licensed under the **SIL Open Font License 1.1**; the licence text is in
+`assets/brand/licenses/MrDafoe-OFL.txt`. Only vector outlines of the word "Yuval" are shipped, not the font file, and nothing is
+named "Mr Dafoe". Details and how the outlines were adjusted: `assets/brand/LOGO_NOTES.md`.
+
 ## Runtime dependencies (high level)
 
 Licences are as commonly published by each project; check the package itself for the authoritative text.

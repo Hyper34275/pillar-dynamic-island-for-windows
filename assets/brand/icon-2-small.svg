@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="Yuval">
+  <!-- Icon 2, small sizes (16 to 32 px): ink circle, bright aurora ring, bold near-white glowing Y. -->
+  <defs>
+    <linearGradient id="rim" gradientUnits="userSpaceOnUse" x1="80" y1="200" x2="940" y2="840"><stop offset="0" stop-color="#5FDCF5"/><stop offset="0.3" stop-color="#8C88FF"/><stop offset="0.58" stop-color="#D47DFF"/><stop offset="0.82" stop-color="#FF72DA"/><stop offset="1" stop-color="#FFBCD9"/></linearGradient>
+    <radialGradient id="ink" gradientUnits="userSpaceOnUse" cx="512" cy="360" r="560"><stop offset="0" stop-color="#1B1D44"/><stop offset="0.55" stop-color="#07070F"/><stop offset="1" stop-color="#000000"/></radialGradient>
+    <linearGradient id="yg" gradientUnits="userSpaceOnUse" x1="330" y1="230" x2="640" y2="800"><stop offset="0" stop-color="#FFFFFF"/><stop offset="0.5" stop-color="#F1E6FF"/><stop offset="1" stop-color="#FFE2F3"/></linearGradient>
+    <radialGradient id="halo" gradientUnits="userSpaceOnUse" cx="512" cy="520" r="330"><stop offset="0" stop-color="#C58CFF" stop-opacity="0.34"/><stop offset="1" stop-color="#C58CFF" stop-opacity="0"/></radialGradient>
+    <radialGradient id="pool" gradientUnits="userSpaceOnUse" cx="512" cy="940" r="420" gradientTransform="translate(512 940) scale(1 0.5) translate(-512 -940)"><stop offset="0" stop-color="#BF5AF2" stop-opacity="0.55"/><stop offset="1" stop-color="#5E5CE6" stop-opacity="0"/></radialGradient>
+    <clipPath id="c"><circle cx="512" cy="512" r="438"/></clipPath>
+  </defs>
+  <circle cx="512" cy="512" r="500" fill="url(#rim)"/>
+  <circle cx="512" cy="512" r="438" fill="url(#ink)"/>
+  <g clip-path="url(#c)"><ellipse cx="512" cy="940" rx="420" ry="210" fill="url(#pool)"/><circle cx="512" cy="520" r="330" fill="url(#halo)"/></g>
+  <g transform="translate(4 6) translate(512 512) scale(1) translate(-512 -512)" fill="none" stroke="#C58CFF" stroke-opacity="0.09" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M668 268C640 392 568 528 488 640C444 702 392 756 322 764" stroke-width="260"/>
+    <path d="M352 286C360 398 424 476 524 508" stroke-width="230"/>
+  </g><g transform="translate(4 6) translate(512 512) scale(1) translate(-512 -512)" fill="none" stroke="#C58CFF" stroke-opacity="0.09" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M668 268C640 392 568 528 488 640C444 702 392 756 322 764" stroke-width="200"/>
+    <path d="M352 286C360 398 424 476 524 508" stroke-width="170"/>
+  </g><g transform="translate(4 6) translate(512 512) scale(1) translate(-512 -512)" fill="none" stroke="#C58CFF" stroke-opacity="0.09" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M668 268C640 392 568 528 488 640C444 702 392 756 322 764" stroke-width="150"/>
+    <path d="M352 286C360 398 424 476 524 508" stroke-width="120"/>
+  </g><g transform="translate(4 6) translate(512 512) scale(1.02) translate(-512 -512)" fill="none" stroke="url(#yg)" stroke-opacity="1" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M668 268C640 392 568 528 488 640C444 702 392 756 322 764" stroke-width="142"/>
+    <path d="M352 286C360 398 424 476 524 508" stroke-width="114"/>
+  </g>
+</svg>
