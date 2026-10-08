@@ -1598,7 +1598,6 @@ pub fn prefetched_in(
 
 /// Smart search: the events of `[from, to)` from the prefetched copy when it is fresh and
 /// complete for that window, `None` when the question has to be read live.
-#[allow(dead_code)] // used by smart search (assistant)
 pub fn prefetched(from: DateTime<Utc>, to: DateTime<Utc>, only: Option<&[String]>) -> Option<RangeRead> {
     prefetched_in(&prefetch_cache(), Utc::now().timestamp_millis(), from, to, only)
 }
