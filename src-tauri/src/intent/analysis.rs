@@ -69,9 +69,9 @@ impl Analysis {
         if !matches!(i.decision, Decision::NoMatch) {
             self.unsupported = None;
         }
-        if i.slots.terms.is_empty() {
-            self.exact_terms = false;
-        }
+        // what the slots carry (a follow-up inherits them), and nothing without terms
+        self.exact_terms = (self.exact_terms || i.slots.exact_terms) && !i.slots.terms.is_empty();
+        self.shared_mailbox = i.slots.shared_mailbox || (self.shared_mailbox && matches!(i.decision, Decision::NoMatch));
     }
 }
 

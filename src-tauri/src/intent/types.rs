@@ -195,6 +195,12 @@ pub struct Slots {
     pub mail_to: Option<String>,
     /// `mail.compose`: the subject.
     pub mail_subject: Option<String>,
+    // ---- language signals (`intent/entities.rs`); kept by follow-ups ----
+    /// "המילה X", a quoted phrase, "בדיוק X": the terms are exact words. Whole-word hits first,
+    /// and the search is never widened.
+    pub exact_terms: bool,
+    /// "התיבה המשותפת" with no mailbox named: only the shared mailboxes.
+    pub shared_mailbox: bool,
 }
 
 /// One known name the engine can match against (real data, so nothing is invented).

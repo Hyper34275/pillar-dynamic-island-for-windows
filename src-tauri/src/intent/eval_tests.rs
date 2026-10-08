@@ -138,8 +138,9 @@ fn slot_ok(key: &str, v: &Value, i: &Interpretation, an: &Analysis) -> bool {
         "latest" => b(s.latest),
         "unread" => b(s.unread),
         "all_mailboxes" => b(s.all_mailboxes),
-        "shared_mailbox" => b(an.shared_mailbox),
-        "exact" => b(an.exact_terms),
+        // the slots, so a follow-up is checked to inherit them; the analysis has to agree
+        "shared_mailbox" => b(s.shared_mailbox) && s.shared_mailbox == an.shared_mailbox,
+        "exact" => b(s.exact_terms) && s.exact_terms == an.exact_terms,
         "follow_up" => b(i.follow_up),
         "limit" => s.limit.map(u64::from) == v.as_u64(),
         // every expected word is one of the alternatives of some group, and no extra groups

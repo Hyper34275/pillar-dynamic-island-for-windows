@@ -23,9 +23,13 @@ pub struct Signals {
 }
 
 impl Signals {
-    pub fn of(_interp: &Interpretation, an: &Analysis) -> Signals {
-        // later: `an.exact_terms || _interp.slots.exact_terms`, and the same for the shared mailbox
-        Signals { exact_terms: an.exact_terms, shared_mailbox: an.shared_mailbox, unsupported: an.unsupported }
+    pub fn of(interp: &Interpretation, an: &Analysis) -> Signals {
+        // the slots carry them across follow-ups ("רק מהתיבה המשותפת", then "ומאתמול?")
+        Signals {
+            exact_terms: an.exact_terms || interp.slots.exact_terms,
+            shared_mailbox: an.shared_mailbox || interp.slots.shared_mailbox,
+            unsupported: an.unsupported,
+        }
     }
 
     /// A request the app never carries out (change, send, install, switch off): no web search is

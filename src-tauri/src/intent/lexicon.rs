@@ -414,6 +414,10 @@ fn split_joined(lex: &Lexicon, t: &Token) -> Option<(Token, Token)> {
         let left: String = cs[..k].iter().collect();
         let right: String = cs[k..].iter().collect();
         let (l, r) = (Token::word(left), Token::word(right));
+        // "המחשב" is ה + מחשב, not הם + חשב: proclitic letters before a verb are its prefix
+        if cs[..k].iter().all(|c| stem::PREFIX_LETTERS.contains(c)) && lex.lookup(&r.norm).map_or(false, |h| h.concept.starts_with("V_")) {
+            continue;
+        }
         if lex.lookup(&l.norm).map_or(false, |h| strong(&h)) && super::numwords::is_number_word(r.norm.trim_start_matches('ב')) {
             return Some((l, r));
         }
@@ -573,7 +577,7 @@ pub fn unsupported_kind(norm: &str) -> &'static str {
         "translate"
     } else if has(&["הורד", "תוריד", "download", "install", "התקנ", "תתקינ"]) {
         "install"
-    } else if has(&["shutdown", "restart", "format", "wipe", "כבה", "תכבה"]) {
+    } else if has(&["shutdown", "restart", "format", "wipe", "כבה", "תכבה", "לכבות", "אתחל", "תאתחל", "לאתחל", "reboot"]) {
         "power"
     } else {
         "write"

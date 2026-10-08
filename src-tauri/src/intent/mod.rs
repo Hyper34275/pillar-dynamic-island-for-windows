@@ -86,7 +86,8 @@ fn lead_of(a: &[lexicon::Ann]) -> Lead {
     Lead::None
 }
 
-/// Understand `text`. Pure and deterministic for a given `now`.
+/// Understand `text`. Pure and deterministic for a given `now`. (The app calls [`analyze`].)
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> Interpretation {
     analyze(text, ctx, now, known).0
 }
@@ -381,6 +382,8 @@ fn build_slots(cap: CapId, o: &Own) -> Slots {
         caps::EMAIL_SEARCH | caps::EMAIL_OPEN => {
             s.sender = e.sender.clone();
             s.terms = terms_all();
+            s.exact_terms = e.exact;
+            s.shared_mailbox = e.shared_mailbox && e.mailbox.is_none() && !e.all_mailboxes;
             // "ההתכתבות עם דני": the person mail was exchanged with
             if s.sender.is_none() && e.with_names.len() == 1 {
                 s.sender = e.with_names.first().cloned();
@@ -395,6 +398,7 @@ fn build_slots(cap: CapId, o: &Own) -> Slots {
         }
         caps::FILES_SEARCH | caps::FILES_OPEN => {
             s.terms = terms_all();
+            s.exact_terms = e.exact;
             s.terms.extend(e.topic_nouns.iter().cloned());
             s.file_ext = o.ext.clone();
             s.latest = e.latest;
@@ -403,6 +407,7 @@ fn build_slots(cap: CapId, o: &Own) -> Slots {
         }
         caps::NOTES_SEARCH | caps::NOTES_OPEN => {
             s.terms = terms_all();
+            s.exact_terms = e.exact;
             s.terms.extend(e.topic_nouns.iter().cloned());
             s.latest = e.latest;
             s.limit = e.limit;
@@ -439,6 +444,7 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool, switch: Opt
         s.unread = false;
         s.mailbox = None;
         s.all_mailboxes = false;
+        s.shared_mailbox = false;
     }
     let calendar = cap.as_str().starts_with("calendar.");
     if o.dp.time.is_some() || o.dp.tod.is_some() {
@@ -475,10 +481,18 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool, switch: Opt
             if let Some(m) = &e.mailbox {
                 s.mailbox = Some(m.clone());
                 s.all_mailboxes = false;
+                s.shared_mailbox = false;
             }
             if e.all_mailboxes || e.dont_know {
                 s.all_mailboxes = true;
                 s.mailbox = None;
+                s.shared_mailbox = false;
+            }
+            // "רק מהתיבה המשותפת"
+            if e.shared_mailbox && e.mailbox.is_none() && !e.all_mailboxes {
+                s.shared_mailbox = true;
+                s.mailbox = None;
+                s.all_mailboxes = false;
             }
         }
         if e.latest {
@@ -501,6 +515,10 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool, switch: Opt
         }
         if o.replace_terms && !add.is_empty() {
             s.terms.clear();
+            s.exact_terms = false;
+        }
+        if e.exact && !add.is_empty() {
+            s.exact_terms = true;
         }
         for g in add {
             if !s.terms.contains(&g) {
@@ -805,6 +823,33 @@ mod tests {
         let i = interpret("תחפש לי את המייל עם המילה חושב", &Ctx::default(), now(), &known);
         assert_eq!(i.decision, Decision::Execute { cap: caps::EMAIL_SEARCH });
         assert!(i.slots.mailbox.is_none() && !i.slots.all_mailboxes);
+    }
+
+    #[test]
+    fn refusals_say_why() {
+        let why = |t: &str| analyze(t, &Ctx::default(), now(), &Known::default()).1.unsupported;
+        assert_eq!(why("תמחק את המייל"), Some("write"));
+        assert_eq!(why("תכבה את המחשב"), Some("power"));
+        assert_eq!(why("מה יש לי היום"), None);
+    }
+
+    #[test]
+    fn exact_and_shared_carry_into_follow_ups() {
+        let mut ctx = Ctx::default();
+        let first = interpret("יש לי מייל עם המילה חושב?", &ctx, now(), &Known::default());
+        assert!(first.slots.exact_terms);
+        ctx.remember(&first, now().timestamp_millis());
+        let next = interpret("רק מהתיבה המשותפת", &ctx, now() + Duration::seconds(5), &Known::default());
+        assert!(next.follow_up && next.slots.exact_terms && next.slots.shared_mailbox);
+        ctx.remember(&next, (now() + Duration::seconds(5)).timestamp_millis());
+        let again = interpret("ומאתמול?", &ctx, now() + Duration::seconds(10), &Known::default());
+        assert!(again.slots.shared_mailbox && again.slots.exact_terms, "{:?}", again.slots);
+        // naming a mailbox replaces "shared"
+        let named = interpret("רק בתיבה של מכירות", &ctx, now() + Duration::seconds(10), &Known {
+            mailboxes: vec![KnownName { id: "mb2".into(), name: "מכירות".into() }],
+            ..Known::default()
+        });
+        assert!(!named.slots.shared_mailbox && named.slots.mailbox.as_deref() == Some("mb2"));
     }
 
     #[test]
