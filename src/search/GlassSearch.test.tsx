@@ -621,6 +621,24 @@ describe("the glass sheet: height and the click-through region", () => {
     expect(regionCalls(api)).toEqual([74]);
   });
 
+  it("a growth cancelled before the window answered does not leave its taller region behind", async () => {
+    vi.useFakeTimers();
+    const api = makeApi();
+    mount(api);
+    await act(async () => {});
+    api.region.mockImplementation(() => new Promise<void>(() => {})); // the window has not answered yet
+    await ask(); // the answer wants 375: the window was told, the sheet waits at 74
+    expect(last(regionCalls(api))).toBe(375);
+    expect(sheet().style.height).toBe("74px");
+    type("שאלה חדשה"); // the answer gives way to the field before the sheet ever grew
+    expect(sheet().style.height).toBe("74px");
+    act(() => {
+      vi.advanceTimersByTime(HEIGHT_MS + 100);
+    });
+    await act(async () => {});
+    expect(last(regionCalls(api))).toBe(74); // the window is told the sheet is still just the field
+  });
+
   it("measures the real layout where it can (a measured height beats the estimate)", async () => {
     Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
       configurable: true,

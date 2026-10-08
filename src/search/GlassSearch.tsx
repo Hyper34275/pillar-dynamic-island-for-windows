@@ -320,14 +320,17 @@ export function GlassSearch(props: GlassSearchProps) {
   }, [target]);
 
   // The window follows a shrink once the sheet has finished it. (The size at the start, and again at
-  // every show, is reported by the effect below.)
+  // every show, is reported by the effect below.) Also when a growth was cancelled before the window
+  // answered: the region was already told the taller size, the sheet never grew into it, and without
+  // this it would stay taller than the sheet (a dead transparent area). Not while a growth is pending
+  // (`target` differs): that one is on its way.
   useEffect(() => {
-    if (reported.current === null || reported.current === applied) return;
+    if (reported.current === null || reported.current === applied || target !== applied) return;
     const wait = reducedMotion || !armed ? 0 : HEIGHT_MS + 40;
     const id = window.setTimeout(() => void report(applied), wait);
     return () => window.clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applied, reducedMotion, armed]);
+  }, [applied, target, reducedMotion, armed]);
 
   // A window shown again starts from what the backend reset it to (the field alone): say where we are.
   useEffect(() => {
