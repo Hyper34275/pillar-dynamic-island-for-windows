@@ -35,6 +35,14 @@ struct Fake {
     ranges: Mutex<Vec<Option<Vec<String>>>>,
     windows: Mutex<Vec<(DateTime<Utc>, DateTime<Utc>)>>,
     fb: Mutex<Option<Result<FreeBusy, String>>>,
+    /// Every name the address book was asked about, in order.
+    fb_asked: Mutex<Vec<String>>,
+    /// When set, only this spelling resolves; any other name is "not found".
+    fb_only: Option<String>,
+    /// Organizers the island has seen (feeds `Known::people`).
+    people: Vec<String>,
+    /// Calendars a range read reports as unreadable (code per id).
+    range_failed: Vec<(String, String)>,
     files: Vec<FileHit>,
     notes: Vec<NoteHit>,
     opened: Mutex<Vec<String>>,
@@ -56,14 +64,18 @@ impl Sources for Fake {
         self.opened.lock().unwrap().push(format!("mail:{key}"));
         Ok(())
     }
-    fn free_busy(&self, _name: &str, _from: DateTime<Utc>, _to: DateTime<Utc>) -> Result<FreeBusy, String> {
+    fn free_busy(&self, name: &str, _from: DateTime<Utc>, _to: DateTime<Utc>) -> Result<FreeBusy, String> {
+        self.fb_asked.lock().unwrap().push(name.to_string());
+        if self.fb_only.as_deref().is_some_and(|only| only != name) {
+            return Ok(FreeBusy { resolved: false, display_name: None, blocks: Vec::new() });
+        }
         self.fb.lock().unwrap().clone().unwrap_or_else(|| Err("OUTLOOK-101: not running".into()))
     }
     fn calendars(&self) -> Vec<CalendarSourceDto> {
         self.cals.clone()
     }
     fn people(&self) -> Vec<String> {
-        Vec::new()
+        self.people.clone()
     }
     fn query_range(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
         self.windows.lock().unwrap().push((from, to));
@@ -71,7 +83,7 @@ impl Sources for Fake {
         if let Some(e) = &self.range_err {
             return Err(e.clone());
         }
-        Ok(RangeRead { events: self.events.clone(), truncated: false, failed: Vec::new() })
+        Ok(RangeRead { events: self.events.clone(), truncated: false, failed: self.range_failed.clone() })
     }
     fn prefetched(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<&[String]>) -> Option<RangeRead> {
         self.prefetch_asked.lock().unwrap().push(only.map(|o| o.to_vec()));
@@ -312,7 +324,9 @@ fn free_busy_failure_is_an_error_card_with_code_and_advice() {
     let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, slots));
     assert_eq!(card.phase, CardPhase::Error);
     assert_eq!(card.error_code.as_deref(), Some("OUTLOOK-101"));
-    assert_eq!(card.title, "לא מצאתי יומן של דנה — פתח אותו ב-Outlook");
+    // names the person and says what to do (here: Outlook is not running), instead of "not found"
+    assert_eq!(card.title, "אין לי גישה ליומן של דנה");
+    assert_eq!(card.summary, "Outlook לא פועל. פתח אותו ונסה שוב");
 }
 
 #[test]
@@ -985,4 +999,490 @@ fn a_sticky_note_hit_says_where_it_is_from_and_is_openable() {
     // a click reaches open_note with the hit id (the live source launches Sticky Notes for the prefix)
     e.open(&f, "qs", &card.items[0].id, now().timestamp_millis()).unwrap();
     assert_eq!(f.opened.lock().unwrap().as_slice(), ["note:sticky:3f2a-guid"]);
+}
+
+// ----- person: whose calendar, and always an answer --------------------------------------------
+
+/// The user's own calendar (never offered as "someone else's").
+fn primary(id: &str, name: &str) -> CalendarSourceDto {
+    CalendarSourceDto { group: SourceGroup::My, kind: SourceKind::Primary, ..cal(id, name) }
+}
+
+fn blk(from: DateTime<Local>, to: DateTime<Local>, status: FreeBusyStatus) -> FreeBusyBlock {
+    FreeBusyBlock { start: from.with_timezone(&Utc), end: to.with_timezone(&Utc), status }
+}
+
+/// The address book resolves the name and reports these blocks.
+fn fb_resolves(f: &Fake, blocks: Vec<FreeBusyBlock>) {
+    *f.fb.lock().unwrap() = Some(Ok(FreeBusy { resolved: true, display_name: Some("איציק כהן".into()), blocks }));
+}
+
+/// The address book answers, but not with one person.
+fn fb_unresolved(f: &Fake) {
+    *f.fb.lock().unwrap() = Some(Ok(FreeBusy { resolved: false, display_name: None, blocks: Vec::new() }));
+}
+
+fn person_slots(name: &str, time: Option<TimeSpec>) -> Slots {
+    Slots { person: Some(name.into()), time, ..Slots::default() }
+}
+
+/// Sunday 7 to Saturday 13 March 2027 (now is Wednesday the 10th).
+fn this_week() -> TimeSpec {
+    TimeSpec { from: at(7, 0, 0), to: at(14, 0, 0), grain: Grain::Week }
+}
+
+fn hour_range(day: u32, h: u32, m: u32) -> TimeSpec {
+    TimeSpec { from: at(day, h, m), to: at(day, h, m) + Duration::hours(1), grain: Grain::Range }
+}
+
+/// Itzik has a shared calendar with two meetings today.
+fn itzik_today() -> Fake {
+    Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-itzik", "איציק כהן")],
+        events: vec![event("t1", "סטטוס", at(10, 14, 0), 60, BusyStatus::Busy), event("t2", "סיכום", at(10, 16, 0), 30, BusyStatus::Busy)],
+        ..Fake::default()
+    }
+}
+
+/// Three calendars fit "איציק".
+fn three_itziks() -> Fake {
+    let mut f = itzik_fake();
+    f.cals = vec![primary("c-me", "היומן שלי"), cal("c-i1", "איציק כהן"), cal("c-i2", "איציק - פרויקטים"), cal("c-i3", "איציק לוי")];
+    f
+}
+
+// case 1: one calendar fits
+
+#[test]
+fn a_shared_calendar_without_a_time_means_today() {
+    let (e, f) = (Engine::new(), itzik_today());
+    let card = engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", None)));
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(card.title, "היום יש לאיציק 2 פגישות");
+    assert_eq!(card.summary, "14:00 · 16:00");
+    assert_eq!(f.windows.lock().unwrap().as_slice(), &[(at(10, 0, 0).with_timezone(&Utc), at(11, 0, 0).with_timezone(&Utc))]);
+    assert_eq!(f.ranges.lock().unwrap().as_slice(), &[Some(vec!["c-itzik".to_string()])]);
+}
+
+#[test]
+fn a_shared_calendar_for_the_week_puts_the_day_on_every_time() {
+    let mut f = itzik_today();
+    f.events.push(event("t3", "מחר", at(11, 9, 0), 30, BusyStatus::Busy));
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(this_week()))));
+    assert_eq!(card.title, "השבוע יש לאיציק 3 פגישות");
+    assert_eq!(card.summary, "10/03 14:00 · 10/03 16:00 · 11/03 09:00");
+    // one meeting in a week still says which day
+    let one = Fake { events: vec![event("t", "אחד", at(11, 9, 0), 30, BusyStatus::Busy)], ..itzik_today() };
+    let card = engine_run(&Engine::new(), &one, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(this_week()))));
+    assert_eq!(card.summary, "11/03 09:00");
+}
+
+#[test]
+fn a_prefetch_that_covers_the_default_day_answers_without_reading_outlook() {
+    let mut f = itzik_today();
+    itzik_prefetch(&mut f, 9, 20, Vec::new());
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", None)));
+    assert_eq!(card.title, "היום יש לאיציק 2 פגישות");
+    assert!(f.ranges.lock().unwrap().is_empty(), "the downloaded schedule covers today");
+    assert_eq!(f.prefetch_asked.lock().unwrap().as_slice(), &[Some(vec!["c-itzik".to_string()])]);
+}
+
+#[test]
+fn an_english_question_about_a_hebrew_calendar_gets_an_english_answer() {
+    let f = itzik_today();
+    let mut i = exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("Itzik", None));
+    i.lang = Lang::En;
+    let card = engine_run(&Engine::new(), &f, "q1", &i);
+    assert_eq!(card.title, "Itzik has 2 meetings today");
+    assert_eq!(card.lang, Lang::En);
+    assert_eq!(f.ranges.lock().unwrap().as_slice(), &[Some(vec!["c-itzik".to_string()])]);
+}
+
+// case 2: several calendars fit
+
+#[test]
+fn several_calendars_for_a_name_ask_which_one_and_a_typed_reply_answers() {
+    let (e, f) = (Engine::new(), three_itziks());
+    let card = engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Choices);
+    assert_eq!(card.question.as_deref(), Some("איזה יומן של איציק?"));
+    let labels: Vec<_> = card.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["איציק כהן", "איציק - פרויקטים", "איציק לוי"]);
+    assert!(f.ranges.lock().unwrap().is_empty(), "nothing is read before the user chooses");
+
+    let ms = now().timestamp_millis();
+    // the bare name is not an answer; a distinguishing word and a number are
+    assert!(matches!(e.route("איציק", ms), Route::New));
+    assert!(matches!(e.route("2", ms), Route::Choose { option_id, .. } if option_id == "cal:c-i2"));
+    let Route::Choose { query_id, option_id } = e.route("לוי", ms) else { panic!("a word of the name must choose it") };
+    assert_eq!((query_id.as_str(), option_id.as_str()), ("q1", "cal:c-i3"));
+
+    let answered = e.choose(&f, &query_id, &option_id, false, now()).unwrap();
+    assert_eq!(answered.phase, CardPhase::Answer);
+    assert_eq!(answered.title, "מחר יש לאיציק לוי 3 פגישות", "the answer names the calendar that was picked");
+    assert_eq!(f.ranges.lock().unwrap().last().unwrap(), &Some(vec!["c-i3".to_string()]));
+}
+
+#[test]
+fn after_picking_a_calendar_a_follow_up_stays_on_it() {
+    let (e, f) = (Engine::new(), three_itziks());
+    // real understanding: "איציק" fits three calendars, so the intent asks whose
+    let asked = e.submit(&f, "מה יש לאיציק ביומן מחר?", "q1", now());
+    assert_eq!(asked.phase, CardPhase::Choices, "{asked:?}");
+    assert_eq!(asked.choices.len(), 3);
+    let picked = e.choose(&f, "q1", "cal:c-i3", false, now()).unwrap();
+    assert_eq!(picked.title, "מחר יש לאיציק לוי 3 פגישות");
+    // "and the day after?" goes on with that calendar, it does not ask again
+    let next = e.submit(&f, "ומה מחרתיים?", "q2", now());
+    assert_eq!(next.phase, CardPhase::Answer, "{next:?}");
+    assert!(next.follow_up);
+    assert!(next.title.contains("לאיציק לוי"), "{}", next.title);
+    assert_eq!(f.ranges.lock().unwrap().last().unwrap(), &Some(vec!["c-i3".to_string()]));
+}
+
+#[test]
+fn a_whose_calendar_clarification_is_answered_with_the_calendars() {
+    let e = Engine::new();
+    let f = three_itziks();
+    let clarify = |slots: Slots| interp(Decision::Clarify { ask: AskKind::Person, cap: Some(caps::CALENDAR_LIST_EVENTS) }, slots);
+    // the name fits three calendars: those are the buttons
+    let card = engine_run(&e, &f, "q1", &clarify(person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Choices);
+    assert_eq!(card.choices.len(), 3);
+    // no name (several people were named): the other calendars, never the user's own
+    let g = Fake { cals: vec![primary("c-me", "היומן שלי"), cal("c-d", "דנה לוי"), cal("c-s", "צוות מכירות")], ..Fake::default() };
+    let card = engine_run(&e, &g, "q2", &clarify(Slots::default()));
+    assert_eq!(card.phase, CardPhase::Choices);
+    assert_eq!(card.question.as_deref(), Some("של מי היומן?"));
+    assert_eq!(card.choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["דנה לוי", "צוות מכירות"]);
+    // nothing to offer: the plain question
+    let h = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    let card = engine_run(&e, &h, "q3", &clarify(Slots::default()));
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(card.question.as_deref(), Some("של מי היומן?"));
+    assert!(card.choices.is_empty());
+}
+
+#[test]
+fn a_calendar_named_exactly_like_the_person_wins_over_longer_names() {
+    let cals = vec![cal("a", "איציק כהן - פרויקטים"), cal("b", "איציק כהן"), cal("c", "איציק לוי")];
+    assert_eq!(exec::match_calendars("איציק כהן", &cals).iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["b"]);
+    // a first name alone still fits all three
+    assert_eq!(exec::match_calendars("איציק", &cals).len(), 3);
+    assert_eq!(exec::owner_name("יומן - איציק כהן"), "איציק כהן");
+    assert_eq!(exec::owner_name("Calendar - Dana Levi"), "Dana Levi");
+    assert_eq!(exec::owner_name("איציק - פרויקטים"), "איציק - פרויקטים");
+    assert_eq!(exec::owner_name("Calendar"), "Calendar");
+}
+
+// case 3: no calendar, but the address book knows the name
+
+#[test]
+fn the_address_book_answers_with_busy_times_and_says_it_sees_no_titles() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_resolves(
+        &f,
+        vec![
+            blk(at(11, 10, 0), at(11, 11, 0), FreeBusyStatus::Busy),
+            blk(at(11, 12, 0), at(11, 13, 0), FreeBusyStatus::Free),
+            blk(at(11, 14, 0), at(11, 15, 30), FreeBusyStatus::Busy),
+        ],
+    );
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(card.title, "מחר יש לאיציק 2 חלונות תפוסים");
+    assert_eq!(card.summary, "תפוס: 10:00–11:00 · 14:00–15:30\nאני רואה רק זמנים תפוסים, לא את שמות הפגישות.");
+    assert_eq!(card.items.iter().map(|i| i.title.as_str()).collect::<Vec<_>>(), ["תפוס 10:00–11:00", "תפוס 14:00–15:30"]);
+    assert!(card.items.iter().all(|i| i.kind == ItemKind::Info && !i.openable));
+    assert_eq!(f.fb_asked.lock().unwrap().as_slice(), &["איציק".to_string()]);
+    assert!(f.ranges.lock().unwrap().is_empty());
+}
+
+#[test]
+fn busy_times_for_a_week_carry_their_days_and_say_tentative() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_resolves(&f, vec![blk(at(10, 15, 0), at(10, 16, 0), FreeBusyStatus::Busy), blk(at(11, 10, 0), at(11, 11, 0), FreeBusyStatus::Tentative)]);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(this_week()))));
+    assert_eq!(card.title, "השבוע יש לאיציק 2 חלונות תפוסים");
+    assert!(card.summary.starts_with("תפוס: 10/03 15:00–16:00 · 11/03 10:00–11:00 (אולי)"), "{}", card.summary);
+    // nothing busy: free, and still labelled as free/busy only
+    let g = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_resolves(&g, Vec::new());
+    let card = engine_run(&Engine::new(), &g, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.title, "מחר היומן של איציק פנוי");
+    assert!(card.summary.contains("לא את שמות הפגישות"));
+}
+
+#[test]
+fn another_spelling_of_the_name_is_tried_when_the_first_does_not_resolve() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], fb_only: Some("יצחק".into()), ..Fake::default() };
+    fb_resolves(&f, vec![blk(at(11, 10, 0), at(11, 11, 0), FreeBusyStatus::Busy)]);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Answer, "{card:?}");
+    assert_eq!(f.fb_asked.lock().unwrap().as_slice(), &["איציק".to_string(), "יצחק".to_string()]);
+    // the answer still speaks of the name the user used
+    assert_eq!(card.title, "מחר יש לאיציק חלון תפוס אחד");
+}
+
+#[test]
+fn a_calendar_that_cannot_be_read_falls_back_to_free_busy_then_says_why() {
+    let mk = || Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-itzik", "איציק כהן")],
+        events: Vec::new(),
+        range_failed: vec![("c-itzik".into(), "CAL-SHARED-101".into())],
+        ..Fake::default()
+    };
+    let slots = || person_slots("איציק", Some(tomorrow()));
+    let f = mk();
+    fb_resolves(&f, vec![blk(at(11, 9, 0), at(11, 10, 0), FreeBusyStatus::Busy)]);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, slots()));
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(card.title, "מחר יש לאיציק חלון תפוס אחד");
+    assert!(card.summary.contains("לא את שמות הפגישות"));
+
+    let g = mk();
+    fb_unresolved(&g);
+    let card = engine_run(&Engine::new(), &g, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, slots()));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.error_code.as_deref(), Some("CAL-SHARED-101"));
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert_eq!(card.summary, "היומן נמצא ב-Outlook, אבל אין לי הרשאה לקרוא אותו. בקש מהבעלים לשתף אותו איתך");
+    assert!(card.choices.is_empty(), "the calendar is known: no other one is offered");
+}
+
+#[test]
+fn a_calendar_that_is_open_but_unreachable_is_not_told_to_be_added_again() {
+    // CAL-SHARED-103: the calendar is in Outlook, its server cannot be reached. "Add the calendar"
+    // would be wrong advice, and no other calendars are offered for a problem that is not the name.
+    let f = Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-itzik", "איציק כהן"), cal("c-dana", "דנה לוי")],
+        events: Vec::new(),
+        range_failed: vec![("c-itzik".into(), "CAL-SHARED-103".into())],
+        ..Fake::default()
+    };
+    fb_unresolved(&f);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.error_code.as_deref(), Some("CAL-SHARED-103"));
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert_eq!(card.summary, "Outlook לא הגיב בזמן. נסה שוב בעוד רגע");
+    assert!(card.choices.is_empty());
+}
+
+// case 4: nothing resolves
+
+#[test]
+fn nothing_resolves_so_the_card_names_the_person_and_says_how_to_fix_it() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_unresolved(&f);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert_eq!(card.summary, "כדי שאוכל לבדוק, פתח ב-Outlook את היומן הזה (הוסף יומן ← מפנקס הכתובות)");
+    assert_eq!(card.error_code.as_deref(), Some("OUTLOOK-107"));
+    // the nickname and a Latin spelling were tried before giving up, and no more than three
+    let asked = f.fb_asked.lock().unwrap().clone();
+    assert_eq!(&asked[..2], &["איציק".to_string(), "יצחק".to_string()]);
+    assert!(asked.len() <= 3, "{asked:?}");
+    assert!(!card.title.contains("לא יודע") && !card.title.contains("אפשר לשאול"), "never the generic answer");
+}
+
+#[test]
+fn the_known_calendars_are_offered_when_the_person_has_none() {
+    let e = Engine::new();
+    let mut f = Fake { cals: vec![primary("c-me", "היומן שלי"), cal("c-dana", "דנה לוי"), cal("c-team", "צוות מכירות")], ..Fake::default() };
+    f.events = vec![event("e1", "סטטוס", at(11, 9, 0), 60, BusyStatus::Busy)];
+    fb_unresolved(&f);
+    let card = engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Choices);
+    assert_eq!(card.question.as_deref(), Some("אין לי גישה ליומן של איציק. לבדוק אחד מהיומנים האלה?"));
+    assert_eq!(card.choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["דנה לוי", "צוות מכירות"]);
+    assert!(card.summary.contains("הוסף יומן ← מפנקס הכתובות"), "{}", card.summary);
+    // a typed "דנה" picks the same button
+    assert!(matches!(e.route("דנה", now().timestamp_millis()), Route::Choose { option_id, .. } if option_id == "cal:c-dana"));
+    // picking one answers about that calendar
+    let picked = e.choose(&f, "q1", "cal:c-dana", false, now()).unwrap();
+    assert_eq!(picked.phase, CardPhase::Answer);
+    assert_eq!(picked.title, "מחר יש לדנה לוי פגישה אחת");
+    assert!(matches!(e.route("דנה", now().timestamp_millis()), Route::New), "answered: nothing is pending any more");
+}
+
+#[test]
+fn offline_or_not_exchange_is_the_same_honest_answer() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    *f.fb.lock().unwrap() = Some(Err("MAIL-109: free/busy not available".into()));
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.error_code.as_deref(), Some("MAIL-109"));
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert!(card.summary.contains("הוסף יומן ← מפנקס הכתובות"));
+    // a failed lookup is not retried under other spellings
+    assert_eq!(f.fb_asked.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn when_outlook_itself_is_the_problem_that_is_what_the_card_says() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי"), cal("c-dana", "דנה לוי")], ..Fake::default() };
+    // Fake::default(): the address book fails with OUTLOOK-101
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert_eq!(card.summary, "Outlook לא פועל. פתח אותו ונסה שוב");
+    assert!(card.choices.is_empty(), "other calendars would not help while Outlook is down");
+    // a calendar read that fails the same way
+    let g = Fake { cals: vec![cal("c-itzik", "איציק כהן")], range_err: Some("OUTLOOK-109: no answer".into()), ..Fake::default() };
+    let card = engine_run(&Engine::new(), &g, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.error_code.as_deref(), Some("OUTLOOK-109"));
+    assert_eq!(card.summary, "Outlook לא הגיב בזמן. נסה שוב בעוד רגע");
+}
+
+#[test]
+fn an_english_dead_end_is_english() {
+    let f = Fake { cals: vec![primary("c-me", "My calendar")], ..Fake::default() };
+    fb_unresolved(&f);
+    let mut i = exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("Dana", Some(tomorrow())));
+    i.lang = Lang::En;
+    let card = engine_run(&Engine::new(), &f, "q1", &i);
+    assert_eq!(card.title, "I can't access Dana's calendar");
+    assert_eq!(card.summary, "To let me check, open that calendar in Outlook (Add Calendar → From Address Book)");
+}
+
+#[test]
+fn asking_for_a_shared_calendar_that_is_not_there_says_so_too() {
+    let e = Engine::new();
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    let card = engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_RESOLVE_SHARED, person_slots("איציק", None)));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert!(card.summary.contains("הוסף יומן ← מפנקס הכתובות"));
+    let g = itzik_today();
+    let card = engine_run(&e, &g, "q2", &exec_cap(caps::CALENDAR_RESOLVE_SHARED, person_slots("איציק", None)));
+    assert_eq!(card.title, "מצאתי את היומן של איציק");
+    assert_eq!(card.items[0].title, "איציק כהן");
+}
+
+// case 5: a person and availability
+
+#[test]
+fn is_a_person_free_at_an_hour_is_a_plain_yes_or_no() {
+    let e = Engine::new();
+    let f = itzik_fake(); // 09:00-10:00, 11:30-12:00, 14:00-15:00 tomorrow
+    let ask = |h, m| exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(hour_range(11, h, m))));
+    let free = engine_run(&e, &f, "q1", &ask(16, 0));
+    assert_eq!(free.title, "היומן של איציק פנוי מחר 16:00–17:00");
+    assert_eq!(free.summary, "");
+    let busy = engine_run(&e, &f, "q2", &ask(14, 0));
+    assert_eq!(busy.title, "היומן של איציק תפוס מחר 14:00–15:00");
+    assert_eq!(busy.summary, "תפוס: 14:00–15:00");
+    // half in the way: busy, with what is left of the hour
+    let part = engine_run(&e, &f, "q3", &ask(14, 30));
+    assert_eq!(part.title, "היומן של איציק תפוס מחר 14:30–15:30");
+    assert_eq!(part.summary, "תפוס: 14:00–15:00\nפנוי: 15:00–15:30");
+    // the meeting itself is listed (this is a calendar the user can read)
+    assert!(busy.items.iter().any(|i| i.title == "סיכום"), "{:?}", busy.items);
+}
+
+#[test]
+fn a_moment_says_which_day_it_is() {
+    let f = itzik_fake();
+    let instant = TimeSpec { from: at(11, 15, 0), to: at(11, 16, 0), grain: Grain::Instant };
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(instant))));
+    assert_eq!(card.title, "היומן של איציק פנוי מחר בשעה 15:00");
+    let mut en = exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("Dana", Some(TimeSpec { from: at(11, 14, 30), to: at(11, 15, 30), grain: Grain::Instant })));
+    en.lang = Lang::En;
+    let dana = Fake { cals: vec![cal("c1", "Dana Levi")], ..itzik_fake() };
+    let card = engine_run(&Engine::new(), &dana, "q2", &en);
+    assert_eq!(card.title, "Dana's calendar is busy tomorrow at 14:30");
+}
+
+#[test]
+fn a_window_with_little_left_is_still_a_when_question_not_a_yes_or_no() {
+    // now is Wednesday 12:00: of 11:00-13:00 only the last hour is ahead, yet it was asked as a
+    // two-hour stretch, so the answer lists the free time instead of judging one hour
+    let f = Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-itzik", "איציק כהן")],
+        events: vec![event("t1", "סיכום", at(10, 12, 30), 30, BusyStatus::Busy)],
+        ..Fake::default()
+    };
+    let window = TimeSpec { from: at(10, 11, 0), to: at(10, 13, 0), grain: Grain::Range };
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(window))));
+    assert_eq!(card.title, "היום 11:00–13:00 יש חלונות פנויים לאיציק");
+    assert_eq!(card.summary, "פנוי: 12:00–12:30");
+}
+
+#[test]
+fn when_is_a_person_free_this_week_lists_what_is_still_ahead_and_no_weekend() {
+    let e = Engine::new();
+    let mut f = itzik_today();
+    f.events.push(event("t3", "מחר", at(11, 9, 0), 60, BusyStatus::Busy));
+    let card = engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(this_week()))));
+    assert_eq!(card.title, "השבוע יש חלונות פנויים לאיציק");
+    // now is Wednesday 12:00: nothing before it, and Friday and Saturday are not offered
+    assert_eq!(card.summary, "פנוי: 10/03 12:00–14:00 · 10/03 15:00–16:00 · 10/03 16:30–18:00 · 11/03 08:00–09:00 · …");
+    let r = e.results("q1", now().timestamp_millis()).unwrap();
+    let slots: Vec<_> = r.groups.iter().filter(|g| g.kind == "availability").flat_map(|g| g.items.iter()).collect();
+    assert_eq!(slots.len(), 5);
+    assert_eq!(slots[0].time, Some(at(10, 12, 0).timestamp_millis()));
+    assert!(slots.iter().all(|s| s.time.unwrap() >= now().timestamp_millis()));
+    assert!(slots.iter().all(|s| {
+        let day = Local.timestamp_millis_opt(s.time.unwrap()).unwrap().date_naive();
+        day < at(12, 0, 0).date_naive()
+    }));
+}
+
+#[test]
+fn availability_through_the_address_book_is_labelled_free_busy_only() {
+    let f = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_resolves(&f, vec![blk(at(11, 14, 0), at(11, 15, 0), FreeBusyStatus::Busy)]);
+    let e = Engine::new();
+    let day = engine_run(&e, &f, "q1", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(day.title, "מחר יש חלונות פנויים לאיציק");
+    assert!(day.summary.starts_with("פנוי: 08:00–14:00 · 15:00–18:00"), "{}", day.summary);
+    assert!(day.summary.contains("לא את שמות הפגישות"));
+    let hour = engine_run(&e, &f, "q2", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(hour_range(11, 14, 0)))));
+    assert_eq!(hour.title, "היומן של איציק תפוס מחר 14:00–15:00");
+    assert!(hour.summary.contains("לא את שמות הפגישות"));
+    // and with nothing to ask the address book about, the honest answer
+    let g = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_unresolved(&g);
+    let none = engine_run(&e, &g, "q3", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(none.title, "אין לי גישה ליומן של איציק");
+}
+
+// the real intent engine in front of it
+
+#[test]
+fn end_to_end_the_original_question_about_a_calendar_of_a_colleague() {
+    let e = Engine::new();
+    let f = itzik_today();
+    let card = e.submit(&f, "תבדוק את מה יש ביומן של איציק", "q1", now());
+    assert_eq!(card.phase, CardPhase::Answer, "{card:?}");
+    assert_eq!(card.title, "היום יש לאיציק 2 פגישות");
+    // the same question when he has no calendar and the address book does not know him
+    let g = Fake { cals: vec![primary("c-me", "היומן שלי")], ..Fake::default() };
+    fb_unresolved(&g);
+    let card = e.submit(&g, "תבדוק את מה יש ביומן של איציק", "q2", now());
+    assert_ne!(card.title, "אפשר לשאול למשל: מה יש לי היום?");
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק", "{card:?}");
+    // availability for the week, and for an hour
+    let card = e.submit(&f, "מתי איציק פנוי השבוע", "q3", now());
+    assert_eq!(card.title, "השבוע יש חלונות פנויים לאיציק", "{card:?}");
+    let card = e.submit(&f, "האם איציק פנוי מחר ב-15:00", "q4", now());
+    assert_eq!(card.title, "היומן של איציק פנוי מחר 15:00–16:00", "{card:?}");
+}
+
+// Known: what the intent engine is told about the people
+
+#[test]
+fn known_people_are_the_calendar_owners_then_the_organizers() {
+    let birthdays = CalendarSourceDto { kind: SourceKind::Personal, group: SourceGroup::My, ..cal("c-b", "ימי הולדת") };
+    let f = Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-i", "איציק כהן"), cal("c-d", "יומן - דנה לוי"), birthdays],
+        people: vec!["Avi Levi".into(), "איציק כהן".into(), "  ".into(), "Dana  Levi".into()],
+        ..Fake::default()
+    };
+    let known = known_from(&f);
+    assert_eq!(known.people, vec!["איציק כהן", "דנה לוי", "Avi Levi", "Dana  Levi"]);
+    assert_eq!(known.calendars.len(), 4);
+    assert_eq!(known.calendars[1], KnownName { id: "c-i".into(), name: "איציק כהן".into() });
 }

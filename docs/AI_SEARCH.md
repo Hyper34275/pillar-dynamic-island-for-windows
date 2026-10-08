@@ -146,11 +146,15 @@ The intent engine is pure Rust with no dependencies, and its lexicon is compiled
 **Calendar**
 - Default source: the active calendars through `calendar::query_range`.
 - **A person** ("מה יש לאיציק ביומן מחר?"):
-  1. Match `name_variants(person)` against `calendar::known_sources` names. These are the calendars the user already has in Outlook's Calendar module, so their permission is already given. Then read with `only=[id]`.
-  2. No calendar matches → `outlook_mail::free_busy`, which gives busy blocks without titles. The answer says so.
-  3. Both fail → an error card telling the user to open that calendar in Outlook.
-- The answer gives the number of meetings and their times, e.g. "מחר יש לאיציק 3 פגישות" with "09:00 · 11:30 · 14:00".
-- Availability: free means no Busy/OOF/Tentative event overlaps the window. The answer lists the free slots during working hours (08:00–18:00).
+  1. Match `name_variants(person)` against `calendar::known_sources` names. These are the calendars the user already has in Outlook's Calendar module, so their permission is already given. Then read with `only=[id]`. A calendar whose whole name is the person's wins over longer names that contain it. No time asked means today.
+     - Several calendars fit → a Choices card "איזה יומן של איציק?" (one button per calendar; a typed word of a name or a number picks it). The pick answers, and the conversation goes on with that calendar ("ומה מחר?" does not ask again). The same card answers an intent `Clarify(Person)`; without a name it offers the user's other calendars.
+     - The calendar is there but cannot be read (CAL-SHARED-*) → free/busy as in 2, then 3.
+  2. No calendar matches → `outlook_mail::free_busy` (the name as typed, then at most two other spellings: a Hebrew nickname and a Latin one), which gives busy blocks without titles: "תפוס: 10:00–11:00 · 14:00–15:30", plus the note that titles are not visible.
+  3. Nothing resolves (not shared, not in the address book, offline, not Exchange) → an honest card that names the person and tells in one line how to fix it: "אין לי גישה ליומן של איציק" / "כדי שאוכל לבדוק, פתח ב-Outlook את היומן הזה (הוסף יומן ← מפנקס הכתובות)". Its code is OUTLOOK-107 (not found), MAIL-109 (free/busy not available), CAL-SHARED-101 (no permission to read the calendar), or the Outlook code when Outlook itself is the problem (then the line says so). When the name simply fits no calendar, the user's other calendars are offered as buttons.
+- The answer gives the number of meetings and their times, e.g. "מחר יש לאיציק 3 פגישות" with "09:00 · 11:30 · 14:00". A stretch of days ("השבוע") puts the day on every time.
+- Availability: free means no Busy/OOF/Tentative event overlaps the window. The answer lists the free slots during working hours (08:00–18:00), from now on for a window that has begun, and without Friday and Saturday when the window spans several days. A question about one hour or moment ("האם איציק פנוי מחר ב-15:00") is a plain "היומן של איציק פנוי/תפוס מחר 15:00–16:00", with what is in the way. Through the address book the same answers come from busy blocks and say so.
+- Names take their Hebrew prefix by spelling ("לאיציק", "לוורד", "ל-Dana"); an English question gets an English answer.
+- `Known.people` (names the intent engine may take for a person) = owners of the shared calendars first, then the organizers of the island's snapshot and of the downloaded schedule; `Known.calendars` = every calendar discovered.
 
 **Mail**
 - Mailbox plan:

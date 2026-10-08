@@ -272,7 +272,14 @@ impl exec::Sources for Live {
         calendar::known_sources(&self.app)
     }
     fn people(&self) -> Vec<String> {
-        cap_people(calendar::organizers_recent(&self.app))
+        // the island's snapshot (checked calendars) first, then the downloaded schedule (every calendar)
+        let mut people = calendar::organizers_recent(&self.app);
+        for name in calendar::prefetched_organizers() {
+            if !people.contains(&name) {
+                people.push(name);
+            }
+        }
+        cap_people(people)
     }
     fn query_range(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
         calendar::query_range(from, to, only)

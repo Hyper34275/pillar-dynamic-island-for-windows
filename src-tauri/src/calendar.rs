@@ -1602,6 +1602,25 @@ pub fn prefetched(from: DateTime<Utc>, to: DateTime<Utc>, only: Option<&[String]
     prefetched_in(&prefetch_cache(), Utc::now().timestamp_millis(), from, to, only)
 }
 
+/// The distinct organizers of every meeting in the downloaded schedule, in reading order (the
+/// island's own snapshot only holds the checked calendars; this holds all of them). No Outlook
+/// call; the names are only returned to the caller. Pure.
+pub fn prefetch_organizers_in(cache: &PrefetchCache) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in cache.cals.iter().flat_map(|c| c.events.iter()).filter_map(|e| e.organizer.as_deref()).map(str::trim).filter(|n| !n.is_empty()) {
+        if !out.iter().any(|o| o == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// Organizers seen in the downloaded schedule (see [`prefetch_organizers_in`]), for the assistant's
+/// name matching.
+pub fn prefetched_organizers() -> Vec<String> {
+    prefetch_organizers_in(&prefetch_cache())
+}
+
 /// What the Island Center shows about the prefetch.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2999,6 +3018,20 @@ mod prefetch_tests {
         assert!(prefetched_in(&cache, now + PREFETCH_FRESH_MS + 1, t(1, 0), t(3, 0), Some(&only(&["c0"]))).is_none());
         // an empty cache answers nothing
         assert!(prefetched_in(&PrefetchCache::new(), now, t(1, 0), t(3, 0), None).is_none());
+    }
+
+    #[test]
+    fn prefetch_organizers_are_distinct_names_from_every_calendar() {
+        let by = |cal_id: &str, organizer: Option<&str>| CalendarEventDto { organizer: organizer.map(str::to_string), ..event(cal_id, "s", t(2, 9), 1) };
+        let cache = cache_with(
+            vec![
+                cal("c0", true, vec![by("c0", Some("דנה לוי")), by("c0", None), by("c0", Some("  "))], 5),
+                cal("c1", false, vec![by("c1", Some("איציק כהן")), by("c1", Some("דנה לוי")), by("c1", Some(" Avi Levi "))], 5),
+            ],
+            7,
+        );
+        assert_eq!(prefetch_organizers_in(&cache), ["דנה לוי", "איציק כהן", "Avi Levi"]);
+        assert!(prefetch_organizers_in(&PrefetchCache::new()).is_empty());
     }
 
     #[test]

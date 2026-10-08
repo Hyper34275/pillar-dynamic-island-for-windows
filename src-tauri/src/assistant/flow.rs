@@ -96,11 +96,16 @@ fn decision_label(d: &Decision) -> String {
     }
 }
 
+/// What the machine knows, from caches only. The people are the owners of the shared calendars
+/// first, then the organizers seen lately, so a colleague whose calendar is open in Outlook is
+/// recognised as a name.
 fn known_from(src: &dyn Sources) -> Known {
+    let calendars = src.calendars();
+    let people = exec::known_people(&calendars, src.people());
     Known {
         mailboxes: src.cached_mailboxes().into_iter().map(|m| KnownName { id: m.id, name: m.name }).collect(),
-        calendars: src.calendars().into_iter().map(|c| KnownName { id: c.id, name: c.name }).collect(),
-        people: src.people(),
+        calendars: calendars.into_iter().map(|c| KnownName { id: c.id, name: c.name }).collect(),
+        people,
     }
 }
 
@@ -247,7 +252,10 @@ impl Engine {
             }
         }
         let interp = match &pending {
-            super::store::Pending::Mailbox { interp, .. } | super::store::Pending::Calendar { interp, .. } => interp.clone(),
+            super::store::Pending::Mailbox { interp, .. } => interp.clone(),
+            // what is remembered is the request on the calendar picked, so a follow-up does not ask again
+            super::store::Pending::Calendar { interp, .. } if outcome.phase != CardPhase::Choices => exec::after_calendar_choice(&src.calendars(), interp, option_id),
+            super::store::Pending::Calendar { interp, .. } => interp.clone(),
         };
         Ok(self.finish(query_id, &query, lang, false, Some(&interp), outcome, created_at, now_ms, started))
     }

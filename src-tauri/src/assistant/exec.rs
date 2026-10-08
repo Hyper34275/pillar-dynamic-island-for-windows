@@ -10,7 +10,7 @@ use super::policy::{self, MailPlan, PlanInput};
 use super::prefs::Prefs;
 use super::store::{MailRun, Pending, Target};
 use super::wire::{AssistantItem, CardPhase, Choice, ChoiceKind, ItemKind, MailboxRef};
-use crate::calendar::{BusyStatus, CalendarEventDto, CalendarSourceDto, RangeRead, ResponseStatus};
+use crate::calendar::{BusyStatus, CalendarEventDto, CalendarSourceDto, RangeRead, ResponseStatus, SourceGroup, SourceKind};
 use crate::intent::{self, caps, CapId, Decision, Grain, Interpretation, Lang};
 use crate::local::{AppHit, FileSearch, NoteHit};
 use crate::outlook_mail::{
@@ -24,6 +24,14 @@ const MAX_MAIL_HITS: usize = 100;
 const MAX_LOCAL_HITS: usize = 20;
 const MAX_APP_HITS: usize = 8;
 const SEARCH_EVENTS_DAYS: i64 = 30;
+/// Calendars offered as buttons when a person's own calendar cannot be found.
+const MAX_CAL_CHOICES: usize = 8;
+/// Names handed to the intent engine as people.
+const MAX_KNOWN_PEOPLE: usize = 300;
+/// Spellings of a name tried against the address book (free/busy), at most.
+const MAX_NAME_TRIES: usize = 3;
+/// No new spelling is tried after the address book has taken this long.
+const NAME_TRIES_BUDGET_MS: u128 = 20_000;
 
 /// Everything the executors read or do outside the process. The real implementation calls the
 /// Outlook/Windows modules; tests supply fakes.
@@ -179,6 +187,8 @@ pub fn execute(r: &Run, interp: &Interpretation) -> Outcome {
         Decision::Confirm { cap } => confirm(r, interp, *cap),
         Decision::Clarify { ask, cap } => match ask {
             intent::AskKind::Mailbox => run_cap(r, interp, cap.unwrap_or(caps::EMAIL_SEARCH)),
+            // "whose calendar?" is answered with the calendars that fit, never with a bare question
+            intent::AskKind::Person if cap.map_or(true, |c| c.as_str().starts_with("calendar.")) => person_clarify(r, interp),
             _ => {
                 let q = answer::clarify_text(*ask, r.lang);
                 let mut o = Outcome::answer(q, "");
@@ -345,16 +355,90 @@ fn tokens(folded: &str) -> Vec<String> {
     folded.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).map(str::to_string).collect()
 }
 
-/// Calendars whose name contains the person (any spelling of the name), token-wise.
+/// Calendars whose name contains the person (any spelling of the name), token-wise. A calendar
+/// whose whole name is the person's (so "איציק כהן" after "איציק כהן - פרויקטים" was ruled out by
+/// the user) wins over the ones that merely contain it.
 pub fn match_calendars<'a>(person: &str, calendars: &'a [CalendarSourceDto]) -> Vec<&'a CalendarSourceDto> {
     let variants: Vec<Vec<String>> = intent::name_variants(person).iter().map(|v| tokens(&intent::fold(v))).filter(|t| !t.is_empty()).collect();
-    calendars
+    let found: Vec<&CalendarSourceDto> = calendars
         .iter()
         .filter(|c| {
             let name = tokens(&intent::fold(&c.name));
             variants.iter().any(|v| v.iter().all(|t| t.chars().count() >= 2 && name.iter().any(|n| n.contains(t.as_str()))))
         })
-        .collect()
+        .collect();
+    if found.len() > 1 {
+        let whole: Vec<&CalendarSourceDto> = found
+            .iter()
+            .copied()
+            .filter(|c| {
+                let name = tokens(&intent::fold(&c.name));
+                let owner = tokens(&intent::fold(&owner_name(&c.name)));
+                variants.iter().any(|v| *v == name || *v == owner)
+            })
+            .collect();
+        if whole.len() == 1 {
+            return whole;
+        }
+    }
+    found
+}
+
+/// The person (or team) a calendar belongs to, from its display name: Outlook may call it
+/// "יומן - איציק כהן" or "Calendar - Dana Levi". The generic words and separators go; a name that
+/// is nothing else stays as it is.
+pub fn owner_name(calendar_name: &str) -> String {
+    // `fold` turns final letters into plain ones, so the generic words are folded the same way
+    let generic = [intent::fold("יומן"), intent::fold("calendar")];
+    let kept: Vec<&str> = calendar_name
+        .split_whitespace()
+        .filter(|w| !generic.contains(&intent::fold(w.trim_matches(|c: char| !c.is_alphanumeric()))))
+        .collect();
+    let joined = kept.join(" ");
+    let joined = joined.trim_matches(|c: char| c.is_whitespace() || matches!(c, '-' | '–' | '—' | '|' | ':')).to_string();
+    if joined.is_empty() { calendar_name.trim().to_string() } else { joined }
+}
+
+/// The names the intent engine may take for a person: the owners of the shared calendars the user
+/// has (first: those are the people they ask about) and then the organizers seen lately.
+/// Distinct, at most [`MAX_KNOWN_PEOPLE`].
+pub fn known_people(calendars: &[CalendarSourceDto], organizers: Vec<String>) -> Vec<String> {
+    let owners = calendars.iter().filter(|c| c.kind == SourceKind::Shared || c.group == SourceGroup::Shared).map(|c| owner_name(&c.name));
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for name in owners.chain(organizers) {
+        let name = name.trim().to_string();
+        if !name.is_empty() && seen.insert(intent::fold(&name)) {
+            out.push(name);
+        }
+    }
+    out.truncate(MAX_KNOWN_PEOPLE);
+    out
+}
+
+/// What the conversation remembers once a calendar was picked from a question: the same request on
+/// that calendar, so "ומה מחר?" goes on there instead of asking again.
+pub fn after_calendar_choice(calendars: &[CalendarSourceDto], interp: &Interpretation, option_id: &str) -> Interpretation {
+    let mut out = interp.clone();
+    out.decision = Decision::Execute { cap: decision_cap(&interp.decision) };
+    if let Some(picked) = option_id.strip_prefix("cal:").and_then(|id| calendars.iter().find(|c| c.id == id)) {
+        out.slots.person = (picked.kind != SourceKind::Primary).then(|| owner_name(&picked.name));
+    }
+    out
+}
+
+/// Calendars that are not the user's own, the people's first: what to offer when the asked
+/// person's calendar cannot be found or the name fits none.
+fn other_calendars(calendars: &[CalendarSourceDto]) -> Vec<&CalendarSourceDto> {
+    let rank = |c: &CalendarSourceDto| match (c.kind, c.group) {
+        (SourceKind::Shared, _) | (_, SourceGroup::Shared) => 0,
+        (SourceKind::Personal, _) => 1,
+        _ => 2,
+    };
+    let mut out: Vec<&CalendarSourceDto> = calendars.iter().filter(|c| c.kind != SourceKind::Primary && !c.name.trim().is_empty()).collect();
+    out.sort_by_key(|c| rank(c));
+    out.truncate(MAX_CAL_CHOICES);
+    out
 }
 
 fn is_busy(status: BusyStatus) -> bool {
@@ -404,28 +488,31 @@ fn calendar(r: &Run, interp: &Interpretation, cap: CapId, chosen: Option<&str>) 
     let cals = r.src.calendars();
     let mut only: Option<Vec<String>> = None;
     let mut calendar_name: Option<String> = None;
+    // Whose calendar the answer is about, in the user's words (a chosen calendar names its owner).
+    let mut who: Option<String> = person.map(str::to_string);
 
     if let Some(id) = chosen {
         only = Some(vec![id.to_string()]);
-        calendar_name = cals.iter().find(|c| c.id == id).map(|c| c.name.clone());
+        let picked = cals.iter().find(|c| c.id == id);
+        calendar_name = picked.map(|c| c.name.clone());
+        if let Some(c) = picked {
+            who = (c.kind != SourceKind::Primary).then(|| owner_name(&c.name));
+        }
     } else if let Some(p) = person {
         let matched = match_calendars(p, &cals);
         if cap == caps::CALENDAR_RESOLVE_SHARED {
-            return resolve_shared(r, p, &matched);
+            return resolve_shared(r, interp, p, &matched, &cals);
         }
         match matched.len() {
-            0 => return free_busy_path(r, cap, p, (from, to, grain)),
+            0 => return free_busy_path(r, interp, cap, p, (from, to, grain), &cals),
             1 => {
                 only = Some(vec![matched[0].id.clone()]);
                 calendar_name = Some(matched[0].name.clone());
             }
-            _ => return calendar_choices(r, interp, &matched),
+            _ => return calendar_choices(r, interp, p, &matched),
         }
     } else if cap == caps::CALENDAR_RESOLVE_SHARED {
-        let q = answer::clarify_text(intent::AskKind::Person, lang);
-        let mut o = Outcome::answer(q, "");
-        o.question = Some(q.to_string());
-        return o;
+        return person_clarify(r, interp);
     }
 
     let live = match r.src.prefetched(from_u, to_u, only.as_deref()) {
@@ -436,16 +523,22 @@ fn calendar(r: &Run, interp: &Interpretation, cap: CapId, chosen: Option<&str>) 
         Ok(read) => read,
         Err(e) => {
             let code = answer::code_of(&e, "OUTLOOK-102");
-            return match person {
-                Some(p) if only.is_some() => Outcome::error_text(&code, answer::calendar_not_found(p, lang)),
+            return match who.as_deref() {
+                Some(w) if only.is_some() => no_access(r, interp, w, &code, &cals),
                 _ => Outcome::error(&code, lang),
             };
         }
     };
     if only.is_some() && read.events.is_empty() {
         if let Some((_, code)) = read.failed.first() {
-            return match person {
-                Some(p) => Outcome::error_text(code, answer::calendar_not_found(p, lang)),
+            // The calendar is there but cannot be read: the address book may still know when they are busy.
+            if let Some(w) = who.as_deref().filter(|_| code.starts_with("CAL-SHARED-")) {
+                if let FbLookup::Found(fb) = free_busy_lookup(r, w, from_u, to_u) {
+                    return free_busy_answer(r, cap, w, &fb, (from, to, grain));
+                }
+            }
+            return match who.as_deref() {
+                Some(w) => no_access(r, interp, w, code, &cals),
                 None => Outcome::error(code, lang),
             };
         }
@@ -462,15 +555,17 @@ fn calendar(r: &Run, interp: &Interpretation, cap: CapId, chosen: Option<&str>) 
     let mut o = if cap == caps::CALENDAR_CHECK_AVAILABILITY {
         let busy: Vec<avail::Span> = events.iter().filter(|e| is_busy(e.busy_status)).map(|e| (e.start_utc, e.end_utc)).collect();
         let busy_events: Vec<&CalendarEventDto> = events.iter().copied().filter(|e| is_busy(e.busy_status)).collect();
-        availability(r, person, &day, (from, to, grain), &busy, busy_events.iter().map(|e| event_item(e, lang)).collect())
+        availability(r, who.as_deref(), &day, (from, to, grain), &busy, busy_events.iter().map(|e| event_item(e, lang)).collect())
     } else {
         let n = events.len() as u32;
-        let multi_day = events.first().zip(events.last()).is_some_and(|(a, b)| a.start_utc.with_timezone(&Local).date_naive() != b.start_utc.with_timezone(&Local).date_naive());
+        // the day goes with each time when the answer spans days ("השבוע"), even if one day has them all
+        let multi_day = to - from > Duration::hours(30)
+            || events.first().zip(events.last()).is_some_and(|(a, b)| a.start_utc.with_timezone(&Local).date_naive() != b.start_utc.with_timezone(&Local).date_naive());
         let times: Vec<(DateTime<Utc>, bool)> = events.iter().map(|e| (e.start_utc, e.all_day)).collect();
         let title = if cap == caps::CALENDAR_SEARCH_EVENTS {
             answer::found_text(n, Noun::Meeting, lang)
         } else {
-            answer::meetings_title(n, &day, person, lang)
+            answer::meetings_title(n, &day, who.as_deref(), lang)
         };
         let mut o = Outcome::answer(title, answer::times_line(&times, multi_day, lang));
         let title = calendar_name.clone().unwrap_or_else(|| if lang == Lang::He { "יומן".into() } else { "Calendar".into() });
@@ -502,10 +597,10 @@ fn subject_matches(subject: &str, terms: &[Vec<String>]) -> bool {
     terms.iter().all(|alts| alts.iter().any(|a| !a.trim().is_empty() && s.contains(&intent::fold(a))))
 }
 
-fn resolve_shared(r: &Run, person: &str, matched: &[&CalendarSourceDto]) -> Outcome {
+fn resolve_shared(r: &Run, interp: &Interpretation, person: &str, matched: &[&CalendarSourceDto], cals: &[CalendarSourceDto]) -> Outcome {
     let lang = r.lang;
     if matched.is_empty() {
-        return Outcome::error_text("OUTLOOK-107", answer::calendar_not_found(person, lang));
+        return no_access(r, interp, person, "OUTLOOK-107", cals);
     }
     let items: Vec<(AssistantItem, Target)> = matched
         .iter()
@@ -525,16 +620,76 @@ fn resolve_shared(r: &Run, person: &str, matched: &[&CalendarSourceDto]) -> Outc
     o
 }
 
-fn calendar_choices(r: &Run, interp: &Interpretation, matched: &[&CalendarSourceDto]) -> Outcome {
-    let q = answer::calendar_question(r.lang);
-    let mut o = Outcome::new(CardPhase::Choices, q.to_string());
-    o.question = Some(q.to_string());
-    o.choices = matched
+/// Several calendars fit the name: which one?
+fn calendar_choices(r: &Run, interp: &Interpretation, person: &str, matched: &[&CalendarSourceDto]) -> Outcome {
+    let q = answer::which_calendar_of(person, r.lang);
+    calendar_question(q, matched, interp)
+}
+
+/// A choices card over calendars; each button resumes the question on that calendar.
+fn calendar_question(question: String, calendars: &[&CalendarSourceDto], interp: &Interpretation) -> Outcome {
+    let mut o = Outcome::new(CardPhase::Choices, question.clone());
+    o.question = Some(question);
+    o.choices = calendars
         .iter()
         .map(|c| Choice { id: format!("cal:{}", c.id), label: c.name.clone(), kind: ChoiceKind::Option, preferred: false })
         .collect();
-    o.pending = Some(Pending::Calendar { interp: interp.clone(), offered: matched.iter().map(|c| c.id.clone()).collect() });
+    o.pending = Some(Pending::Calendar { interp: interp.clone(), offered: calendars.iter().map(|c| c.id.clone()).collect() });
     o
+}
+
+/// The intent could not tell whose calendar is meant (several fit the name, or several people were
+/// named): offer the calendars that fit, else the other calendars the user has, else just ask.
+fn person_clarify(r: &Run, interp: &Interpretation) -> Outcome {
+    let cals = r.src.calendars();
+    if let Some(p) = person_of(interp) {
+        let matched = match_calendars(p, &cals);
+        if matched.len() > 1 {
+            return calendar_choices(r, interp, p, &matched);
+        }
+    }
+    let q = answer::clarify_text(intent::AskKind::Person, r.lang);
+    let offered = other_calendars(&cals);
+    if offered.is_empty() || !r.allow_ask {
+        let mut o = Outcome::answer(q, "");
+        o.question = Some(q.to_string());
+        return o;
+    }
+    calendar_question(q.to_string(), &offered, interp)
+}
+
+/// The honest answer when a person's calendar cannot be read: names the person and says in one
+/// short line what to do about it (see [`answer::NoAccess`]). When the name simply fits no calendar,
+/// the user's other calendars are offered, in case the one meant is called something else.
+fn no_access(r: &Run, interp: &Interpretation, who: &str, code: &str, cals: &[CalendarSourceDto]) -> Outcome {
+    let lang = r.lang;
+    let kind = answer::NoAccess::from_code(code);
+    let hint = answer::no_access_hint(kind, code, lang);
+    let offered = other_calendars(cals);
+    if kind == answer::NoAccess::NotShared && r.allow_ask && !offered.is_empty() {
+        let mut o = calendar_question(answer::no_access_choose(who, lang), &offered, interp);
+        o.summary = hint;
+        o.error_code = Some(code.to_string());
+        return o;
+    }
+    let mut o = Outcome::error_text(code, answer::no_access_title(who, lang));
+    o.summary = hint;
+    o
+}
+
+/// The part of the asked window that is still ahead: the hours that have passed are neither free
+/// nor busy any more. A moment, a past day and a future day keep their window.
+fn ahead(from: DateTime<Local>, to: DateTime<Local>, grain: Grain, now: DateTime<Local>) -> DateTime<Local> {
+    if grain == Grain::Instant || now <= from || now >= to {
+        return from;
+    }
+    // to the next full five minutes, so a slot never starts at "12:07"
+    let secs = now.timestamp();
+    let rounded = secs - secs.rem_euclid(300) + if secs.rem_euclid(300) == 0 { 0 } else { 300 };
+    match Local.timestamp_opt(rounded, 0).single() {
+        Some(t) if t < to => t,
+        _ => from,
+    }
 }
 
 /// Availability: free when no Busy/OOF/Tentative event overlaps the window; free slots in 08-18.
@@ -547,10 +702,29 @@ fn availability(
     busy_items: Vec<(AssistantItem, Target)>,
 ) -> Outcome {
     let lang = r.lang;
-    let busy_now = avail::overlaps(busy, from.with_timezone(&Utc), to.with_timezone(&Utc));
-    let slots = if grain == Grain::Instant { Vec::new() } else { avail::free_slots(busy, from, to) };
     let multi_day = to - from > Duration::hours(30);
-    let (title, summary) = if !busy_now {
+    // Decided on the window as asked: "היום אחר הצהריים" asked at 17:15 has less than an hour left,
+    // but it is still a "when", not a yes or no about one hour.
+    let specific_time = grain == Grain::Instant || (grain == Grain::Range && to - from <= Duration::hours(1));
+    let from = ahead(from, to, grain, r.now);
+    let busy_now = avail::overlaps(busy, from.with_timezone(&Utc), to.with_timezone(&Utc));
+    let mut slots = if grain == Grain::Instant { Vec::new() } else { avail::free_slots(busy, from, to) };
+    if multi_day {
+        slots = avail::skip_weekend(slots, from, to);
+    }
+    let (title, summary) = if specific_time {
+        // "האם איציק פנוי מחר ב-15:00": a plain yes or no, what is in the way and what is left of the hour
+        let in_the_way: Vec<_> = avail::merge(busy.to_vec())
+            .into_iter()
+            .filter(|(s, e)| *s < to.with_timezone(&Utc) && *e > from.with_timezone(&Utc))
+            .map(|(s, e)| (s, e, BusyKind::Busy))
+            .collect();
+        let mut summary = if busy_now { answer::busy_summary(&in_the_way, false, lang) } else { String::new() };
+        if busy_now && !slots.is_empty() {
+            summary = join_lines(&summary, &answer::slots_line(&slots, false, lang));
+        }
+        (answer::calendar_state(person, busy_now, day, lang), summary)
+    } else if !busy_now {
         let t = if lang == Lang::He {
             format!("היומן {} פנוי {day}", answer::he_of(person))
         } else {
@@ -582,35 +756,94 @@ fn availability(
     o
 }
 
-/// The person has no calendar in the user's Outlook: ask the address book for free/busy.
-fn free_busy_path(r: &Run, cap: CapId, person: &str, (from, to, grain): (DateTime<Local>, DateTime<Local>, Grain)) -> Outcome {
-    let lang = r.lang;
-    let (from_u, to_u) = (from.with_timezone(&Utc), to.with_timezone(&Utc));
-    let name = intent::name_variants(person).into_iter().next().unwrap_or_else(|| person.to_string());
-    let fb = match r.src.free_busy(&name, from_u, to_u) {
-        Ok(fb) => fb,
-        Err(e) => return Outcome::error_text(&answer::code_of(&e, "OUTLOOK-107"), answer::calendar_not_found(person, lang)),
-    };
-    if !fb.resolved {
-        return Outcome::error_text("OUTLOOK-107", answer::calendar_not_found(person, lang));
+/// What the address book said about a name.
+enum FbLookup {
+    Found(FreeBusy),
+    /// No spelling of the name resolved to one person.
+    Unresolved,
+    /// The lookup itself failed (code of the failure).
+    Failed(String),
+}
+
+/// The spellings of a name worth asking the address book, best first: as typed, the first other
+/// Hebrew spelling (a nickname: איציק -> יצחק) and the first Latin one (Itzik). Each costs a
+/// round trip, so there are few.
+fn name_tries(person: &str) -> Vec<String> {
+    let is_he = |s: &str| s.chars().any(|c| ('\u{05D0}'..='\u{05EA}').contains(&c));
+    let variants = intent::name_variants(person);
+    let Some(first) = variants.first().cloned() else { return Vec::new() };
+    let first_key = intent::fold(&first);
+    let other = |hebrew: bool| variants.iter().skip(1).find(|v| is_he(v) == hebrew && intent::fold(v) != first_key);
+    let mut out = vec![first.clone()];
+    out.extend(other(true).cloned());
+    out.extend(other(false).cloned());
+    out.truncate(MAX_NAME_TRIES);
+    out
+}
+
+/// Free/busy from the address book: the name as typed, then other spellings of it while none
+/// resolves (a failure of Outlook itself ends the search).
+fn free_busy_lookup(r: &Run, person: &str, from_u: DateTime<Utc>, to_u: DateTime<Utc>) -> FbLookup {
+    let started = std::time::Instant::now();
+    for (i, name) in name_tries(person).iter().enumerate() {
+        if i > 0 && started.elapsed().as_millis() > NAME_TRIES_BUDGET_MS {
+            break;
+        }
+        match r.src.free_busy(name, from_u, to_u) {
+            Ok(fb) if fb.resolved => return FbLookup::Found(fb),
+            Ok(_) => {}
+            Err(e) => return FbLookup::Failed(answer::code_of(&e, "OUTLOOK-107")),
+        }
     }
-    let blocks: Vec<_> = fb.blocks.iter().filter(|b| matches!(b.status, FreeBusyStatus::Busy | FreeBusyStatus::Oof | FreeBusyStatus::Tentative)).collect();
-    let items: Vec<(AssistantItem, Target)> = blocks
+    FbLookup::Unresolved
+}
+
+/// The person has no calendar in the user's Outlook: ask the address book for free/busy, and when
+/// that gives nothing, say so (see [`no_access`]).
+fn free_busy_path(
+    r: &Run,
+    interp: &Interpretation,
+    cap: CapId,
+    person: &str,
+    window: (DateTime<Local>, DateTime<Local>, Grain),
+    cals: &[CalendarSourceDto],
+) -> Outcome {
+    let (from_u, to_u) = (window.0.with_timezone(&Utc), window.1.with_timezone(&Utc));
+    match free_busy_lookup(r, person, from_u, to_u) {
+        FbLookup::Found(fb) => free_busy_answer(r, cap, person, &fb, window),
+        FbLookup::Unresolved => no_access(r, interp, person, "OUTLOOK-107", cals),
+        FbLookup::Failed(code) => no_access(r, interp, person, &code, cals),
+    }
+}
+
+/// The answer from a colleague's free/busy: busy times without titles, labelled as such.
+fn free_busy_answer(r: &Run, cap: CapId, person: &str, fb: &FreeBusy, (from, to, grain): (DateTime<Local>, DateTime<Local>, Grain)) -> Outcome {
+    let lang = r.lang;
+    let blocks: Vec<(DateTime<Utc>, DateTime<Utc>, BusyKind)> = fb
+        .blocks
         .iter()
-        .map(|b| {
+        .filter_map(|b| {
             let kind = match b.status {
+                FreeBusyStatus::Busy => BusyKind::Busy,
                 FreeBusyStatus::Oof => BusyKind::Oof,
                 FreeBusyStatus::Tentative => BusyKind::Tentative,
-                _ => BusyKind::Busy,
+                _ => return None,
             };
-            let mut it = item(ItemKind::Info, format!("{} {}", answer::busy_label(kind, lang), answer::range_hm(b.start, b.end)));
-            it.time = Some(ms(b.start));
-            it.end_time = Some(ms(b.end));
+            Some((b.start, b.end, kind))
+        })
+        .collect();
+    let items: Vec<(AssistantItem, Target)> = blocks
+        .iter()
+        .map(|(start, end, kind)| {
+            let mut it = item(ItemKind::Info, format!("{} {}", answer::busy_label(*kind, lang), answer::range_hm(*start, *end)));
+            it.time = Some(ms(*start));
+            it.end_time = Some(ms(*end));
             (it, Target::None)
         })
         .collect();
     let day = answer::day_label(from, to, grain, r.now, lang);
-    let busy: Vec<avail::Span> = blocks.iter().map(|b| (b.start, b.end)).collect();
+    let busy: Vec<avail::Span> = blocks.iter().map(|(a, b, _)| (*a, *b)).collect();
+    let multi_day = to - from > Duration::hours(30);
     let mut o = if cap == caps::CALENDAR_CHECK_AVAILABILITY {
         availability(r, Some(person), &day, (from, to, grain), &busy, Vec::new())
     } else {
@@ -628,10 +861,13 @@ fn free_busy_path(r: &Run, cap: CapId, person: &str, (from, to, grain): (DateTim
                 _ => format!("{person} has {n} busy blocks {day}"),
             }
         };
-        Outcome::answer(title, "")
+        let times = if blocks.is_empty() { String::new() } else { answer::busy_summary(&blocks, multi_day, lang) };
+        Outcome::answer(title, times)
     };
     o.summary = join_lines(&o.summary, answer::busy_only_note(lang));
-    o.groups.push(group("availability", if lang == Lang::He { "זמנים תפוסים" } else { "Busy times" }, items));
+    if !items.is_empty() {
+        o.groups.push(group("availability", if lang == Lang::He { "זמנים תפוסים" } else { "Busy times" }, items));
+    }
     o
 }
 
