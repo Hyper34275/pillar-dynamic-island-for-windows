@@ -9,6 +9,7 @@ import { dlog } from "./debugLog";
 import { describeError } from "./errors";
 import { NO_LIMITS, parseIslandLimits, type IslandLimits } from "./island/limits";
 import { normalizeAssistantCard, type AssistantCard, type SearchBarState } from "./assistant/types";
+import { normalizeStickySnapshot, type StickySnapshot } from "./notes/sticky";
 
 // -----------------------------------------------------------------------------
 // Types (camelCase over IPC)
@@ -498,6 +499,14 @@ export const ipc = {
   assistantDismiss: (queryId: string) => callVoid("assistant_dismiss", { queryId }, { timeoutMs: 3000 }),
   searchBarState: () => call<SearchBarState>("search_bar_state", undefined, { timeoutMs: 3000 }),
   searchBarClose: () => callVoid("search_bar_close", undefined, { timeoutMs: 3000 }),
+
+  // --- Windows Sticky Notes, read only (src-tauri/src/sticky_notes.rs; lib/notes/sticky.ts).
+  /** The Windows Sticky Notes and whether they could be read; null when the backend cannot answer (outside the app). Cached in Rust, cheap to repeat. */
+  async stickyNotesList(): Promise<StickySnapshot | null> {
+    return normalizeStickySnapshot(await call<unknown>("sticky_notes_list", undefined, { timeoutMs: 15_000 }));
+  },
+  /** Only ever from an explicit click: starts the Sticky Notes app (the backend names the app, the page cannot). */
+  stickyNotesOpen: () => callVoid("sticky_notes_open", undefined, { timeoutMs: 10_000 }),
 };
 
 // -----------------------------------------------------------------------------

@@ -28,6 +28,7 @@ import { isRealMeeting } from "../lib/calendar/select";
 import { startOfDay } from "../lib/dateFormat";
 import { t } from "../lib/i18n";
 import type { IslandNotification } from "../lib/ipc";
+import type { StickyColour, StickySnapshot } from "../lib/notes/sticky";
 import type { ReminderAlert } from "../lib/reminders/types";
 import { tourCompactContent } from "../tour/compact";
 import {
@@ -51,6 +52,26 @@ import {
 
 const noop = () => {};
 const never = async () => false;
+
+/** Made-up Windows Sticky Notes for the notes exhibits (read only in the island; five, so the section collapses to three). */
+const STICKY_SAMPLE: StickySnapshot = {
+  availability: "ok",
+  revision: 1,
+  notes: [
+    ["שלח את הדוח לרוני עד יום ה'", "yellow", 40],
+    ["Call the dentist\nask about Tuesday", "blue", 5 * 60],
+    ["רשימת קניות:\nחלב, לחם, גבינה, ביצים", "green", 26 * 60],
+    ["WiFi: guest-1127", "pink", 3 * 24 * 60],
+    ["ללמוד ל-TypeScript", "charcoal", 9 * 24 * 60],
+  ].map(([text, colour, minutesAgo], i) => ({
+    id: `sticky-${i}`,
+    text: text as string,
+    title: (text as string).split("\n")[0],
+    colour: colour as StickyColour,
+    updatedAt: TOUR_NOW - (minutesAgo as number) * 60_000,
+    createdAt: TOUR_NOW - (minutesAgo as number) * 60_000 - 3_600_000,
+  })),
+};
 
 const LONG_ALERT: ReminderAlert = {
   ...TOUR_ALERT,
@@ -341,6 +362,9 @@ function exhibits(): Exhibit[] {
     { id: "panel-notes", label: "Panel · notes", size: expandedSize(), node: <ExpandedPreview tab="notes" /> },
     { id: "panel-notes-empty", label: "Panel · notes empty", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={[]} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} />} /> },
     { id: "panel-notes-composer", label: "Panel · notes empty, writing in the island", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={[]} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} onOpenApp={noop} composer={<NoteComposer value="" onChange={noop} onSave={noop} />} />} /> },
+    { id: "panel-notes-sticky", label: "Panel · notes + Windows Sticky Notes", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={TOUR_NOTES.slice(0, 2)} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} onOpenApp={noop} composer={<NoteComposer value="" onChange={noop} onSave={noop} />} sticky={{ snapshot: STICKY_SAMPLE, onOpen: noop }} />} /> },
+    { id: "panel-notes-sticky-none", label: "Panel · notes + no Sticky Notes yet", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={TOUR_NOTES.slice(0, 1)} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} onOpenApp={noop} sticky={{ snapshot: { availability: "noData", notes: [], revision: 1 }, onOpen: noop }} />} /> },
+    { id: "panel-notes-sticky-unavailable", label: "Panel · notes + Sticky Notes not available", size: expandedSize(), node: <ExpandedPreview tab="notes" panel={<NotesView notes={TOUR_NOTES.slice(0, 1)} nowMs={TOUR_NOW} onNew={noop} onOpen={noop} onTogglePin={noop} onCopy={noop} onRemove={noop} onOpenApp={noop} sticky={{ snapshot: { availability: "unsupported", notes: [], revision: 1 }, onOpen: noop }} />} /> },
     { id: "panel-settings", label: "Panel · settings", size: expandedSize(), node: <ExpandedPreview tab="settings" /> },
     { id: "panel-about", label: "Panel · about", size: expandedSize(), node: <ExpandedPreview tab="about" /> },
   ];
