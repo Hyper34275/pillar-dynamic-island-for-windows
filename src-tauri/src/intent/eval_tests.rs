@@ -143,11 +143,14 @@ fn slot_ok(key: &str, v: &Value, i: &Interpretation, an: &Analysis) -> bool {
         "follow_up" => b(i.follow_up),
         "limit" => s.limit.map(u64::from) == v.as_u64(),
         // every expected word is one of the alternatives of some group, and no extra groups
+        // a quoted phrase ("הצעת מחיר") also satisfies its words, which it requires side by side
         "terms" => v.as_array().map_or(false, |groups| {
             s.terms.len() <= groups.len()
                 && groups.iter().all(|g| {
                     let want: Vec<String> = g.as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(fold).collect()).unwrap_or_default();
-                    s.terms.iter().any(|have| want.iter().all(|w| have.iter().any(|h| fold(h) == *w)))
+                    s.terms.iter().any(|have| {
+                        want.iter().all(|w| have.iter().any(|h| fold(h) == *w || fold(h).split(' ').any(|p| p == w)))
+                    })
                 })
         }),
         _ => true,

@@ -404,7 +404,7 @@ pub fn extract_expr(text: &str, trigger: bool) -> Option<String> {
                         "על" | "on" if vat && after_pct => Some("*"),
                         "פלוס" | "ועוד" | "plus" => Some("+"),
                         "פחות" | "מינוס" | "minus" => Some("-"),
-                        "כפול" | "times" | "multiplied" => Some("*"),
+                        "כפול" | "כפל" | "times" | "multiplied" => Some("*"),
                         "חלקי" | "divided" | "over" => Some("/"),
                         "אחוז" | "אחוזימ" | "percent" => Some("%"),
                         "בחזקת" | "power" => Some("^"),

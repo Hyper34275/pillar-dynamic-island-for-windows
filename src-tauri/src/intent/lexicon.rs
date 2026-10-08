@@ -112,6 +112,10 @@ fn typo_eligible(concept: &str) -> bool {
                 | "M_LATEST_MANY"
                 | "V_SEARCH"
                 | "V_SHOW"
+                | "YESH"
+                | "UNREAD"
+                | "H_NOTE"
+                | "H_MAIL"
                 | "A_EXCEL"
                 | "A_PPT"
                 | "A_WORD"
@@ -255,10 +259,15 @@ impl Lexicon {
                     if c.starts_with("V_") && !prefix.chars().all(|p| p == 'ו' || p == 'ש') {
                         continue;
                     }
+                    // "כהן" is not כ + הן, "הבה" is not ה + בה: a two-letter grammar word takes no proclitic
+                    if v.chars().count() == 2 && (matches!(*c, "STOP" | "CONJ" | "REFBACK") || c.starts_with("P_")) {
+                        continue;
+                    }
                     return Some(Hit::exact(c, prefix));
                 }
             }
-            if let Some(c) = self.form(&rest) {
+            // a possessive noun behind a proclitic ("ביומני"); plain forms were tried above
+            if let Some(c) = self.possessive.get(&rest) {
                 return Some(Hit::exact(c, prefix));
             }
         }
@@ -287,7 +296,7 @@ impl Lexicon {
             }
             // a stripped proclitic is a guess too
             let extra = if k == 0 { 0.0 } else { 0.25 };
-            let max = spell::max_cost(n);
+            let max = spell::max_cost(n.max(norm.chars().count().saturating_sub(1)));
             for len in n.saturating_sub(2)..=n + 2 {
                 let Some(list) = self.typo.get(&len) else { continue };
                 for (form, concept, prior) in list {
@@ -296,8 +305,9 @@ impl Lexicon {
                     }
                     let Some(cost) = spell::weighted(&cs, form, max) else { continue };
                     let cost = cost + extra;
-                    // a verb is only corrected for a cheap slip ("תחפס"), never from a name ("הראל")
-                    if concept.starts_with("V_") && cost > 0.75 {
+                    // a verb is only corrected for a cheap slip ("תחפס"), never from a name ("הראל"),
+                    // and takes only "and" / "that" in front
+                    if concept.starts_with("V_") && (cost > 0.75 || !prefix.chars().all(|p| p == 'ו' || p == 'ש')) {
                         continue;
                     }
                     let better = match &best {
@@ -368,6 +378,9 @@ fn split_joined(lex: &Lexicon, t: &Token) -> Option<(Token, Token)> {
         let left: String = cs[..k].iter().collect();
         let right: String = cs[k..].iter().collect();
         let (l, r) = (Token::word(left), Token::word(right));
+        if lex.lookup(&l.norm).map_or(false, |h| strong(&h)) && super::numwords::is_number_word(r.norm.trim_start_matches('ב')) {
+            return Some((l, r));
+        }
         match (lex.lookup(&l.norm), lex.lookup(&r.norm)) {
             // "חפשלי", "לימחר": a grammar word may join a keyword, never another grammar word
             (Some(a), Some(b)) if (!weak(&a) && !weak(&b)) || strong(&a) || strong(&b) => return Some((l, r)),
@@ -411,7 +424,7 @@ fn correction_stands(a: &[Ann], k: usize) -> bool {
         if h.prefix.contains('ה') {
             return false;
         }
-        let other_day = a.iter().enumerate().any(|(j, t)| j != k && t.hit.as_ref().map_or(false, |x| !x.typo && is_day_word(x.concept)));
+        let other_day = is_day_word(h.concept) && a.iter().enumerate().any(|(j, t)| j != k && t.hit.as_ref().map_or(false, |x| !x.typo && is_day_word(x.concept)));
         if other_day {
             return false;
         }
@@ -460,7 +473,12 @@ pub fn annotate(tokens: &[Token]) -> Vec<Ann> {
         }
         i += 1;
     }
-    for t in a.iter_mut() {
+    for k in 0..a.len() {
+        let after_marker = k > 0 && (a[k - 1].is("P_ABOUT") || a[k - 1].is("MARK") || a[k - 1].is("P_REGARD"));
+        let t = &mut a[k];
+        if after_marker {
+            continue;
+        }
         // names and number words ("ארבעים ושתיים") are never corrected into keywords
         let number = super::numwords::is_number_word(&t.tok.norm) || t.tok.norm.strip_prefix('ו').map_or(false, super::numwords::is_number_word);
         if t.hit.is_none() && !t.tok.sym && !t.tok.quoted && !number && !lex.is_known_name(&t.tok.norm) {

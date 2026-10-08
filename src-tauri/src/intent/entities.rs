@@ -99,7 +99,7 @@ fn without_lamed(raw: &str) -> Option<String> {
 /// "שלח", "כתבה" ...: the past tense of "wrote / sent" (also the imperative of שלח, so a caller
 /// checks the context: a question word before it, or a relative marker).
 fn is_wrote_verb(norm: &str) -> bool {
-    matches!(norm, "שלח" | "שלחה" | "שלחו" | "כתב" | "כתבה" | "כתבו")
+    matches!(norm, "שלח" | "שלחה" | "שלחו" | "כתב" | "כתבה" | "כתבו" | "ענה" | "ענתה" | "ענו" | "השיב" | "השיבה")
 }
 
 /// A first name (or full name) of a calendar or a person the machine knows, folded.
@@ -410,7 +410,8 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             j += 1;
         }
         let mut taken = 0;
-        while j < n && taken < 3 && a[j].is_content() {
+        let marked = |t: &Ann| !t.used && !t.tok.sym && (t.is_content() || (t.hit.is_some() && !t.is("MARK") && !t.starts("P_") && t.norm().chars().count() >= 2));
+        while j < n && taken < 3 && (a[j].is_content() || (taken == 0 && marked(&a[j]))) {
             // the exact word, as typed: no proclitic-stripped variant
             e.terms.push(vec![a[j].raw().to_string()]);
             e.explicit_terms = true;
@@ -423,7 +424,8 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
 
     // ---- topics: "על X", "בנושא X", "about X" ----
     for i in 0..n {
-        if a[i].used || !a[i].is("P_ABOUT") {
+        let regard = a[i].is("P_REGARD") && i > 0 && !a[i - 1].is("Q_WHAT");
+        if a[i].used || !(a[i].is("P_ABOUT") || regard) {
             continue;
         }
         let mut j = i + 1;
@@ -600,6 +602,24 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             a[k].used = true;
         }
     }
+    // "אם דני רוזן ענה לי": a name right before the wrote / replied verb
+    for i in 1..n {
+        // ("שמוטי שלח" is the relative form below)
+        if !a[i].used && is_wrote_verb(a[i].norm()) && a[i - 1].is_content() && !a[i - 1].norm().starts_with('ש') && a[i].hit.as_ref().map_or(true, |h| h.prefix.is_empty()) {
+            let mut j = i - 1;
+            // a surname: take the first name before it
+            if j > 0 && a[j - 1].is_content() {
+                j -= 1;
+            }
+            if !lex.is_not_name(a[j].norm()) {
+                push_unique(&mut senders, a[j].raw().to_string());
+                a[j].used = true;
+                a[i].used = true;
+                e.implied_mail = true;
+                mail_ctx = true;
+            }
+        }
+    }
     // "המייל שמוטי שלח", "מייל ששלח יובל": the relative form of the same thing
     if mail_ctx {
         for j in 0..n {
@@ -659,7 +679,7 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
                 continue;
             }
             // after a relative marker ("שאני מאחר", "שבו מוזכר") the word is not a sender
-            if i > 0 && a[i - 1].hit.as_ref().map_or(false, |h| h.prefix.contains('ש')) {
+            if i > 0 && a[i - 1].hit.as_ref().map_or(false, |h| h.prefix.contains('ש') && h.concept != "H_MAIL") {
                 continue;
             }
             // a name that itself starts with מ ("מוטי", "מיכאל") is the name, not "from" + name

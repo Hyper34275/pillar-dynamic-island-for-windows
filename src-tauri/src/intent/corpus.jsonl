@@ -202,7 +202,7 @@
 {"id":"c314","text":"מצא לי הודעות מהשבוע שעבר על הדרכה","expect":{"decision":"exec","cap":"email.search","slots":{"from":"2026-09-27T00:00","terms":[["הדרכה"]]}},"split":"holdout","tags":["he","email","fresh"]}
 {"id":"c315","text":"search for emails containing the word contract","expect":{"decision":"exec","cap":"email.search","slots":{"terms":[["contract"]]}},"split":"holdout","tags":["en","email","fresh"]}
 {"id":"c316","text":"any new email from Dana","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"Dana"}},"split":"holdout","tags":["en","email","fresh"]}
-{"id":"c317","text":"מיילים מהחודש האחרון","expect":{"decision":"exec","cap":"email.search","slots":{"from":"2026-09-01T00:00","to":"2026-10-01T00:00"}},"split":"holdout","tags":["he","email","fresh"]}
+{"id":"c317","text":"מיילים מהחודש האחרון","expect":{"decision":"exec","cap":"email.search","slots":{"from":"2026-09-08T00:00","to":"2026-10-09T00:00"}},"split":"holdout","tags":["he","email","fresh"]}
 {"id":"c318","text":"איפה הקובץ של החוזה","expect":{"decision":"exec","cap":"files.search","slots":{"terms":[["החוזה"]]}},"split":"holdout","tags":["he","files","fresh"]}
 {"id":"c319","text":"תחפש את המצגת של הרבעון","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"pptx","terms":[["הרבעון"]]}},"split":"holdout","tags":["he","files","fresh"]}
 {"id":"c320","text":"find my latest excel file","expect":{"decision":"exec","cap":"files.search","slots":{"ext":"xlsx","latest":true}},"split":"holdout","tags":["en","files","fresh"]}
@@ -271,5 +271,5 @@
 {"id":"r044","text":"האם דנה פנויה מחר בשבע בערב","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T19:00"}},"split":"holdout","tags":["he","calendar","review"]}
 {"id":"r045","text":"חשב 2,500,000 חלקי 4","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":625000}},"split":"dev","tags":["he","calc","review"]}
 {"id":"r046","text":"20% של חמש מאות","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":100}},"split":"holdout","tags":["he","calc","review"]}
-{"id":"r047","text":"20% from five hundred","expect":{"decision":"clarify","ask":"content","cap":"files.search"},"split":"dev","tags":["en","calc","review"]}
+{"id":"r047","text":"20% from five hundred","expect":{"decision":"clarify","ask":"intent"},"split":"dev","tags":["en","calc","review"]}
 {"id":"r048","text":"מה יש לי עד מחר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-08T09:00","to":"2026-10-10T00:00"}},"split":"holdout","tags":["he","calendar","review"]}

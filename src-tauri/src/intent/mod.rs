@@ -125,7 +125,7 @@ fn understand(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known, an: &m
     let expr = calc::extract_expr(&text, calc::has_calc_word(&text));
     let dp = if expr.is_some() { dates::DateParse::default() } else { dates::parse(&mut a, now) };
     let mut ent = entities::extract(&mut a, known, mail_hint);
-    lone_name(&a, &mut ent, last.and_then(context::last_cap), known);
+    lone_name(&a, &mut ent, last, known);
 
     let ext = a
         .iter()
@@ -195,15 +195,31 @@ fn understand(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known, an: &m
         || ent.latest
         || own.ext.is_some();
     let has_terms = ent.explicit_terms || !ent.with_names.is_empty();
+    // "ובקבצים?", "רק במיילים": the same search in another source
+    let switch = {
+        let objs: Vec<CapId> = [(f.mail, caps::EMAIL_SEARCH), (f.file, caps::FILES_SEARCH), (f.note, caps::NOTES_SEARCH)]
+            .iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, c)| *c)
+            .collect();
+        let last_search = last.and_then(context::last_cap).filter(|c| matches!(*c, caps::EMAIL_SEARCH | caps::FILES_SEARCH | caps::NOTES_SEARCH));
+        let multi_before = matches!(last.map(|l| &l.decision), Some(Decision::MultiSource { .. }));
+        match objs[..] {
+            [c] if lead != Lead::None && ent.terms.is_empty() && ent.sender.is_none() && ent.person.is_none() && (last_search.map_or(false, |l| l != c) || multi_before) => Some(c),
+            _ => None,
+        }
+    };
     let content_reply = matches!(last.map(|l| &l.decision), Some(Decision::Clarify { ask: AskKind::Content, .. }));
-    let use_merge = match lead {
+    let use_merge = switch.is_some() || match lead {
         Lead::Only => true,
         Lead::Follow => !strong || same_cap,
         Lead::None => last.is_some() && own_best < score::T_LOW && !f.veto && (info || (content_reply && !ent.terms.is_empty())),
     };
     if use_merge {
         let allow_terms = has_terms || content_reply;
-        let merged = last.filter(|_| info || allow_terms).and_then(|l| merge_followup(l, &own, allow_terms || (content_reply && !ent.terms.is_empty())));
+        let merged = last
+            .filter(|_| info || allow_terms || switch.is_some())
+            .and_then(|l| merge_followup(l, &own, allow_terms || (content_reply && !ent.terms.is_empty()), switch));
         match merged {
             Some((d, s)) => {
                 decision = d;
@@ -407,14 +423,21 @@ fn build_slots(cap: CapId, o: &Own) -> Slots {
 /// Continue the previous turn: same capability, its slots, with what the new text changes.
 /// Time replaces time (a part of the day alone applies to the previous day), a person or sender
 /// replaces the old one, unread / latest are switched on, terms are added.
-fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool) -> Option<(Decision, Slots)> {
-    let cap = context::last_cap(last)?;
+fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool, switch: Option<CapId>) -> Option<(Decision, Slots)> {
+    let cap = switch.or_else(|| context::last_cap(last))?;
     if sensitivity(cap) != Sensitivity::Read || cap == caps::CALCULATOR_EVALUATE {
         return None;
     }
     let e = o.ent;
     let mut s = last.slots.clone();
     s.refers_back = false;
+    if switch.is_some() && !context::is_mail_cap(cap) {
+        // mail-only filters do not travel to files / notes
+        s.sender = None;
+        s.unread = false;
+        s.mailbox = None;
+        s.all_mailboxes = false;
+    }
     let calendar = cap.as_str().starts_with("calendar.");
     if o.dp.time.is_some() || o.dp.tod.is_some() {
         s.time = context::merge_time(last.slots.time.as_ref(), o.dp);
@@ -484,7 +507,7 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool) -> Option<(
         }
     }
     let decision = match &last.decision {
-        Decision::MultiSource { caps } => Decision::MultiSource { caps: caps.clone() },
+        Decision::MultiSource { caps } if switch.is_none() => Decision::MultiSource { caps: caps.clone() },
         _ => Decision::Execute { cap },
     };
     Some((decision, s))
@@ -512,7 +535,12 @@ fn app_text(a: &[lexicon::Ann]) -> Option<String> {
 /// A question that is only a name. After a calendar turn "ולאיציק?" names whose calendar, after a
 /// mail turn "ומיובל?" names the sender; with nothing before it a name the machine knows ("דנה")
 /// becomes a person, so the engine asks what to do with it instead of giving up.
-fn lone_name(a: &[lexicon::Ann], ent: &mut Entities, last_cap: Option<CapId>, known: &Known) {
+fn lone_name(a: &[lexicon::Ann], ent: &mut Entities, last: Option<&Interpretation>, known: &Known) {
+    // the answer to "what should I search for?" is a word, not a name
+    if matches!(last.map(|l| &l.decision), Some(Decision::Clarify { ask: AskKind::Content, .. })) {
+        return;
+    }
+    let last_cap = last.and_then(context::last_cap);
     if ent.person.is_some() || ent.sender.is_some() || !ent.with_names.is_empty() {
         return;
     }
@@ -522,32 +550,40 @@ fn lone_name(a: &[lexicon::Ann], ent: &mut Entities, last_cap: Option<CapId>, kn
     if others > 0 || t.tok.quoted {
         return;
     }
+    let bare = t.norm().trim_start_matches(|c| matches!(c, 'ו' | 'ב' | 'ל'));
+    if numwords::is_number_word(t.norm()) || numwords::is_number_word(bare) {
+        return;
+    }
     let mut name = t.raw().to_string();
-    let he = |s: &str| s.chars().count() >= 3 && s.chars().all(normalize::is_he);
+    let he = |s: &str| s.chars().count() >= 2 && s.chars().all(normalize::is_he);
     let strip = |s: &str, c: char| s.strip_prefix(c).filter(|r| he(r)).map(String::from);
+    let known_first = |n: &str| {
+        let f = fold(n);
+        known.calendars.iter().map(|c| c.name.as_str()).chain(known.people.iter().map(String::as_str)).any(|full| fold(full).split(' ').next() == Some(f.as_str()))
+    };
     match last_cap {
+        // only a name the machine knows, or one with the grammar of the question ("ולאיציק", "ומיובל")
         Some(cap) if cap.as_str().starts_with("calendar.") => {
-            name = strip(&name, 'ו').unwrap_or(name);
-            name = strip(&name, 'ל').unwrap_or(name);
-            ent.person = Some(name);
-            ent.terms.clear();
+            let and = strip(&name, 'ו');
+            let to = strip(and.as_deref().unwrap_or(&name), 'ל');
+            let n = to.clone().or(and.clone()).unwrap_or(name.clone());
+            if to.is_some() || known_first(&n) {
+                ent.person = Some(n);
+                ent.terms.clear();
+            }
         }
         Some(cap) if context::is_mail_cap(cap) => {
-            name = strip(&name, 'ו').unwrap_or(name);
-            name = strip(&name, 'מ').unwrap_or(name);
-            ent.sender = Some(name);
-            ent.terms.clear();
+            let and = strip(&name, 'ו');
+            let from = strip(and.as_deref().unwrap_or(&name), 'מ');
+            let n = from.clone().or(and.clone()).unwrap_or(name.clone());
+            if from.is_some() || known_first(&n) {
+                ent.sender = Some(n);
+                ent.terms.clear();
+            }
         }
         Some(_) => {}
         None => {
-            let f = fold(&name);
-            let is_known = known
-                .calendars
-                .iter()
-                .map(|c| c.name.as_str())
-                .chain(known.people.iter().map(String::as_str))
-                .any(|full| fold(full).split(' ').next() == Some(f.as_str()));
-            if is_known {
+            if known_first(&name) {
                 ent.person = Some(name);
                 ent.terms.clear();
             }

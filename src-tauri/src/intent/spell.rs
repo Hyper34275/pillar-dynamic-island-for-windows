@@ -70,7 +70,8 @@ pub fn sub_cost(a: char, b: char) -> f32 {
 }
 
 pub fn indel_cost(c: char) -> f32 {
-    if matches!(c, 'ו' | 'י' | 'א' | 'ה') {
+    // vowel letters and the gutturals people drop ("שבו" for "שבוע")
+    if matches!(c, 'ו' | 'י' | 'א' | 'ה' | 'ע') {
         0.5
     } else {
         1.0
@@ -101,7 +102,14 @@ pub fn weighted(a: &[char], b: &[char], max: f32) -> Option<f32> {
         for j in 1..=m {
             // a doubled letter ("מאתמולל", "היוםם") is as cheap as a vowel letter
             let del = if i > 1 && a[i - 1] == a[i - 2] { 0.5 } else { indel_cost(a[i - 1]) };
-            let ins = if j > 1 && b[j - 1] == b[j - 2] { 0.5 } else { indel_cost(b[j - 1]) };
+            // a letter missing at the very end ("אתמו") is a common slip too
+            let ins = if j > 1 && b[j - 1] == b[j - 2] {
+                0.5
+            } else if i == n && j == m {
+                indel_cost(b[j - 1]).min(0.75)
+            } else {
+                indel_cost(b[j - 1])
+            };
             let mut v = (d[i - 1][j] + del)
                 .min(d[i][j - 1] + ins)
                 .min(d[i - 1][j - 1] + sub_cost(a[i - 1], b[j - 1]));
@@ -127,7 +135,7 @@ pub fn max_cost(len: usize) -> f32 {
         3 => 0.5,
         4 => 0.75,
         5..=6 => 1.0,
-        _ => 2.0,
+        _ => 1.5,
     }
 }
 

@@ -69,6 +69,8 @@ pub struct Features {
     pub note_hint: bool,
     /// "קיבלתי", "הגיעו": received things are mail.
     pub mail_hint: bool,
+    /// The terms came from a marker ("על", "לגבי", "המילה"), so they are the subject.
+    pub explicit_terms: bool,
 }
 
 impl Features {
@@ -133,7 +135,10 @@ impl Features {
         f.app_typo = f.app && !seen_exact.contains(&"N_APP");
         // "מה שלח לי שרון": the question is about mail even if the word is not there
         // a named or shared mailbox is about mail too ("מה יש בתיבה המשותפת מהיום")
-        f.mail = f.mail || e.implied_mail || ((e.mailbox.is_some() || e.shared_mailbox) && !(f.file || f.note || f.app));
+        // "בכל התיבות" alone answers the mailbox question; with a date or words it is a search
+        let all_with_more = e.all_mailboxes && (has_time || !e.terms.is_empty());
+        f.mail = f.mail || e.implied_mail || ((e.mailbox.is_some() || e.shared_mailbox || all_with_more) && !(f.file || f.note || f.app));
+        f.explicit_terms = e.explicit_terms;
         f.has_time = has_time;
         f.has_person = e.person.is_some();
         f.has_with = !e.with_names.is_empty() || e.with_topic;
@@ -192,6 +197,7 @@ pub fn candidates(f: &Features) -> Vec<(CapId, f32)> {
         + 0.4 * b(f.v_show)
         - 3.0 * b(f.free)
         - 1.5 * b(f.has_terms || f.has_with)
+        - 1.0 * b(f.explicit_terms)
         - 2.0 * b(f.shared)
         - 1.5 * b(f.other_noun())
         - 1.5 * b(f.has_ext && !f.other_noun())
@@ -274,11 +280,12 @@ pub fn candidates(f: &Features) -> Vec<(CapId, f32)> {
 
     // ---- open / launch (never executed from text: the decision turns them into Confirm) ----
     add(caps::EMAIL_OPEN, if f.mail && opening { 3.8 } else { 0.0 });
-    add(caps::FILES_OPEN, if f.file && opening { 3.8 } else { 0.0 });
+    let typed_doc = f.has_ext && f.has_terms;
+    add(caps::FILES_OPEN, if (f.file || typed_doc) && opening { 3.8 } else { 0.0 });
     add(caps::NOTES_OPEN, if f.note && opening { 3.8 } else { 0.0 });
     let launch = if f.v_launch && !(f.mail || f.file || f.note) {
         2.8
-    } else if f.v_open && !(f.mail || f.file || f.note || f.cal || f.meeting || f.mailbox) {
+    } else if f.v_open && !(f.mail || f.file || f.note || f.cal || f.meeting || f.mailbox || typed_doc) {
         2.4 + 0.4 * b(f.has_ext)
     } else {
         0.0
