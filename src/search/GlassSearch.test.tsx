@@ -480,6 +480,23 @@ describe("the glass sheet: rows and keys", () => {
     expect(api.close).toHaveBeenCalled();
   });
 
+  it("a click on the transparent margin around the sheet is a click outside: it closes, never leaves the field unfocused", async () => {
+    const api = makeApi();
+    mount(api);
+    await ask();
+    const ev = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    act(() => {
+      host.querySelector(".gl-root")!.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(true); // no focus change: the field keeps the keyboard
+    expect(api.close).toHaveBeenCalledTimes(1);
+    // a click on the sheet itself does not close it
+    act(() => {
+      host.querySelector(".gl-ans")!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    });
+    expect(api.close).toHaveBeenCalledTimes(1);
+  });
+
   it("a click on the sheet outside the field keeps the focus in the field", async () => {
     mount(makeApi());
     await ask();

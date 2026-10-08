@@ -413,6 +413,7 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
         onExtend={extendSearch}
         onOpenCenter={openCenter}
         onBackground={() => focusInput()}
+        onOutside={() => api.close()}
         onRegion={(height) => api.region?.(height)}
       />
     );

@@ -64,6 +64,8 @@ export type GlassSearchProps = {
   onOpenCenter: (card: AssistantCard) => void;
   /** A click on the sheet outside the input hands the focus back to it. */
   onBackground: () => void;
+  /** A click on the transparent margin around the sheet: outside it, so the bar closes (as a click anywhere else does). */
+  onOutside: () => void;
   /** The sheet's height (DIP). Resolves once the window's click-through region follows. */
   onRegion: (height: number) => unknown;
   /** The clock of the rows' time column (tests). */
@@ -411,7 +413,22 @@ export function GlassSearch(props: GlassSearchProps) {
   }
 
   return (
-    <div className={flagsClass} style={vars} dir={rtl ? "rtl" : "ltr"} data-view={view.kind} data-entering={entering ? "on" : "off"} data-armed={armed ? "on" : "off"}>
+    <div
+      className={flagsClass}
+      style={vars}
+      dir={rtl ? "rtl" : "ltr"}
+      data-view={view.kind}
+      data-entering={entering ? "on" : "off"}
+      data-armed={armed ? "on" : "off"}
+      onMouseDown={(e) => {
+        // The transparent margin around the sheet (its shadow) belongs to the window's region: a click
+        // there is a click outside the sheet. It must not take the keyboard away from the field.
+        if (e.target === e.currentTarget) {
+          e.preventDefault();
+          props.onOutside();
+        }
+      }}
+    >
       <div
         className="gl-sheet"
         style={{ height: applied }}
