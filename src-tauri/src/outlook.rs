@@ -13,7 +13,8 @@
 //! name), AllDayEvent, IsRecurring, BusyStatus, ResponseStatus and Categories (names, only
 //! to look up their color) are read. Never Body, Recipients, Attachments,
 //! SenderEmailAddress, UserProperties or GetOrganizer. The master category list is read for
-//! names and colors only.
+//! names and colors only. Organizer is the one property on that list that Outlook's object
+//! model guard protects: where it is blocked the events are shown without it ([`organizer`]).
 //!
 //! When meeting invitations are on, the default Inbox is filtered (no date in the filter) to
 //! unread meeting requests; of each, only EntryID (hashed), Subject, ReceivedTime and, of
@@ -26,7 +27,7 @@ use crate::calendar::{
     BusyStatus, CalendarEventDto, CalendarSource, CalendarSourceDto, ErrKind, FetchResult, FetchWindow, Fetched, MeetingInviteDto,
     ResponseStatus, SelectionOrigin, SourceError, SourceGroup, SourceKind, SourceState, SourcesReport, MAX_INVITES,
 };
-use crate::outlook_nav::{self, NavCalendar, NavScan, NavWatcher, SelectionMemory};
+use crate::outlook_nav::{self, FolderCache, NavCalendar, NavScan, NavWatcher, SelectionMemory};
 use crate::com::{self, ComApartment, ComError, ComResult, Dispatch, MessageFilterGuard};
 use crate::debug_log::hash_id;
 use chrono::{DateTime, Local, NaiveDateTime, Timelike, Utc};
@@ -646,6 +647,33 @@ fn online_meeting_link(item: &mut Dispatch) -> ComResult<Option<String>> {
     Ok(None)
 }
 
+/// How long `Organizer` is left alone after the object model guard blocked it.
+const ORGANIZER_BLOCKED_SECS: u64 = 1_800;
+/// Until when `Organizer` is not read.
+static ORGANIZER_BLOCKED_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// The organizer's display name. `Organizer` is guarded by Outlook's object model guard: where
+/// a policy (or an antivirus Outlook does not recognise) denies programmatic access, every read
+/// of it fails, and that must not cost the calendar. Once blocked it is not asked again for
+/// [`ORGANIZER_BLOCKED_SECS`], so a guard set to prompt is not asked over and over either.
+fn organizer(item: &mut Dispatch) -> ComResult<Option<String>> {
+    // Not held across the call: a worker hung in it must not hold up the next one.
+    let blocked_until = *ORGANIZER_BLOCKED_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
+    if blocked_until.is_some_and(|t| Instant::now() < t) {
+        return Ok(None);
+    }
+    match str_prop(item, "Organizer") {
+        Ok(name) => Ok(non_empty(name, MAX_TEXT_CHARS)),
+        Err(e) if e.is_blocked() => {
+            dlog!("WARN", "outlook", "OUTLOOK-110 Organizer blocked by the object model guard ({}); events shown without it", e);
+            *ORGANIZER_BLOCKED_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Instant::now() + std::time::Duration::from_secs(ORGANIZER_BLOCKED_SECS));
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 fn read_item(item: &mut Dispatch, colors: &CategoryColors, want_global_id: bool) -> ComResult<Option<RawItem>> {
     let (Some(start), Some(end)) = (date_prop(item, "Start")?, date_prop(item, "End")?) else {
         return Ok(None);
@@ -669,7 +697,7 @@ fn read_item(item: &mut Dispatch, colors: &CategoryColors, want_global_id: bool)
         start,
         end,
         location,
-        organizer: non_empty(str_prop(item, "Organizer")?, MAX_TEXT_CHARS),
+        organizer: organizer(item)?,
         all_day: bool_prop(item, "AllDayEvent")?,
         recurring: bool_prop(item, "IsRecurring")?,
         busy: i32_prop(item, "BusyStatus")?.unwrap_or(2),
@@ -752,7 +780,7 @@ fn read_invite(item: &mut Dispatch, now: DateTime<Utc>) -> ComResult<InviteRead>
                 date_prop(&mut a, "Start")?,
                 date_prop(&mut a, "End")?,
                 non_empty(str_prop(&mut a, "Location")?, MAX_TEXT_CHARS),
-                non_empty(str_prop(&mut a, "Organizer")?, MAX_TEXT_CHARS),
+                organizer(&mut a)?,
             )
         }
         None => (None, None, None, None),
@@ -848,10 +876,12 @@ fn is_quarantined(id: &str) -> bool {
     q.iter().any(|(i, _)| i == id)
 }
 
-/// Like [`map_com`], for a calendar that is not the primary one: Outlook-level failures keep
-/// their kind (they fail the whole read), anything else becomes that calendar's support code.
+/// Like [`map_com`], for a calendar that is not the primary one: a lost or busy Outlook fails
+/// the whole read, anything else becomes that calendar's support code. An access denied here
+/// is that one calendar's permission (MAPI_E_NO_ACCESS), not a guard on the whole object model:
+/// a guard would already have failed the primary calendar, which is read first.
 fn map_shared(_stage: &'static str, e: ComError) -> SourceError {
-    if e.is_busy() || e.is_disconnected() || e.is_blocked() {
+    if e.is_busy() || e.is_disconnected() {
         return map_com("OUTLOOK-108", e);
     }
     SourceError::new(ErrKind::Failed, outlook_nav::shared_error_code(&e), e.to_string())
@@ -890,6 +920,8 @@ pub struct OutlookSource {
     watcher: Option<NavWatcher>,
     /// The calendars of the last navigation scan (ids as in the scan; the primary one marked).
     known: Vec<NavCalendar>,
+    /// The folders behind the pane's entries, opened once rather than on every sync.
+    folders: FolderCache,
     groups: usize,
     /// Calendar id -> checked, and where that came from, as of the last discovery.
     checked: HashMap<String, bool>,
@@ -1012,6 +1044,7 @@ impl OutlookSource {
         }
         self.watcher = None;
         self.known.clear();
+        self.folders.clear();
         self.checked.clear();
         self.cache.clear();
         self.origin = None;
@@ -1028,9 +1061,11 @@ impl OutlookSource {
         if self.watcher.as_mut().is_some_and(|w| !w.alive()) {
             self.watcher = None;
         }
+        // Only a lost or busy Outlook fails the sync here. Anything else (a policy, a calendar
+        // the user may not open) costs the other calendars, never the primary one.
         let explorer = match app.call_object("ActiveExplorer", Vec::new()) {
             Ok(e) => e,
-            Err(e) if e.is_disconnected() || e.is_busy() || e.is_blocked() => return Err(map_com("OUTLOOK-107", e)),
+            Err(e) if e.is_disconnected() || e.is_busy() => return Err(map_com("OUTLOOK-107", e)),
             Err(e) => {
                 dlog!("DEBUG", "outlook", "no active explorer: {}", e);
                 None
@@ -1041,9 +1076,9 @@ impl OutlookSource {
             self.watcher = None;
             return Ok(None);
         };
-        let scan = match outlook_nav::scan(&mut explorer, own_store) {
+        let scan = match outlook_nav::scan(&mut explorer, own_store, &mut self.folders) {
             Ok(scan) => scan,
-            Err(e) if e.is_disconnected() || e.is_busy() || e.is_blocked() => return Err(map_com("OUTLOOK-107", e)),
+            Err(e) if e.is_disconnected() || e.is_busy() => return Err(map_com("OUTLOOK-107", e)),
             Err(e) => {
                 dlog!("WARN", "outlook", "calendar navigation pane not read: {}", e);
                 return Ok(None);
@@ -1753,6 +1788,20 @@ mod tests {
         // Their new Outlook does not make ours "new outlook only" either.
         let other_new = proc("olk.exe", 2, Some(&[9, 9, 9]), Some(false));
         assert_eq!(classify(&me(), &[other_new]), Discovery::Waiting);
+    }
+
+    #[test]
+    fn access_denied_on_another_calendar_is_that_calendars_problem() {
+        let err = |hr: u32| ComError::new("GetFolderFromID", hr as i32);
+        // No permission on a colleague's calendar: that one calendar, never the whole read.
+        let denied = map_shared("OUTLOOK-107", err(0x8007_0005));
+        assert_eq!((denied.kind, denied.code), (ErrKind::Failed, "CAL-SHARED-101"));
+        assert!(!is_outlook_level(&denied));
+        assert!(!is_outlook_level(&map_shared("OUTLOOK-108", err(0x800A_0005))));
+        // A lost or busy Outlook still fails the sync.
+        assert!(is_outlook_level(&map_shared("OUTLOOK-108", err(0x8001_0001))));
+        // On the primary calendar an access denied is still the object model being blocked.
+        assert_eq!(map_com("OUTLOOK-108", err(0x8007_0005)).code, "OUTLOOK-110");
     }
 
     #[test]

@@ -198,7 +198,7 @@ Statuses: `waiting`, `connecting`, `connected`, `newOutlookOnly`, `elevationMism
 | connecting / connected | not in ROT or disconnected, attempts > 8 | `failed` | OUTLOOK-102 | failure backoff |
 | connecting / connected | busy (call rejected), streak < 3 | unchanged (`connected` stays `connected`) | OUTLOOK-105 | failure backoff |
 | connecting / connected | busy, streak >= 3 | `unresponsive` | OUTLOOK-105 | failure backoff |
-| any | blocked (E_ACCESSDENIED, 0x800A....) | `failed` | OUTLOOK-110 | failure backoff |
+| any | blocked on the primary calendar (E_ACCESSDENIED, 0x800A....) | `failed` | OUTLOOK-110 | failure backoff |
 | any | other read error | `failed` | the stage code: OUTLOOK-106 / 107 / 108 / 102 | failure backoff |
 | any | no answer within 10 s (watchdog), abandoned < 5 | `unresponsive` | OUTLOOK-109 | worker abandoned, fresh one next time |
 | any | watchdog, abandoned = 5 | `failed` | OUTLOOK-109 | at least 5 min before the next try; refresh is ignored |

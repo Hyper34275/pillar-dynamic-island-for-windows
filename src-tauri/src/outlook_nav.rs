@@ -33,6 +33,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Instant;
 use windows::core::GUID;
 
 /// `OlNavigationModuleType.olModuleCalendar`
@@ -110,10 +111,20 @@ pub fn shared_error_code(e: &ComError) -> &'static str {
     }
 }
 
-/// A call that failed because Outlook is gone, busy or guarded fails the whole read; anything
-/// else only affects the one calendar.
+/// Only a call that failed because Outlook is gone or busy fails the whole scan. Anything else,
+/// an access denied included, stays with the one group or calendar it happened on: in a large
+/// organization the pane routinely lists calendars the user may no longer open
+/// (E_ACCESSDENIED = MAPI_E_NO_ACCESS), and one of them must never hide the others.
 fn is_outlook_level(e: &ComError) -> bool {
-    e.is_disconnected() || e.is_busy() || e.is_blocked()
+    e.is_disconnected() || e.is_busy()
+}
+
+/// Outlook-level failures bubble up; anything else is handed back to the caller to deal with.
+fn contained<T>(r: ComResult<T>) -> ComResult<ComResult<T>> {
+    match r {
+        Err(e) if is_outlook_level(&e) => Err(e),
+        r => Ok(r),
+    }
 }
 
 fn clip_name(name: &str) -> String {
@@ -163,6 +174,10 @@ fn calendar_groups(explorer: &mut Dispatch) -> ComResult<Dispatch> {
 /// True while `explorer` shows the Calendar module in a calendar (day/week/month) view: the one
 /// state in which `IsSelected` is the checkbox. Unreadable means "no".
 fn selection_is_trustworthy(explorer: &mut Dispatch) -> ComResult<bool> {
+    Ok(contained(read_trustworthy(explorer))?.unwrap_or(false))
+}
+
+fn read_trustworthy(explorer: &mut Dispatch) -> ComResult<bool> {
     let Some(mut pane) = optional(explorer.get_object("NavigationPane"))? else {
         return Ok(false);
     };
@@ -178,6 +193,7 @@ fn selection_is_trustworthy(explorer: &mut Dispatch) -> ComResult<bool> {
     Ok(i32_prop(&mut view, "ViewType")? == Some(OL_CALENDAR_VIEW))
 }
 
+#[derive(Clone)]
 enum FolderRef {
     Calendar { entry_id: String, store_id: String },
     /// A Tasks or Mail folder dragged into the pane: not ours to read.
@@ -186,55 +202,96 @@ enum FolderRef {
 }
 
 fn open_folder(nav: &mut Dispatch) -> ComResult<FolderRef> {
-    let mut folder = match nav.get_object("Folder") {
-        Ok(f) => f,
-        Err(e) if is_outlook_level(&e) => return Err(e),
+    let read = contained((|| -> ComResult<Option<(String, String)>> {
+        let mut folder = nav.get_object("Folder")?;
+        if i32_prop(&mut folder, "DefaultItemType")?.is_some_and(|t| t != OL_APPOINTMENT_ITEM) {
+            return Ok(None);
+        }
+        Ok(Some((str_prop(&mut folder, "EntryID")?.unwrap_or_default(), str_prop(&mut folder, "StoreID")?.unwrap_or_default())))
+    })())?;
+    Ok(match read {
+        Ok(None) => FolderRef::NotCalendar,
+        Ok(Some((entry_id, _))) if entry_id.is_empty() => FolderRef::Unavailable("CAL-SHARED-106"),
+        Ok(Some((entry_id, store_id))) => FolderRef::Calendar { entry_id, store_id },
         Err(e) => {
             dlog!("DEBUG", "outlook", "navigation folder not opened: {}", e);
-            return Ok(FolderRef::Unavailable(match shared_error_code(&e) {
+            FolderRef::Unavailable(match shared_error_code(&e) {
                 "CAL-SHARED-109" => "CAL-SHARED-106",
                 code => code,
-            }));
+            })
         }
-    };
-    if i32_prop(&mut folder, "DefaultItemType")?.is_some_and(|t| t != OL_APPOINTMENT_ITEM) {
-        return Ok(FolderRef::NotCalendar);
+    })
+}
+
+/// A pane entry's folder is opened again after this long; until then the last result stands.
+const FOLDER_REFRESH_SECS: u64 = 600;
+/// Opening the folders of entries not seen before stops after this much of one scan; the
+/// next syncs open the rest. Another mailbox's folder can take seconds to open, and the whole
+/// sync has to answer within the watchdog's 10 s.
+const SCAN_BUDGET_MS: u128 = 3_000;
+
+/// What opening each pane entry's folder found, so the pane can be re-read on every sync
+/// without opening every colleague's calendar again. Memory only.
+#[derive(Default)]
+pub struct FolderCache {
+    /// "group type|position|display name" -> the folder, and when it was opened.
+    entries: HashMap<String, (FolderRef, Instant)>,
+}
+
+impl FolderCache {
+    pub fn clear(&mut self) {
+        self.entries.clear();
     }
-    let entry_id = str_prop(&mut folder, "EntryID")?.unwrap_or_default();
-    let store_id = str_prop(&mut folder, "StoreID")?.unwrap_or_default();
-    if entry_id.is_empty() {
-        return Ok(FolderRef::Unavailable("CAL-SHARED-106"));
-    }
-    Ok(FolderRef::Calendar { entry_id, store_id })
 }
 
 /// Every calendar in `explorer`'s Calendar navigation pane, in pane order, each once.
-/// `own_store_id` is the profile's default store. Only an Outlook-level failure is an error.
-pub fn scan(explorer: &mut Dispatch, own_store_id: &str) -> ComResult<NavScan> {
+/// `own_store_id` is the profile's default store. Only an Outlook-level failure is an error: a
+/// group or calendar that cannot be read is skipped or listed as unavailable. A scan that ran
+/// out of time before opening every new entry is partial and not [`NavScan::trusted`], so it
+/// never replaces the remembered checkboxes.
+pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache) -> ComResult<NavScan> {
+    let started = Instant::now();
+    let over_budget = || started.elapsed().as_millis() > SCAN_BUDGET_MS;
     let trusted = selection_is_trustworthy(explorer)?;
     let mut groups = calendar_groups(explorer)?;
     let group_count = i32_prop(&mut groups, "Count")?.unwrap_or(0).clamp(0, MAX_GROUPS);
     let mut out = NavScan { calendars: Vec::new(), groups: group_count as usize, trusted };
-    for gi in 1..=group_count {
-        let Some(mut group) = optional(groups.call_object("Item", vec![com::variant_from_i32(gi)]))?.flatten() else {
+    let mut seen = Vec::new();
+    let mut partial = false;
+    'groups: for gi in 1..=group_count {
+        let Ok(Some(mut group)) = contained(optional(groups.call_object("Item", vec![com::variant_from_i32(gi)])).map(Option::flatten))? else {
             continue;
         };
-        let group_type = i32_prop(&mut group, "GroupType")?.unwrap_or(0);
-        let Some(mut folders) = optional(group.get_object("NavigationFolders"))? else {
+        let group_type = contained(i32_prop(&mut group, "GroupType"))?.ok().flatten().unwrap_or(0);
+        let Ok(Some(mut folders)) = contained(optional(group.get_object("NavigationFolders")))? else {
             continue;
         };
-        let folder_count = i32_prop(&mut folders, "Count")?.unwrap_or(0).clamp(0, MAX_FOLDERS_PER_GROUP);
+        let folder_count = contained(i32_prop(&mut folders, "Count"))?.ok().flatten().unwrap_or(0).clamp(0, MAX_FOLDERS_PER_GROUP);
         for fi in 1..=folder_count {
             if out.calendars.len() >= MAX_CALENDARS {
-                return Ok(out);
+                break 'groups;
             }
-            let Some(mut nav) = optional(folders.call_object("Item", vec![com::variant_from_i32(fi)]))?.flatten() else {
+            let Ok(Some(mut nav)) = contained(optional(folders.call_object("Item", vec![com::variant_from_i32(fi)])).map(Option::flatten))? else {
                 continue;
             };
-            let name = clip_name(&str_prop(&mut nav, "DisplayName")?.unwrap_or_default());
-            let selected = bool_prop(&mut nav, "IsSelected")?;
+            let name = clip_name(&contained(str_prop(&mut nav, "DisplayName"))?.ok().flatten().unwrap_or_default());
+            let selected = contained(bool_prop(&mut nav, "IsSelected"))?.unwrap_or(false);
             let group = group_of(group_type);
-            let calendar = match open_folder(&mut nav)? {
+            let key = format!("{group_type}|{fi}|{name}");
+            let folder = match cache.entries.get(&key) {
+                Some((folder, at)) if at.elapsed().as_secs() < FOLDER_REFRESH_SECS || over_budget() => folder.clone(),
+                None if over_budget() => {
+                    partial = true;
+                    continue;
+                }
+                _ => {
+                    let folder = open_folder(&mut nav)?;
+                    cache.entries.insert(key.clone(), (folder.clone(), Instant::now()));
+                    folder
+                }
+            };
+            seen.push(key);
+            let calendar = match folder {
                 FolderRef::NotCalendar => continue,
                 FolderRef::Calendar { entry_id, store_id } => NavCalendar {
                     id: hash16(&format!("{store_id}|{entry_id}")),
@@ -261,6 +318,19 @@ pub fn scan(explorer: &mut Dispatch, own_store_id: &str) -> ComResult<NavScan> {
                 out.calendars.push(calendar);
             }
         }
+    }
+    if partial {
+        out.trusted = false;
+        dlog!(
+            "INFO",
+            "outlook",
+            "calendar navigation scan stopped after {} ms with {} calendars; the rest follow on the next syncs",
+            started.elapsed().as_millis(),
+            out.calendars.len()
+        );
+    } else {
+        // Entries gone from the pane are forgotten.
+        cache.entries.retain(|k, _| seen.contains(k));
     }
     Ok(out)
 }

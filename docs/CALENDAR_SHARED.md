@@ -148,8 +148,13 @@ and copied diagnostics show these codes:
 | CAL-SHARED-106 | The navigation pane entry cannot be opened |
 | CAL-SHARED-109 | Any other read failure |
 
-Outlook-level failures (busy, disconnected, blocked by the object model guard) keep the existing
-OUTLOOK-1xx handling for the whole read.
+Outlook-level failures (busy, disconnected) keep the existing OUTLOOK-1xx handling for the whole
+read. An access denied on any calendar other than the primary one (E_ACCESSDENIED is also
+MAPI_E_NO_ACCESS, a calendar the user may not or no longer open) is that calendar's
+CAL-SHARED-101 or CAL-SHARED-106, never OUTLOOK-110: in a large organization the pane lists
+such calendars routinely. The pane's folders are opened once and kept for 10 minutes; a scan
+opens new ones for at most 3 s and leaves the rest to the next syncs (not trusted for the
+checkboxes until it is complete).
 
 ## Reminders
 
