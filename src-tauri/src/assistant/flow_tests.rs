@@ -423,7 +423,10 @@ fn single_mailbox_named_mailbox_and_sender_do_not_ask() {
     let card = engine_run(&e, &many, "q3", &exec_cap(caps::EMAIL_SEARCH, sender));
     assert_eq!(card.phase, CardPhase::Answer);
     assert_eq!(many.queries.lock().unwrap()[1].0.mailboxes.len(), 3);
-    assert_eq!(many.queries.lock().unwrap()[1].0.sender, vec!["דנה"]);
+    // the typed name first, then its other spellings (intent::name_variants)
+    let senders = many.queries.lock().unwrap()[1].0.sender.clone();
+    assert_eq!(senders.first().map(String::as_str), Some("דנה"));
+    assert!(senders.iter().any(|s| s == "Dana"), "{senders:?}");
 }
 
 #[test]
