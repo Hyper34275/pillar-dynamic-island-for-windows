@@ -69,3 +69,8 @@ alternative and never replace the word as typed.
 - loanword synonyms ("פרזנטציה");
 - typos in time words that are also real words ("בשבט", "שלשוום", "מחך");
 - a meeting noun used as a file topic without a proclitic ("פרוטוקול ישיבה").
+
+## After the frequency data (2026-10-09, not blind)
+
+The wordfreq frequencies and the office word list (`docs/HEBREW_ENGINE.md` §6) add common spellings
+of misspelt search words as alternatives. Test: **255 / 300 = 85.0 %**.

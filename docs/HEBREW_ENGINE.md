@@ -41,7 +41,7 @@ The dictionary is data compiled into the binary, so nothing can be missing on a 
 | `lexicon/time.json` | Day, week, month and part-of-day words. |
 | `lexicon/names.json` | Nickname groups (איציק/יצחק), Latin spellings, words that are never names. |
 | `lexicon/real_words.txt` | Real Hebrew words one cheap edit from a keyword ("קצבים", "הים", "מחיר"). They are corrected only with context support. |
-| `lexicon/freq_he.tsv` | Optional word frequencies (Zipf × 100). Empty by default; see 6. |
+| `lexicon/freq_he.tsv`, `lexicon/office_words.txt` | Word frequencies (wordfreq, CC BY-SA 4.0) and hand-written office words; see 6. |
 
 The main concepts:
 - `N_MAIL`, `N_CAL`, `N_MEETING`, `N_FILE`, `N_PPT`, `N_NOTE`, `N_APP`, `N_MAILBOX`, `N_SHARED` (objects)
@@ -159,31 +159,39 @@ No stem or synonym widening is applied: "חושב" stays חושב.
 
 ## 6. Word frequencies and wordfreq
 
-wordfreq 3.2.0 (Robyn Speer, last commit 2025-01-04, frozen at about 2021 data) was evaluated:
+| file | holds | licence |
+|---|---|---|
+| `lexicon/freq_he.tsv` | The 48,448 words of Hebrew letters among the 50,000 most frequent of wordfreq 3.2.0's `large_he` list (Robyn Speer), as Zipf × 100 | CC BY-SA 4.0 |
+| `lexicon/freq_he.LICENSE.txt` | The credit and the sources | — |
+| `lexicon/office_words.txt` | Hand-written office words ("חשבונית", "פרוטוקול", …) that general text rarely uses | ours, no notice needed |
 
-- **Code:** Apache-2.0.
-- **Data:** "may be redistributed under CC BY-SA 4.0". The Hebrew list mixes Wikipedia (CC BY-SA),
-  OpenSubtitles, OSCAR web text, Google Books and Twitter counts. Those sources have their own
-  terms.
-- **What it offers:** word → frequency only. No synonyms, lemmas or sentence understanding.
-  Prefixes stay attached, final letters are not folded, digits collapse to 0.
-- **Size:** the Hebrew list is 58k words (small) or 592k (large). The top 50k as TSV is about
-  760 KB (210 KB gzipped).
-- **Useful but not decisive:** it separates real-word typos (קבצים 4.00 vs קצבים 3.16 Zipf), but
-  not by much.
+wordfreq's code is Apache-2.0. Its data may be redistributed under CC BY-SA 4.0 with credit to
+Robyn Speer and the sources (Wikipedia, OpenSubtitles, Google Books Ngrams, OSCAR, Twitter
+counts). The data is frozen at about 2021. It gives frequencies only: no synonyms, lemmas or
+sentence understanding.
 
-**Nothing derived from wordfreq is in this repository or the installer.** `freq_he.tsv` is empty,
-and `real_words.txt` is hand-written. A derived list would be a separate data file under CC BY-SA
-4.0, credited to Robyn Speer and the sources, and kept apart from the app code. The mixed source
-terms make that uncertain, so it waits for an explicit approval.
+**What it is used for:**
+- **Real words.** A typed word with Zipf ≥ 3 is a real word. A keyword correction of it needs the
+  sentence's support (see 3).
+- **Ties.** The more frequent candidate wins.
+- **Misspelt search words.** A Hebrew search word of 4 or more letters that is not listed (not
+  even without its proclitics) gets the closest common spelling(s) as OR alternatives:
+  - "ביתוח" → ביתוח | ביטוח
+  - "חשבונת" → חשבונת | חשבונות | חשבונית
 
-**After approval:**
-1. Fill `freq_he.tsv` with `word<TAB>zipf×100`: Hebrew letters only, top about 50k.
-2. Ship its licence notice with the installer.
+  The rules for these alternatives:
+  - The candidates are words with Zipf ≥ 3.5, plus the office list.
+  - The budget is 0.75 for 4–5 letters and 1.0 for longer words.
+  - At most two alternatives, all at the cheapest cost.
+  - Never for an exact word, a quoted phrase or a known name.
+  - The word as typed is always searched too.
 
-The engine then uses it to rank ties and to mark real words. A further use would be correcting
-misspelt *search words* as an OR alternative ("ביתוח" → ביתוח | ביטוח). That needs a general
-dictionary and is the largest remaining error class on the test set.
+**Credit policy (the user's decision, 2026-10-09):** the credit lives in the code and in a text
+file in the install folder (`freq_he.LICENSE.txt`, copied by the installer). It never appears in
+the UI: no window and no About page.
+
+**Size:** about 760 KB of text in the binary. The tables are built on the first question, or at
+start-up off the UI thread by the assistant's warm-up, and take a few MB of memory.
 
 ## 7. Weak machines and closed networks
 
@@ -228,7 +236,7 @@ Run `cargo test --lib intent::eval -- --nocapture` for the report:
 | set | old engine (8a29212) | now |
 |---|---|---|
 | test, blind (frozen at 2111b51) | 52.3 % | **80.7 %** (82.0 % with one label fix and the notes amendment) |
-| test after the audit (not blind) | – | 82.3 % |
+| test after the audit (not blind) | – | 85.0 % (with the frequency data) |
 | dev | 55.7 % | 96.7 % |
 | dev2 (not tuned on at first: 70.0 %) | – | 90.0 % |
 | must | 68.2 % | 100 % |
@@ -237,7 +245,7 @@ The initial target of 90 % on a representative test set of everyday requests is 
 the blind test measures 80.7 %.
 
 **Remaining errors, largest first:**
-1. Spelling mistakes inside search words (needs the frequency data of 6).
+1. Spelling mistakes inside search words: partly fixed by the frequency data of 6.
 2. Questions with two people.
 3. Number-only and calculator follow-ups.
 4. Availability with no date.
