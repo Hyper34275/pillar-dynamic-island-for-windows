@@ -74,7 +74,7 @@ describe("SearchBar", () => {
     mount(makeApi());
     const input = host.querySelector("input")!;
     expect(document.activeElement).toBe(input);
-    expect(input.placeholder).toMatch(/CompanyIsland/);
+    expect(input.placeholder).toMatch(/יובל|Yuval/);
     type(input, "שלום");
     expect(input.getAttribute("dir")).toBe("auto");
   });

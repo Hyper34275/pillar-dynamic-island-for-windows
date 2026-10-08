@@ -17,7 +17,7 @@ const section = (name: string): ScrollStop => (panel) => panel.querySelector<HTM
 
 /**
  * Where the (inert, never user-scrolled) panel of each tab moves to, in order. Settings is the
- * longest: it shows the island display choice, then the Island Center and tour buttons, then the
+ * longest: it shows the island display choice, then the Yuval Center and tour buttons, then the
  * end of the diagnostics. The other lists simply end at the bottom of their content.
  */
 export const SCROLL_STOPS: Partial<Record<TabId, ScrollStop[]>> = {

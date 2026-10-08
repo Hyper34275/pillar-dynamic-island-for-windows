@@ -70,7 +70,7 @@ export interface TourStep {
   /** The island's size for this step, from the same functions the real island uses. */
   size: IslandSize;
   content: ReactNode;
-  /** A page of the Island Center the explanation links to. */
+  /** A page of the Yuval Center the explanation links to. */
   action?: { page: "notes" | "settings"; labelKey: MessageKey };
 }
 

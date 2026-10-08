@@ -33,7 +33,7 @@ describe("buildDiagnosticsText", () => {
   it("starts with the one-line summary support asks for", () => {
     const text = buildDiagnosticsText({ info: INFO, diagnostics: null, snapshot: CONNECTED, notifications: "allowed", generatedAt });
     expect(text.split("\r\n")[0]).toBe(
-      "CompanyIsland 1.0.0 / Windows 10 21H2 Build 19044 / Computer: PC-0042 / User: CORP\\jdoe / Outlook: Connected / Calendar: Connected / Cached events: 7 / Notifications: Available"
+      "Yuval 1.0.0 / Windows 10 21H2 Build 19044 / Computer: PC-0042 / User: CORP\\jdoe / Outlook: Connected / Calendar: Connected / Cached events: 7 / Notifications: Available"
     );
   });
 
@@ -64,7 +64,7 @@ describe("buildDiagnosticsText", () => {
     });
     const lines = text.split("\r\n");
     expect(lines[1]).toBe("");
-    expect(lines[2]).toBe("CompanyIsland diagnostics");
+    expect(lines[2]).toBe("Yuval diagnostics");
     expect(lines).toContain("Generated: 2026-10-06T10:00:00.000Z");
     expect(lines).toContain("App version: 1.0.0");
     expect(lines).toContain("Windows user: CORP\\jdoe");
@@ -83,7 +83,7 @@ describe("buildDiagnosticsText", () => {
     const text = buildDiagnosticsText({ info: null, diagnostics: null, snapshot: WAITING_SNAPSHOT, notifications: null, generatedAt });
     expect(text.split("\r\n")[0]).toBe(
       // No system info: the page's own build version (package.json) stands in.
-      `CompanyIsland ${APP_VERSION} / n/a / Computer: n/a / User: n/a / Outlook: Waiting for Outlook / Calendar: Waiting for Outlook / Cached events: 0 / Notifications: n/a`
+      `Yuval ${APP_VERSION} / n/a / Computer: n/a / User: n/a / Outlook: Waiting for Outlook / Calendar: Waiting for Outlook / Cached events: 0 / Notifications: n/a`
     );
     expect(text).toContain("Local IP: n/a");
     expect(text).toContain("OS: n/a");

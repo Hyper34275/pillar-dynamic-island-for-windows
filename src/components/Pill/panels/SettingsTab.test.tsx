@@ -168,12 +168,12 @@ describe("SettingsTab diagnostics follow the live calendar", () => {
 
 const buttonNamed = (name: string) => [...container.querySelectorAll("button")].find((b) => b.textContent === name)!;
 
-describe("SettingsTab Island Center section", () => {
+describe("SettingsTab Yuval Center section", () => {
   it("opens the Center on its settings page and the tour from two buttons", async () => {
     openCenter.mockClear();
     await mount(service(snap({})));
     expect(container.querySelector("section[data-section=center]")).not.toBeNull();
-    await act(async () => buttonNamed("Open Island Center").click());
+    await act(async () => buttonNamed("Open Yuval Center").click());
     expect(openCenter).toHaveBeenLastCalledWith("settings");
     await act(async () => buttonNamed("System tour").click());
     expect(openCenter).toHaveBeenLastCalledWith("tour");
@@ -229,7 +229,7 @@ describe("SettingsView", () => {
     render(props);
     act(() => container.querySelector<HTMLElement>('button[role="switch"][aria-label="Launch with Windows"]')!.click());
     expect(props.onChange).toHaveBeenCalledWith({ launchWithWindows: !SETTINGS_DEFAULTS.launchWithWindows });
-    act(() => buttonNamed("Open Island Center").click());
+    act(() => buttonNamed("Open Yuval Center").click());
     act(() => buttonNamed("System tour").click());
     act(() => buttonNamed("Copy diagnostics").click());
     act(() => buttonNamed("Open logs").click());

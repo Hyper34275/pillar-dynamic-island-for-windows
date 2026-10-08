@@ -298,7 +298,7 @@ describe("NotesTab", () => {
     return event;
   }
 
-  it("opens the Island Center's Notes page from the header and the empty state, and a clicked note on that note", async () => {
+  it("opens the Yuval Center's Notes page from the header and the empty state, and a clicked note on that note", async () => {
     mocks.notes = [note({ id: "abc123" })];
     await mount();
     await act(async () => buttonWithText("Open in app").click());
