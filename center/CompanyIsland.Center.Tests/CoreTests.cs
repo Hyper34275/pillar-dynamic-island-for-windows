@@ -95,7 +95,7 @@ public class CenterPageTests
     [Fact]
     public void A_redirected_command_line_with_the_exe_path_and_quotes_still_parses()
     {
-        var page = CenterPage.FromCommandLine("\"C:\\Program Files\\CompanyIsland\\center\\CompanyIsland.Center.exe\" --page \"note:abc123\"");
+        var page = CenterPage.FromCommandLine("\"C:\\Program Files\\Yuval\\center\\Yuval.Center.exe\" --page \"note:abc123\"");
         Assert.Equal(CenterPageKind.Note, page.Kind);
         Assert.Equal("abc123", page.NoteId);
     }
@@ -353,6 +353,20 @@ public class StringsTests
         Assert.Equal("שעה, תאריך ויום", Strings.DisplayFull);
         Assert.Equal("שעה בלבד", Strings.DisplayClock);
         Assert.Equal("תאריך ויום", Strings.DisplayDate);
+    }
+
+    [Fact]
+    public void The_product_is_called_Yuval_and_its_second_app_the_Yuval_Center()
+    {
+        Assert.Equal("מרכז יובל", Strings.AppTitle);
+        Assert.Contains("Yuval.Center.exe", Strings.CenterStuck);
+        Assert.Contains("יובל", Strings.WelcomeTitle);
+        foreach (var property in typeof(Strings).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+        {
+            string value = (string)property.GetValue(null)!;
+            Assert.DoesNotContain("CompanyIsland", value);
+            Assert.DoesNotContain("מרכז האי", value);
+        }
     }
 
     [Fact]

@@ -3,7 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
     <RootNamespace>CompanyIsland.Center.Core</RootNamespace>
-    <AssemblyName>CompanyIsland.Center.Core</AssemblyName>
+    <AssemblyName>Yuval.Center.Core</AssemblyName>
     <IsTrimmable>true</IsTrimmable>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
   </PropertyGroup>

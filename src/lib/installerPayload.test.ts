@@ -21,11 +21,11 @@ const nsiWith = (targets: string[]) =>
     "SectionEnd",
   ].join("\r\n");
 
-const ALL = ["center\\CompanyIsland.Center.exe", "center\\CompanyIsland.Center.pri", "center\\web\\tour.html"];
+const ALL = ["center\\Yuval.Center.exe", "center\\Yuval.Center.pri", "center\\web\\tour.html"];
 
 describe("installer payload check (build-center.cjs)", () => {
   it("requires the Center exe, its .pri and the Tour page", () => {
-    expect(REQUIRED_PAYLOAD).toEqual(["CompanyIsland.Center.exe", "CompanyIsland.Center.pri", "web/tour.html"]);
+    expect(REQUIRED_PAYLOAD).toEqual(["Yuval.Center.exe", "Yuval.Center.pri", "web/tour.html"]);
   });
 
   it("passes an installer script that lists every required file", () => {
@@ -47,8 +47,8 @@ describe("installer payload check (build-center.cjs)", () => {
   });
 
   it("does not count a file that is only mentioned (a Delete line or a similarly named file)", () => {
-    const nsi = `Delete "$INSTDIR\\center\\CompanyIsland.Center.exe"\nFile /a "/oname=center\\CompanyIsland.Center.exe.bak" "x"`;
-    expect(missingPayload(nsi)).toContain("center\\CompanyIsland.Center.exe");
+    const nsi = `Delete "$INSTDIR\\center\\Yuval.Center.exe"\nFile /a "/oname=center\\Yuval.Center.exe.bak" "x"`;
+    expect(missingPayload(nsi)).toContain("center\\Yuval.Center.exe");
   });
 
   it("CLI: exits 1 on an installer without the Center and 0 with it", () => {
@@ -62,7 +62,7 @@ describe("installer payload check (build-center.cjs)", () => {
         spawnSync(process.execPath, [script, "--check-installer-script", "--nsi", nsi], { encoding: "utf8" });
       const failed = run(bad);
       expect(failed.status).toBe(1);
-      expect(failed.stderr).toContain("center\\CompanyIsland.Center.exe");
+      expect(failed.stderr).toContain("center\\Yuval.Center.exe");
       expect(failed.stderr).toContain("build:installer");
       expect(run(good).status).toBe(0);
       expect(run(join(dir, "missing.nsi")).status).toBe(1);

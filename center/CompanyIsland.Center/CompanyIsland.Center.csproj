@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    Island Center: a WinUI 3 app (unpackaged, self-contained, trimmed) installed next to the island.
+    Yuval Center: a WinUI 3 app (unpackaged, self-contained, trimmed) installed next to the island.
     Lessons from the toolchain probe: EnableMsixTooling=true is required (without it the app's .pri is missing from publish
     and XAML crashes with 0xc000027b); the WinUI + Runtime packages are used, not the 1.8 metapackage (it adds AI/ML);
     PublishTrimmed with TrimMode=partial works; build from a short path (deep folders break MSIX content extraction).
@@ -10,7 +10,9 @@
     <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <RootNamespace>CompanyIsland.Center</RootNamespace>
-    <AssemblyName>CompanyIsland.Center</AssemblyName>
+    <AssemblyName>Yuval.Center</AssemblyName>
+    <!-- The exe's "File description": what Task Manager shows as the process name. -->
+    <AssemblyTitle>Yuval Center</AssemblyTitle>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <Platforms>x64</Platforms>

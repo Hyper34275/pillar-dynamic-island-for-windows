@@ -12,7 +12,7 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), "utf8");
 // Only the [package] table: dependency tables also have `version = "..."` entries.
 const cargoPackage = (read("src-tauri", "Cargo.toml").split(/^\[package\]\s*$/m)[1] || "").split(/^\[/m)[0];
 const cargoVersion = /^version\s*=\s*"([^"]+)"/m.exec(cargoPackage);
-// The Island Center (WinUI 3) is versioned with the island: <Version> in its shared MSBuild props.
+// The Yuval Center (WinUI 3) is versioned with the island: <Version> in its shared MSBuild props.
 const centerVersion = /<Version>\s*([^<\s]+)\s*<\/Version>/.exec(read("center", "Directory.Build.props"));
 const versions = {
   "package.json": JSON.parse(read("package.json")).version,
