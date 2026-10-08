@@ -77,6 +77,24 @@ impl W {
     }
 }
 
+/// The words of a cleaned text. A token with no letter or digit in it ("+", "&", "=", "/", "?", "–") is no
+/// word of the grammar, but it is part of what the user typed ("2 + 2", "AT & T"): it stays attached to
+/// the word before it, so a query, a note or a subject keeps it.
+fn words(cleaned: &str) -> Vec<W> {
+    let mut out: Vec<W> = Vec::new();
+    for tok in cleaned.split_whitespace() {
+        let word = W::new(tok);
+        if !word.f.is_empty() {
+            out.push(word);
+        } else if let Some(prev) = out.last_mut() {
+            prev.orig.push(' ');
+            prev.orig.push_str(tok);
+            prev.colon |= tok.trim_end_matches(['.', '!', '?', ',', ';', '"', '\'']).ends_with(':');
+        }
+    }
+    out
+}
+
 /// A word and its forms without proclitics: `(form, the prefix letter that mattered)`.
 fn stems(w: &W) -> Vec<(String, Option<char>)> {
     let mut v = vec![(w.f.clone(), w.pre)];
@@ -173,6 +191,31 @@ impl Lex {
     /// The word, or one of its forms without proclitics, is in the (single-word) list.
     fn has_stem(&self, list: &str, w: &W) -> bool {
         stems(w).iter().any(|(s, _)| self.has(list, s))
+    }
+
+    /// The folded phrase (one or more words) is an entry of the list.
+    fn in_list(&self, list: &str, phrase: &str) -> bool {
+        self.lists.get(list).map_or(false, |l| l.iter().any(|p| p.join(" ") == phrase))
+    }
+
+    /// `w[i..i + len]` (an engine name found by `cat_at`) is a generic word ("web", "online", "map", "ברשת"):
+    /// it names a search engine only when the sentence leaves no doubt (see `m_search`).
+    fn generic_engine(&self, w: &[W], i: usize, len: usize) -> bool {
+        if len == 1 {
+            return self.has_stem("generic_engines", &w[i]);
+        }
+        let phrase = w[i..i + len].iter().map(|x| x.f.as_str()).collect::<Vec<_>>().join(" ");
+        self.in_list("generic_engines", &phrase)
+    }
+
+    /// Something on this PC is named (a mail, a file, a meeting, a note, an app, "my ...").
+    fn names_local(&self, w: &W) -> bool {
+        self.has("local_nouns", &w.f) || self.has_stem("local_nouns", w)
+    }
+
+    /// A phrase of the list starts at any of the first `within` words.
+    fn phrase_near_start(&self, list: &str, w: &[W], within: usize) -> bool {
+        (0..w.len().min(within)).any(|k| self.list_at(list, w, k, false).is_some())
     }
 
     /// Length of the longest phrase of `list` that starts at `w[i]`. `verb`: the first word may carry a
@@ -316,7 +359,7 @@ impl Lex {
         if cleaned.contains('\\') {
             return None;
         }
-        let mut w: Vec<W> = cleaned.split_whitespace().map(W::new).filter(|w| !w.f.is_empty()).collect();
+        let mut w: Vec<W> = words(&cleaned);
         if w.is_empty() || w.len() > MAX_WORDS {
             return None;
         }
@@ -427,6 +470,7 @@ impl Lex {
             let vn = self.list_at("v_compose", w, j, true)?;
             // "פתח מייל" alone is opening the mailbox; only "פתח מייל חדש" is a new message
             let open_verb = self.list_at("v_open", w, j, true).is_some();
+            let verb_word = w[j].f.clone();
             j += vn;
             while j < w.len() && (self.has("mail_pre", &w[j].f) || self.has("fillers", &w[j].f)) {
                 j += 1;
@@ -443,6 +487,20 @@ impl Lex {
             }
             if open_verb && !saw_new {
                 return None;
+            }
+            // English verbs that also describe mail someone is looking for ("new mail from Dan", "new mail
+            // today", "create email rule"): a draft only when nothing but a recipient or a subject follows.
+            if matches!(verb_word.as_str(), "new" | "start" | "begin" | "create" | "make" | "prepare" | "open") {
+                let to_marker = |x: &W| matches!(x.f.as_str(), "to" | "for" | "אל");
+                let fits = match w.get(j) {
+                    // a bare "new mail" is not a draft either: it is the newest mail
+                    None => verb_word != "new",
+                    Some(x) if verb_word == "new" => to_marker(x),
+                    Some(x) => to_marker(x) || self.list_at("mail_stop", w, j, false).is_some(),
+                };
+                if !fits {
+                    return None;
+                }
             }
         }
         let mut slots = Slots::default();
@@ -686,7 +744,12 @@ impl Lex {
         if dest_words.len() > 8 {
             return None;
         }
-        if guarded && dest_words.iter().any(|x| self.has("local_nouns", &x.f) || self.has_stem("local_nouns", x)) {
+        // "איפה נמצאת הפגישה", "איך מגיעים לפגישה של מחר", "navigate to my meeting": a place on a map is not a
+        // mail, a file or a meeting, so these stay with the normal engine. After "directions to" / "נווט ל"
+        // a possessive alone ("my office", "בית שלי") is still a place.
+        const POSSESSIVE: [&str; 5] = ["שלי", "שלנו", "my", "our", "mine"];
+        let local = |x: &W| self.names_local(x) && (guarded || !stems(x).iter().any(|(s, _)| POSSESSIVE.contains(&s.as_str())));
+        if dest_words.iter().any(local) {
             return None;
         }
         let first_text = if strip && dest_words[0].pre.is_none() { strip_lamed(&dest_words[0].orig) } else { dest_words[0].orig_no_pre() };
@@ -728,6 +791,12 @@ impl Lex {
                 }
             }
             if i + 1 < n {
+                // "google sent me a file", "גוגל שלחו לי מייל", "google calendar invite": Google as a sender or
+                // a product of Google, not a search (the verb forms below are explicit and need no such check)
+                let product = self.cat_at("sites", w, i).map_or(false, |(len, _, _)| len >= 2);
+                if product || w[i + 1..].iter().any(|x| self.names_local(x)) {
+                    return None;
+                }
                 let j = skip_query_lead(w, i + 1);
                 return Some(self.search_result("google", w, j));
             }
@@ -747,7 +816,10 @@ impl Lex {
         }
         if let Some((len, key, prep)) = self.cat_at("engines", w, j) {
             let hebrew_form = prep == Some('ב');
-            let english_form = en_prep || (class == VClass::Search && prep.is_none() && w[j].f.is_ascii());
+            // "search web design", "find online order", "check internet bill": a generic word ("web", "online",
+            // "net", "map") in front of the query names an engine only with "for" / "about" after it
+            let generic_needs_for = !en_prep && self.generic_engine(w, j, len) && !matches!(w.get(j + len).map(|x| x.f.as_str()), Some("for" | "about"));
+            let english_form = en_prep || (class == VClass::Search && prep.is_none() && w[j].f.is_ascii() && !generic_needs_for);
             if hebrew_form || english_form {
                 let k = skip_query_lead(w, skip_fillers(self, w, j + len));
                 if k >= n {
@@ -781,6 +853,11 @@ impl Lex {
                         }
                         let k = skip_query_lead(w, start);
                         if k >= q_end {
+                            continue;
+                        }
+                        // "תחפש את הקובץ ברשת", "find the map file in maps": a generic word at the end is no engine
+                        // when the query names something on this PC
+                        if self.generic_engine(w, s, l) && w[k..q_end].iter().any(|x| self.names_local(x)) {
                             continue;
                         }
                         return text_of(&w[k..q_end], false).map(|q| {
@@ -963,8 +1040,8 @@ fn strip_lamed(word: &str) -> String {
 // =============================================================================
 
 /// Understand an explicit command, or return `None` and leave the text to the normal engine.
-pub fn detect(text: &str, _ctx: &Ctx, _now: DateTime<Local>, _known: &Known) -> Option<Interpretation> {
-    let Some(cmd) = lex().parse(text) else { return web_topic(text) };
+pub fn detect(text: &str, ctx: &Ctx, now: DateTime<Local>, _known: &Known) -> Option<Interpretation> {
+    let Some(cmd) = lex().parse(text) else { return reply_to_question(text, ctx, now).or_else(|| web_topic(text)) };
     let decision = match cmd.ask {
         Some(ask) => Decision::Clarify { ask, cap: Some(cmd.cap) },
         None => Decision::Confirm { cap: cmd.cap },
@@ -979,6 +1056,30 @@ pub fn detect(text: &str, _ctx: &Ctx, _now: DateTime<Local>, _known: &Known) -> 
     })
 }
 
+/// The answer to a question this file asked ("מה לחפש?", "מה לרשום בפתק?", "מה לתרגם?"): the typed text
+/// becomes the missing query and the command is offered again with everything else it had. Not an answer: a
+/// text that opens with a verb or a question word (the user moved on to something else), or has no word.
+fn reply_to_question(text: &str, ctx: &Ctx, now: DateTime<Local>) -> Option<Interpretation> {
+    let last = ctx.last(now.timestamp_millis())?;
+    let Decision::Clarify { ask: AskKind::Content, cap: Some(cap) } = last.decision else { return None };
+    if !matches!(cap, caps::WEB_SEARCH | caps::NOTES_CREATE) {
+        return None;
+    }
+    let l = lex();
+    let cleaned: String = clean(text).chars().take(MAX_CHARS).collect();
+    let w = words(&cleaned);
+    if w.is_empty() || w.len() > MAX_WORDS || verb_class(l, &w, 0).is_some() || l.has("question_words", &w[0].f) {
+        return None;
+    }
+    let query = text_of(&w, false)?;
+    let mut slots = last.slots.clone();
+    if slots.engine.as_deref() == Some("translate") && slots.lang_to.is_none() {
+        slots.lang_to = Some(sys::default_translate_target(&query).to_string());
+    }
+    slots.query = Some(query);
+    Some(Interpretation { decision: Decision::Confirm { cap }, slots, confidence: 0.9, lang: detect_lang(text), follow_up: true, ranked: vec![(cap, 1.0)] })
+}
+
 /// A question about the weather, a currency rate, the news or a sports result: nothing on this PC answers
 /// it, so the engine must not guess a mail or file search for it ("שער הדולר", "תוצאות הכדורגל"). It is
 /// `NoMatch`, and the assistant turns that into the offer to search the web. Texts that name something
@@ -986,10 +1087,30 @@ pub fn detect(text: &str, _ctx: &Ctx, _now: DateTime<Local>, _known: &Known) -> 
 fn web_topic(text: &str) -> Option<Interpretation> {
     let l = lex();
     let w = offerable_words(l, text)?;
-    if topic_of(l, &w) == Fallback::Generic || w.iter().any(|x| l.has("local_nouns", &x.f) || l.has_stem("local_nouns", x)) {
+    if topic_of(l, &w) == Fallback::Generic || local_hint(l, &w) {
+        return None;
+    }
+    // "תחפש את תחזית המכירות", "find the exchange rate report", "תמצא את הדוח על המניות": a request to find
+    // something is a search of this PC (the normal engine), whatever words it contains
+    if l.phrase_near_start("find_verbs", &w, 4) {
         return None;
     }
     Some(Interpretation { decision: Decision::NoMatch, slots: Slots::default(), confidence: 0.0, lang: detect_lang(text), follow_up: false, ranked: Vec::new() })
+}
+
+/// The words name something of the user's own: a mail, a file, a meeting, a note, an app, "my ...", or a
+/// question about their own day ("מה יש לי עם מכבי מחר", "do I have a meeting about stocks").
+fn local_hint(l: &Lex, w: &[W]) -> bool {
+    w.iter().any(|x| l.names_local(x)) || l.phrase_near_start("personal_markers", w, MAX_WORDS)
+}
+
+/// `Some(kind)` for a question that only the web answers (weather, a currency rate, the news, a sports
+/// result) and that names nothing of the user's own: "מה שער הדולר", but not "מה יש לי עם מכבי מחר".
+pub fn web_topic_kind(text: &str) -> Option<Fallback> {
+    let l = lex();
+    let w = offerable_words(l, text)?;
+    let kind = topic_of(l, &w);
+    (kind != Fallback::Generic && !local_hint(l, &w)).then_some(kind)
 }
 
 /// The words of a text that may be offered as a web search, or `None`: nothing to search (no letters), a

@@ -512,6 +512,42 @@ const NOT_COMMANDS: &[&str] = &[
     "where is my meeting",
     "where is the budget file",
     "איפה נמצאת הפגישה של מחר",
+    // looking for mail, files and meetings with words that are also engines, topics or verbs of a command
+    "new mail from Dan",
+    "new email from Dana",
+    "new mail today",
+    "new email about the budget",
+    "new mail",
+    "create email rule",
+    "find net income report",
+    "search web design brief",
+    "look up web traffic report",
+    "find online order confirmation",
+    "search internet bill",
+    "check internet bill",
+    "find maps of Israel",
+    "תחפש בנט",
+    "תחפש מייל מנפתלי בנט",
+    "תחפש קובץ ברשת",
+    "תמצא לי מסמך ברשת",
+    "תרגום החוזה",
+    "translation of the contract",
+    "google sent me a file",
+    "גוגל שלחו לי מייל",
+    "google calendar invite",
+    "google drive file budget",
+    "איך מגיעים לפגישה",
+    "איך מגיעים לפגישה של מחר",
+    "how do I get to my meeting",
+    "נווט לפגישה",
+    "navigate to my meeting",
+    "תחפש את תחזית המכירות",
+    "תמצא את הדוח על המניות",
+    "search stock options policy",
+    "תחפש חשבונית בדולר",
+    "find exchange rate report",
+    "מה יש לי עם מכבי מחר",
+    "do I have a meeting about the dollar",
     // not enough to be a command
     "גוגל",
     "google",
@@ -1153,4 +1189,123 @@ fn program_names_the_general_words_would_misread_keep_their_canonical_slot() {
     // the singular note and a file are still a note and a file
     assert_eq!(run("פתח את הפתק האחרון").decision, Decision::Confirm { cap: caps::NOTES_OPEN });
     assert_eq!(run("פתח את הקובץ של החשבונית").decision, Decision::Confirm { cap: caps::FILES_OPEN });
+}
+
+// ---- review fixes ---------------------------------------------------------------------------------
+
+#[test]
+fn symbols_between_words_stay_in_the_query_the_note_and_the_subject() {
+    for (text, query) in [
+        ("תחפש בגוגל 2 + 2", "2 + 2"),
+        ("תחפש בגוגל AT & T", "AT & T"),
+        ("google usd / ils", "usd / ils"),
+        ("תחפש בגוגל x = 5", "x = 5"),
+        ("תחפש בגוגל פיצה ?", "פיצה ?"),
+        ("תתרגם 2 + 2", "2 + 2"),
+        ("תחפש ביוטיוב AC / DC", "AC / DC"),
+    ] {
+        assert_eq!(run(text).slots.query.as_deref(), Some(query), "{text}");
+    }
+    assert_eq!(run("תרשום פתק: 5 + 3 = 8").slots.query.as_deref(), Some("5 + 3 = 8"));
+    assert_eq!(run("תרשום פתק: לקנות חלב & לחם").slots.query.as_deref(), Some("לקנות חלב & לחם"));
+    assert_eq!(run("תכתוב מייל לדני בנושא תקציב - טיוטה").slots.mail_subject.as_deref(), Some("תקציב - טיוטה"));
+    // and the address carries them encoded
+    let i = run("תחפש בגוגל 2 + 2");
+    let url = sys::search_url("google", i.slots.query.as_deref().unwrap(), None, None).unwrap();
+    assert_eq!(url, "https://www.google.com/search?q=2%20%2B%202");
+    // a lone symbol is still not a word of the grammar: it does not break a command
+    assert_eq!(run("תפתח את ynet !").slots.site.as_deref(), Some("ynet"));
+    assert_eq!(run("תחפש בגוגל - חתולים").slots.query.as_deref(), Some("חתולים"));
+}
+
+fn remembered(first: &str) -> (Ctx, DateTime<Local>) {
+    let mut ctx = Ctx::default();
+    let i = interpret(first, &ctx, now(), &Known::default());
+    ctx.remember(&i, now().timestamp_millis());
+    (ctx, now() + chrono::Duration::seconds(8))
+}
+
+#[test]
+fn the_answer_to_a_question_completes_the_command() {
+    for (ask, answer, cap, engine, query) in [
+        ("תחפש בגוגל", "חתולים חמודים", caps::WEB_SEARCH, Some("google"), "חתולים חמודים"),
+        ("תחפש ביוטיוב", "שירים של עומר אדם", caps::WEB_SEARCH, Some("youtube"), "שירים של עומר אדם"),
+        ("search google", "cats", caps::WEB_SEARCH, Some("google"), "cats"),
+        ("תרשום פתק", "לקנות חלב", caps::NOTES_CREATE, None, "לקנות חלב"),
+        ("take a note", "buy milk", caps::NOTES_CREATE, None, "buy milk"),
+        ("תתרגם", "שלום", caps::WEB_SEARCH, Some("translate"), "שלום"),
+    ] {
+        let (ctx, later) = remembered(ask);
+        let i = interpret(answer, &ctx, later, &Known::default());
+        assert_eq!(i.decision, Decision::Confirm { cap }, "{ask} -> {answer}");
+        assert_eq!(i.slots.query.as_deref(), Some(query), "{ask} -> {answer}");
+        assert_eq!(i.slots.engine.as_deref(), engine, "{ask} -> {answer}");
+        assert!(i.follow_up);
+    }
+    // the translation keeps deciding its target language from the answer
+    let (ctx, later) = remembered("תתרגם");
+    assert_eq!(interpret("שלום", &ctx, later, &Known::default()).slots.lang_to.as_deref(), Some("en"));
+    let (ctx, later) = remembered("translate");
+    assert_eq!(interpret("hello", &ctx, later, &Known::default()).slots.lang_to.as_deref(), Some("iw"));
+    // a language named in the question stays
+    let (ctx, later) = remembered("תתרגם לרוסית");
+    assert_eq!(interpret("תודה", &ctx, later, &Known::default()).slots.lang_to.as_deref(), Some("ru"));
+}
+
+#[test]
+fn something_else_typed_after_a_question_is_not_its_answer() {
+    let (ctx, later) = remembered("תחפש בגוגל");
+    // another command, a question and a request of the normal engine all go their own way
+    assert_eq!(interpret("תפתח את ynet", &ctx, later, &Known::default()).decision, Decision::Confirm { cap: caps::WEB_OPEN });
+    assert_eq!(interpret("מה יש לי מחר", &ctx, later, &Known::default()).decision, Decision::Execute { cap: caps::CALENDAR_LIST_EVENTS });
+    assert!(detect("מה יש לי מחר", &ctx, later, &Known::default()).is_none());
+    assert!(detect("תחפש מייל מדני", &ctx, later, &Known::default()).is_none());
+    assert!(detect("???", &ctx, later, &Known::default()).is_none());
+    // two minutes later nobody is waiting for an answer any more
+    let (ctx, _) = remembered("תחפש בגוגל");
+    let late = now() + chrono::Duration::seconds(300);
+    assert!(detect("חתולים", &ctx, late, &Known::default()).is_none());
+    // and a question of another kind is not answered by a search
+    let (ctx, later) = remembered("מה יש לי מחר");
+    assert!(detect("חתולים", &ctx, later, &Known::default()).is_none());
+}
+
+#[test]
+fn a_new_mail_needs_a_recipient_or_a_subject_not_a_search_phrase() {
+    for t in ["new email to Dan", "write a new email", "start mail", "create a mail about the budget", "compose an email"] {
+        assert_eq!(run(t).decision, Decision::Confirm { cap: caps::MAIL_COMPOSE }, "{t}");
+    }
+    for t in ["new mail from Dan", "new mail today", "create email rule"] {
+        assert_ne!(run(t).decision, Decision::Confirm { cap: caps::MAIL_COMPOSE }, "{t}");
+    }
+}
+
+#[test]
+fn generic_engine_words_search_the_web_only_when_the_sentence_says_so() {
+    for (t, q) in [
+        ("search online for used cars", "used cars"),
+        ("search the web for pizza recipes", "pizza recipes"),
+        ("search the net about cats", "cats"),
+        ("תחפש ברשת קובץ של חתולים", "קובץ של חתולים"),
+        ("תחפש מתכון לעוגה באינטרנט", "מתכון לעוגה"),
+    ] {
+        let i = run(t);
+        assert_eq!((i.decision, i.slots.query.as_deref()), (Decision::Confirm { cap: caps::WEB_SEARCH }, Some(q)), "{t}");
+    }
+    for t in ["search web design brief", "find online order confirmation", "search internet bill", "תחפש קובץ ברשת", "תחפש בנט"] {
+        assert_ne!(run(t).decision, Decision::Confirm { cap: caps::WEB_SEARCH }, "{t}");
+    }
+}
+
+#[test]
+fn web_topics_are_for_questions_not_for_finding_documents() {
+    assert_eq!(web_topic_kind("מה שער הדולר"), Some(Fallback::Currency));
+    assert_eq!(web_topic_kind("what's the weather in london"), Some(Fallback::Weather));
+    for t in ["מה יש לי עם מכבי מחר", "פגישה על מניות מחר", "do I have a meeting about football", "מייל על שער הדולר"] {
+        assert_eq!(web_topic_kind(t), None, "{t}");
+    }
+    // a request to find something is a search of this PC, whatever it says
+    for t in ["תחפש את תחזית המכירות", "תמצא את הדוח על המניות", "find the exchange rate report"] {
+        assert_ne!(run(t).decision, Decision::NoMatch, "{t}");
+    }
 }
