@@ -11,7 +11,7 @@
 //! This app's own `AllowSetForegroundWindow` calls are two: `outlook::open_calendar`, after a
 //! click on a meeting invitation, lets the user's own Outlook come forward for that one click;
 //! `center::open`, after a click on an island button or the tray item (or on the first run),
-//! lets the Island Center process come forward, naming only that process's pid (never
+//! lets the Yuval Center process come forward, naming only that process's pid (never
 //! `ASFW_ANY`).
 //!
 //! The one exception to "never takes focus" is typing a note in the island's Notes tab: a
@@ -135,7 +135,7 @@ fn forced_ex_style() -> u32 {
 /// is still there for user32, which paints it itself (the window region turns DWM's frame off)
 /// straight over the client area: when a note's text box took or gave back the keyboard (the window
 /// activating or deactivating, the island collapsing), a white tool-window title bar
-/// ("CompanyIsland" and an X) flashed at the top of the stage. A WS_POPUP without those bits has no
+/// ("Yuval" and an X) flashed at the top of the stage. A WS_POPUP without those bits has no
 /// caption, system menu or sizing frame; the activation repaint is refused in `subclass_proc`
 /// (WM_NCACTIVATE). tao rewrites GWL_STYLE from its flags on every flag change (show/hide,
 /// focusable, topmost) and never reads the bits back, so this is forced into every write.
@@ -431,7 +431,7 @@ unsafe extern "system" fn subclass_proc(
         // With the window region DWM does not draw this window's frame (DWMWA_NCRENDERING_ENABLED
         // is false), user32 does, and a window *created* with a caption (tao always creates one)
         // still gets one painted over its client area on WM_NCACTIVATE after the style lost
-        // WS_CAPTION (measured in a replica of this window: the white "CompanyIsland" bar on every
+        // WS_CAPTION (measured in a replica of this window: the white "Yuval" bar on every
         // activation change; none with lParam -1). lParam -1 is DefWindowProc's documented "do not
         // repaint the non-client area"; tao still sees the message and tracks focus as before.
         WM_NCACTIVATE => return DefSubclassProc(hwnd, msg, wparam, LPARAM(-1)),

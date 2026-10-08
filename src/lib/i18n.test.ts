@@ -67,14 +67,30 @@ describe("t", () => {
   });
 });
 
-describe("notes and Island Center strings", () => {
+describe("notes and Yuval Center strings", () => {
   it("are in Hebrew where the contract fixes the wording", () => {
     expect(t("tab.notes", undefined, "he")).toBe("פתקים");
     expect(t("notes.new", undefined, "he")).toBe("פתק חדש");
     expect(t("notes.copied", undefined, "he")).toBe("הועתק");
-    expect(t("settings.openCenter", undefined, "he")).toBe("פתח את מרכז האי");
+    expect(t("settings.openCenter", undefined, "he")).toBe("פתח את מרכז יובל");
     expect(t("settings.tour", undefined, "he")).toBe("סיור במערכת");
     expect(t("tab.notes", undefined, "en")).toBe("Notes");
+  });
+
+  it("call the product Yuval (יובל in Hebrew) and its second app the Yuval Center", () => {
+    expect(t("settings.center", undefined, "en")).toBe("Yuval Center");
+    expect(t("settings.openCenter", undefined, "en")).toBe("Open Yuval Center");
+    expect(t("settings.center", undefined, "he")).toBe("מרכז יובל");
+    expect(t("island.expandedLabel", { app: "Yuval" }, "en")).toBe("Yuval expanded");
+    expect(t("island.expandedLabel", { app: "Yuval" }, "he")).toBe("יובל מורחב");
+    expect(t("calendar.elevationHint", undefined, "en")).toContain("Outlook and Yuval");
+    expect(t("calendar.elevationHint", undefined, "he")).toContain("ואת יובל");
+    for (const locale of ["en", "he"] as const) {
+      for (const key of ["settings.center", "settings.openCenter", "tour.openNotes", "tour.openSettings", "tour.s10.text", "tour.s12.text", "calendar.elevationHint"] as const) {
+        const text = t(key, undefined, locale);
+        expect(text, `${key} (${locale})`).not.toMatch(/CompanyIsland|Island Center|מרכז האי/);
+      }
+    }
   });
 });
 

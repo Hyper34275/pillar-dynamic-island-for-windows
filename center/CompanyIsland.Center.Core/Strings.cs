@@ -10,8 +10,8 @@ namespace CompanyIsland.Center.Core;
 public static class Strings
 {
     // Shell
-    public static string AppTitle => "מרכז האי";
-    public static string CenterStuck => "מרכז האי כבר פתוח אבל לא מגיב. סגרו את CompanyIsland.Center.exe במנהל המשימות ונסו שוב.";
+    public static string AppTitle => "מרכז יובל";
+    public static string CenterStuck => "מרכז יובל כבר פתוח אבל לא מגיב. סגרו את Yuval.Center.exe במנהל המשימות ונסו שוב.";
     public static string NavWelcome => "ברוכים הבאים";
     public static string NavNotes => "פתקים";
     public static string NavSettings => "הגדרות";
@@ -70,22 +70,22 @@ public static class Strings
     public static string SettingsSearchPrivacy => "הכול מקומי: השאלות והתוצאות לא נשמרות ולא נשלחות לשום שירות";
     public static string VersionFooter(string version) => $"גרסה {version}";
 
-    public static string DisconnectedTitle => "האי לא פועל כרגע";
-    public static string DisconnectedMessage => "מרכז האי שומר הגדרות ופתקים דרך האי הדינמי. הפעל את האי והמרכז יתחבר אליו אוטומטית.";
-    public static string StartIsland => "הפעל את האי";
-    public static string StartIslandFailed => "לא ניתן להפעיל את האי. בדוק שהאפליקציה מותקנת.";
-    public static string LoadFailed => "לא ניתן לטעון את הנתונים מהאי";
+    public static string DisconnectedTitle => "יובל לא פועל כרגע";
+    public static string DisconnectedMessage => "מרכז יובל שומר הגדרות ופתקים דרך יובל עצמו. הפעל את יובל והמרכז יתחבר אליו אוטומטית.";
+    public static string StartIsland => "הפעל את יובל";
+    public static string StartIslandFailed => "לא ניתן להפעיל את יובל. בדוק שהאפליקציה מותקנת.";
+    public static string LoadFailed => "לא ניתן לטעון את הנתונים מיובל";
     public static string Close => "סגור";
 
     // Welcome
-    public static string WelcomeTitle => "ברוכים הבאים לאי הדינמי";
+    public static string WelcomeTitle => "ברוכים הבאים ליובל";
     public static string WelcomeIntro =>
-        "האי הדינמי הוא סרגל קטן בראש המסך שמראה את התאריך והשעה, את הפגישה הבאה מ-Outlook ואת ההתראות של Windows, " +
-        "ונפתח לתצוגה מלאה כשמעבירים עליו את העכבר. מרכז האי הוא המקום להגדרות, לפתקים ולסיור קצר שמסביר הכול.";
+        "יובל הוא סרגל קטן בראש המסך שמראה את התאריך והשעה, את הפגישה הבאה מ-Outlook ואת ההתראות של Windows, " +
+        "ונפתח לתצוגה מלאה כשמעבירים עליו את העכבר. מרכז יובל הוא המקום להגדרות, לפתקים ולסיור קצר שמסביר הכול.";
     public static string StartTour => "התחל סיור";
     public static string ToSettings => "להגדרות";
     public static string Finish => "סיום";
-    public static string FeaturesHeading => "מה האי יודע לעשות";
+    public static string FeaturesHeading => "מה יובל יודע לעשות";
 
     public static string FeatureClockTitle => "תאריך, שעה וסטטוס פגישה";
     public static string FeatureClockText => "האי הסגור מציג תאריך ושעה, ובפגישה קרובה גם \"בעוד X דק׳\" או \"בפגישה עד\".";
@@ -196,7 +196,7 @@ public static class Strings
 
     // Tour
     public static string TourMissingTitle => "הסיור אינו זמין";
-    public static string TourMissingBody => "קבצי הסיור לא נמצאו בתיקיית ההתקנה. התקן מחדש את CompanyIsland.";
+    public static string TourMissingBody => "קבצי הסיור לא נמצאו בתיקיית ההתקנה. התקן מחדש את יובל.";
     public static string TourWebViewFailed => "לא ניתן להציג את הסיור. רכיב WebView2 אינו זמין במחשב הזה.";
 
     /// <summary>Hebrew relative time for a note ("עכשיו", "לפני 5 דקות", "אתמול", then a date).</summary>

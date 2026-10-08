@@ -1,5 +1,5 @@
 // =============================================================================
-// CompanyIsland design tokens: the ONE place every dimension, radius, type role and colour of the
+// Yuval design tokens: the ONE place every dimension, radius, type role and colour of the
 // island is decided. Components read these (TS constants for geometry and inline styles) or the
 // Tailwind classes generated from them (tailwind.config.js imports this file), never their own
 // numbers. Colours are CSS custom properties (installed by the Tailwind plugin in

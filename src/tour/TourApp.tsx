@@ -29,7 +29,7 @@ function PlayIcon({ paused }: { paused: boolean }) {
 /**
  * The tour page: an explanation, a mock island that morphs through twelve scenes, and the
  * controls. Autoplay is on until the person navigates by hand. Nothing here talks to the island's
- * backend; the only messages go to the Island Center that shows the page (host.ts).
+ * backend; the only messages go to the Yuval Center that shows the page (host.ts).
  */
 export function TourApp({ initialStep = 0, autoplay: initialAutoplay = true, autoplayMs = AUTOPLAY_MS }: TourAppProps) {
   const steps = useMemo(buildSteps, []);

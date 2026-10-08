@@ -1,4 +1,4 @@
-# CompanyIsland - architecture
+# Yuval - architecture
 
 Final architecture of the enterprise build (Tauri 2 + React + Rust, Windows 10 21H2+ / 11, x64, standard user,
 offline). It summarises the code as built; the contract it was built against is
@@ -52,12 +52,12 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 |  debug_log.rs  rotating log, scrubbing, panic hook, clean-exit marker                              |
 |  paths.rs, settings.rs, reminder_state.rs, autostart.rs, notes.rs          (per-user persistence) |
 |  window.rs, monitors.rs, fullscreen.rs, tray.rs, clipboard.rs                    (Win32 shell)     |
-|  center.rs     open the Island Center (navigate event, or start center\CompanyIsland.Center.exe)   |
+|  center.rs     open the Yuval Center (navigate event, or start center\Yuval.Center.exe)   |
 |  center_ipc.rs named-pipe server for the Center (tokio tasks; DACL, session check, JSON lines)    |
 +----------------------------^---------------------------------------------------------------------+
                              | \\.\pipe\CompanyIsland.Center.<session>.<sidhash>  (local, this user only)
 +----------------------------v---------------------------------------------------------------------+
-| Island Center  center/  (WinUI 3, C# / .NET 10, a second process: <install>\center\*.exe)         |
+| Yuval Center  center/  (WinUI 3, C# / .NET 10, a second process: <install>\center\*.exe)         |
 |   CompanyIsland.Center.Core: IslandClient (hello, requests by id, events, reconnect), models,      |
 |   note helpers, Hebrew strings          Pages: Welcome | Settings | Notes | Tour (WebView2)         |
 |   Tour page = tour.html (React, mock data, no IPC) served from center\web\ by a virtual host       |
@@ -80,7 +80,7 @@ code, never a crash; the UI talks to a provider interface, not to Outlook.
 | Settings | Typed, validated, schema-versioned store; autostart opt-out | `src-tauri/src/settings.rs`, `autostart.rs`, `src/hooks/useSettings.ts` |
 | Notes | The island's Notes tab (list, pin, copy, delete) over a store with optimistic updates; Rust sanitises and is the only writer of `state\notes.json`; both the island's page and the Center save through the same `notes::save` | `src-tauri/src/notes.rs`, `src/lib/notes/store.ts`, `src/hooks/useNotes.ts`, `src/components/Pill/panels/NotesTab.tsx` |
 | Center bridge (Rust) | Opens the Center (navigate event to a connected one, else starts the exe) and serves it over a named pipe: commands in, `settings-changed` / `notes-changed` / `navigate` out | `src-tauri/src/center.rs`, `center_ipc.rs` |
-| Island Center | A WinUI 3 app (second process): Welcome, Settings, Notes, Tour pages; a client of the pipe only, it never reads or writes the island's files | `center/CompanyIsland.Center`, `center/CompanyIsland.Center.Core` |
+| Yuval Center | A WinUI 3 app (second process): Welcome, Settings, Notes, Tour pages; a client of the pipe only, it never reads or writes the island's files | `center/CompanyIsland.Center`, `center/CompanyIsland.Center.Core` |
 | Tour | The 12-step guided tour: the island's real components with mock data, no IPC, shown in the Center's locked-down WebView2 | `tour.html`, `src/tour/*`, `center/.../Pages/TourPage.xaml.cs` |
 
 ### 1.1 Why in-process Rust COM and not a sidecar
@@ -101,7 +101,7 @@ island. A separate .NET (VSTO / interop) sidecar was considered and rejected:
 - Trade-off accepted: a COM fault that takes the process down would take the island with it. The worker
   runs under panic catching and a watchdog, and a sidecar would only move that crash to another process.
 
-### 1.2 The Island Center is not that sidecar
+### 1.2 The Yuval Center is not that sidecar
 
 Since 1.0.4 the product does ship a .NET program, and the reasoning above still holds because it is a different
 thing: a user-facing window, not a bridge to Outlook.
@@ -110,7 +110,7 @@ thing: a user-facing window, not a bridge to Outlook.
   section 0, Focus). Notes, a settings page and a first-run explanation need a normal window with a keyboard.
   The user chose a real WinUI 3 app (2026-10-06) over putting a text box into the island.
 - **What it may do**: ask the island for settings and notes and change them, ask it to open the island on a tab,
-  report a code, all over one local pipe (protocol in ENTERPRISE_DESIGN section 1, "Island Center pipe"). It
+  report a code, all over one local pipe (protocol in ENTERPRISE_DESIGN section 1, "Yuval Center pipe"). It
   never touches Outlook, the calendar, Windows notifications, `settings.json` or `notes.json`, and makes no
   network connection.
 - **If it is missing or dies**: the island is unaffected (`APP-030` when an open fails, `APP-031` when the pipe
@@ -302,7 +302,7 @@ src/
   tour/                   main.tsx, TourApp.tsx, TourStage.tsx, steps.tsx, crossFade.tsx, compact.ts, mockData.ts,
                           host.ts (messages to the Center's WebView2), params.ts, tour.css, tour.test.tsx
 tour.html                 second Vite page (CSP meta, connect-src 'none'); built into dist/ next to index.html
-center/                   Island Center (WinUI 3), versioned by center/Directory.Build.props
+center/                   Yuval Center (WinUI 3), versioned by center/Directory.Build.props
   CompanyIsland.Center/       WinExe: Program.cs (single instance), App, MainWindow (navigation, title bar, disconnected bar),
                               Pages/{Welcome,Settings,Notes,Tour}Page, Services/{CenterModel,NoteViewModel}, Theme/CenterTheme.xaml,
                               Controls/SettingRow, app.manifest (asInvoker, PerMonitorV2), Assets/icon.ico
@@ -313,7 +313,7 @@ src-tauri/
   tauri.conf.json         product, window (transparent, no decorations, non-focusable), CSP, NSIS bundle
   windows-app.manifest    asInvoker, PerMonitorV2, Common-Controls v6, long paths
   tauri.installer.conf.json   merged only by `npm run build:installer`: beforeBuildCommand builds the web app and the Center, bundle.resources maps center/publish to <install>\center
-  installer-hooks.nsh     OS gate (1603), HKLM Run value, pre-install and pre-uninstall close of the island and of CompanyIsland.Center.exe
+  installer-hooks.nsh     OS gate (1603), HKLM Run value, pre-install and pre-uninstall close of the island and of Yuval.Center.exe
   capabilities/default.json   core:event:allow-listen / allow-unlisten only
   .cargo/config.toml      +crt-static
   src/lib.rs              builder, plugins (single-instance, core plugin: log + state), command table, WebView2 args
@@ -358,7 +358,7 @@ call Tauri IPC: they meet only in Rust (`settings::apply_patch`, `notes::save`, 
 - Notifications: read-only (`RemoveNotification` is never called); activation of a toast's app is limited to
   AUMIDs the app has itself seen (allow-list of 64) and validated against shell metacharacters.
 - External programs are started by absolute path (`explorer.exe` from the Windows known folder).
-- WebView2 profile under `%LOCALAPPDATA%\CompanyIsland\EBWebView`, `--disable-background-networking`.
+- WebView2 profile under `%LOCALAPPDATA%\Yuval\EBWebView`, `--disable-background-networking`.
 - Center pipe: `\\.\pipe\CompanyIsland.Center.<session>.<sidhash>` is created with a protected DACL
   (`D:P(A;;GA;;;<user SID>)`: this user only, not Administrators), `PIPE_REJECT_REMOTE_CLIENTS`, a first-instance
   flag (a name that already exists means `APP-031` and no server, so a squatter cannot be served) and at most 4
@@ -370,7 +370,7 @@ call Tauri IPC: they meet only in Rust (`settings::apply_patch`, `notes::save`, 
 - Foreground: the island's `AllowSetForegroundWindow` calls are for one named pid each (the user's Outlook after
   a click on an invitation; the Center's pid after a click on an island button or the tray item, or at the first
   run); never `ASFW_ANY`. `navigate` is only sent after that grant.
-- Island Center process: `asInvoker`, started by absolute path (`<dir of CompanyIsland.exe>\center\...`), no shell,
+- Yuval Center process: `asInvoker`, started by absolute path (`<dir of Yuval.exe>\center\...`), no shell,
   no arguments except `--page <valid page>` (validated by `center::valid_page` before it is passed).
 - Tour host (the Center's WebView2): the page's own CSP forbids every connection (`connect-src 'none'`); the host
   maps `tour.companyisland.invalid` to `center\web\` only, cancels any navigation to another origin, new windows,
@@ -406,11 +406,11 @@ failed to start`, process exits with code 1).
 | APP-001 | Unhandled panic caught, a background command task failed, UI render error in a tab, or the app failed to start | `debug_log::catch`, panic hook, `rt::run_blocking`, `TabBoundary`, `lib.rs` | A tab shows "Unavailable / Try again"; the rest keeps working | Collect the log; report |
 | APP-002 | Settings, reminder state or notes could not be written / data folder unavailable (also: the notes file would exceed 16 MiB) | `settings.rs`, `reminder_state.rs`, `notes.rs` | Settings kept in memory only; reminders may repeat after a restart; a note change is reverted and the Notes tab / Center says it could not be saved | Check profile volume and permissions |
 | APP-003 | Settings, reminder or notes file corrupt or unreadable | `settings.rs`, `reminder_state.rs`, `notes.rs` | Defaults / empty set / no notes; bad file kept as `*.corrupt` | Delete or inspect `*.corrupt` (`notes.json.corrupt` holds the user's notes: do not delete without asking) |
-| APP-030 | Island Center missing (`center\CompanyIsland.Center.exe` not next to the island) or could not be started; also the first-run thread could not start | `center.rs`, `lib.rs` | The Center button / tray item does nothing; the first-run Welcome is retried at the next start | Reinstall; check that application control allows `center\CompanyIsland.Center.exe` |
+| APP-030 | Yuval Center missing (`center\Yuval.Center.exe` not next to the island) or could not be started; also the first-run thread could not start | `center.rs`, `lib.rs` | The Center button / tray item does nothing; the first-run Welcome is retried at the next start | Reinstall; check that application control allows `center\Yuval.Center.exe` |
 | APP-031 | Center connection: the pipe could not be created (name taken), cannot listen again or accept, a connection was refused (another session), a client is too slow, a request line is too long, or a protocol error (`hello required`, unsupported protocol, unknown command, invalid arguments) | `center_ipc.rs` | The Center shows "the island is not running" or an error bar; the island is unaffected | Informational; collect the log if the Center never connects |
 | APP-032 | `open_center` with a page name that is not `welcome`, `tour`, `settings`, `notes`, `notes-new` or `note:<valid id>` | `center.rs` | Nothing opens | Report (a bug, not a user error) |
 | APP-020 | A Join click with a link the island did not find itself, or no handler could open it | `outlook.rs` (`open_meeting_url`) | Nothing opens | Check the default browser / Teams install |
-| APP-010 | Log folder unavailable or cannot be opened | `debug_log.rs`, `paths.rs` | No log file; "Open logs" fails | Check `%LOCALAPPDATA%\CompanyIsland\logs` |
+| APP-010 | Log folder unavailable or cannot be opened | `debug_log.rs`, `paths.rs` | No log file; "Open logs" fails | Check `%LOCALAPPDATA%\Yuval\logs` |
 | OUTLOOK-101 | Outlook not running (informational) | `calendar.rs` | "Waiting for Outlook" | Start Classic Outlook |
 | OUTLOOK-102 | Attach failed / Outlook not (yet) in the Running Object Table / connection lost / process list unreadable / worker could not start / COM apartment failed | `outlook.rs`, `calendar.rs` | "Connecting" then "Couldn't read the calendar" after about 2 minutes | Usually self-heals; check Outlook health |
 | OUTLOOK-103 | Outlook runs at a different elevation (or cannot be inspected) | `outlook.rs` classification | "Outlook runs with different permissions" | Run both normally, not "as administrator" |
@@ -447,11 +447,11 @@ failed to start`, process exits with code 1).
 6. User profile paths in log text are replaced with `%USERPROFILE%`; error messages that reach the UI name a
    folder, never a full path.
 7. "Copy diagnostics" is user-initiated and contains system identifiers (user, computer, local IP) but no
-   meeting content. Its first line is a one-line summary (`CompanyIsland 1.0.0 / Windows 10 21H2 Build 19044 /
+   meeting content. Its first line is a one-line summary (`Yuval 1.0.0 / Windows 10 21H2 Build 19044 /
    Computer / User / Outlook: Connected|Waiting for Outlook|Connection Failed (Internal Error: CODE) / Calendar /
    Cached events / Notifications: Available|Restricted by policy ...`), followed by every field including
    `Notification delivery: events|polling|none` and the recent error codes.
-8. No network: no telemetry, no update check, no cloud calls. The Island Center and its Tour make none either
+8. No network: no telemetry, no update check, no cloud calls. The Yuval Center and its Tour make none either
    (the Tour is local files behind a WebView2 virtual host; its page cannot connect anywhere).
 9. Notes (1.0.4) are the one persisted piece of user-typed content: `state\notes.json`, per user, at most 500 notes
    of 10,000 characters and 16 MiB, atomic writes, a corrupt file quarantined as `notes.json.corrupt` (`APP-003`).
@@ -479,7 +479,7 @@ failed to start`, process exits with code 1).
    `calendarId`, so uniqueness across providers must come from the id itself.
 4. **Where HTTP happens**: keep network and tokens in Rust (a new module next to `outlook.rs`) and expose
    them over IPC exactly like `calendar-snapshot`; do not loosen the page CSP (`connect-src`) for this.
-   Store tokens with DPAPI under `%LOCALAPPDATA%\CompanyIsland`, never in `localStorage`.
+   Store tokens with DPAPI under `%LOCALAPPDATA%\Yuval`, never in `localStorage`.
 5. **Statuses**: reuse `waiting` (not signed in), `connecting`, `connected`, `failed`; a sign-in-required
    state needs a new `CalendarStatus` value in `src/lib/calendar/types.ts`, the `STATUSES` list in
    `normalize.ts`, strings in `i18n.ts` (both languages) and a case in `CalendarTab`. Add new error codes to

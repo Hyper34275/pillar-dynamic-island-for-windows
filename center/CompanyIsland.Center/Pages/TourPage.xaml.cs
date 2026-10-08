@@ -101,8 +101,7 @@ public sealed partial class TourPage : Page, ICenterPage
 
         try
         {
-            string userData = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CompanyIsland", "EBWebView-Center");
+            string userData = Path.Combine(DataFolder.Resolve(), "EBWebView-Center");
             var options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = BrowserArguments };
             CoreWebView2Environment environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, userData, options);
             await Web.EnsureCoreWebView2Async(environment);

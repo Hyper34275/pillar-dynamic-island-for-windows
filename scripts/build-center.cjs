@@ -1,5 +1,5 @@
 /**
- * Builds the Island Center (WinUI 3) into center/publish/ for the installer: `npm run build:center`.
+ * Builds the Yuval Center (WinUI 3) into center/publish/ for the installer: `npm run build:center`.
  *
  * Run after `npm run build`: the Tour page (dist/tour.html) is copied next to the exe as center/publish/web/.
  * src-tauri/tauri.installer.conf.json maps center/publish to <install dir>\center\ (bundle.resources).
@@ -31,7 +31,7 @@ const UNNEEDED_FILES = ["onnxruntime.dll", "DirectML.dll"];
 
 // Files the installed Center cannot work without, relative to center/publish (= <install dir>\center\).
 // The exe is the Center, the .pri its packaged resources (WinUI fails to start without it), tour.html the Welcome page.
-const REQUIRED_PAYLOAD = ["CompanyIsland.Center.exe", "CompanyIsland.Center.pri", "web/tour.html"];
+const REQUIRED_PAYLOAD = ["Yuval.Center.exe", "Yuval.Center.pri", "web/tour.html"];
 // The folder the resources are installed to (the value in tauri.installer.conf.json bundle.resources).
 const PAYLOAD_DEST = "center";
 
@@ -82,7 +82,7 @@ function checkInstallerScript(nsiPath) {
   if (missing.length === 0) return null;
   return (
     `the installer does NOT contain: ${missing.join(", ")}.\n` +
-    "  It was built without the Island Center (a plain `tauri build` ignores tauri.installer.conf.json).\n" +
+    "  It was built without the Yuval Center (a plain `tauri build` ignores tauri.installer.conf.json).\n" +
     "  Do not ship it. Rebuild with `npm run build:installer`."
   );
 }
@@ -95,11 +95,11 @@ function argValue(args, flag) {
 /** `posttauri`: only a `tauri build` leaves a fresh setup for the current version behind. */
 function afterTauri(nsiPath) {
   const version = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
-  const setup = path.join(SETUP_DIR, `CompanyIsland_${version}_x64-setup.exe`);
+  const setup = path.join(SETUP_DIR, `Yuval_${version}_x64-setup.exe`);
   if (!fs.existsSync(setup) || Date.now() - fs.statSync(setup).mtimeMs > FRESH_SETUP_MS) return;
   const problem = checkInstallerScript(nsiPath);
   if (problem) fail(`${path.basename(setup)}: ${problem}`);
-  console.log(`build-center: ${path.basename(setup)} includes the Island Center.`);
+  console.log(`build-center: ${path.basename(setup)} includes the Yuval Center.`);
 }
 
 function build() {
@@ -117,8 +117,8 @@ function build() {
   });
   if (result.error) fail(`could not run dotnet (${result.error.message}). Is the .NET SDK installed and on PATH?`);
   if (result.status !== 0) fail(`dotnet publish failed (exit code ${result.status}).`);
-  if (!fs.existsSync(path.join(publish, "CompanyIsland.Center.exe"))) {
-    fail("dotnet publish succeeded but center/publish/CompanyIsland.Center.exe is missing.");
+  if (!fs.existsSync(path.join(publish, "Yuval.Center.exe"))) {
+    fail("dotnet publish succeeded but center/publish/Yuval.Center.exe is missing.");
   }
 
   // Trim the publish folder: AI/ML leftovers and debug symbols (never loaded, not worth shipping).

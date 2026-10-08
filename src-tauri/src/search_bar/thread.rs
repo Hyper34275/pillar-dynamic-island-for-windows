@@ -482,7 +482,7 @@ fn run(app: &AppHandle) {
             return;
         }
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
-        let hwnd = match CreateWindowExW(WS_EX_TOOLWINDOW, CLASS, w!("CompanyIsland search bar"), WS_POPUP, 0, 0, 0, 0, None, None, instance, None) {
+        let hwnd = match CreateWindowExW(WS_EX_TOOLWINDOW, CLASS, w!("Yuval search bar"), WS_POPUP, 0, 0, 0, 0, None, None, instance, None) {
             Ok(h) => h,
             Err(e) => {
                 dlog!("WARN", "search_bar", "WIN-506 the search-bar host window could not be created: {}", e);

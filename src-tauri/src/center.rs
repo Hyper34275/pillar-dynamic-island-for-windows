@@ -1,4 +1,4 @@
-//! Opening the Island Center (the WinUI 3 app installed in `<install dir>\center\`).
+//! Opening the Yuval Center (the WinUI 3 app installed in `<install dir>\center\`).
 //!
 //! `open` is only ever called after a user click (an island button, the tray menu) or on the
 //! very first run. When a Center is already connected on the pipe it is sent a `navigate`
@@ -14,7 +14,7 @@ use tauri::AppHandle;
 use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
 const CENTER_DIR: &str = "center";
-const CENTER_EXE: &str = "CompanyIsland.Center.exe";
+const CENTER_EXE: &str = "Yuval.Center.exe";
 /// Debug builds only: absolute path of a Center exe built elsewhere.
 const EXE_OVERRIDE_ENV: &str = "COMPANYISLAND_CENTER_EXE";
 
@@ -41,7 +41,7 @@ fn page_kind(page: &str) -> &str {
     }
 }
 
-/// `<dir of the island exe>\center\CompanyIsland.Center.exe`, or the override when one is
+/// `<dir of the island exe>\center\Yuval.Center.exe`, or the override when one is
 /// allowed (debug builds) and absolute.
 fn exe_path(island_exe: &Path, override_path: Option<PathBuf>, allow_override: bool) -> Option<PathBuf> {
     if allow_override {
@@ -66,7 +66,7 @@ fn allow_foreground(pid: u32) {
 }
 
 fn unavailable() -> String {
-    "APP-030: island center unavailable".to_string()
+    "APP-030: Yuval Center unavailable".to_string()
 }
 
 /// How long a started Center gets to connect to the island before the next click is told it failed.
@@ -127,7 +127,7 @@ pub fn note_connected() {
     crate::center_diag::note_connected();
 }
 
-const NOT_OPENED: &str = "APP-033: island center did not open";
+const NOT_OPENED: &str = "APP-033: Yuval Center did not open";
 
 /// The island's page only sees `false` from a failed open, so the failure is also shown as a plain message box
 /// (own thread: it blocks until dismissed).
@@ -140,8 +140,8 @@ fn tell_user_not_opened() {
     let _ = std::thread::Builder::new().name("companyisland-center-failed".into()).spawn(|| unsafe {
         MessageBoxW(
             HWND::default(),
-            w!("מרכז האי לא נפתח. פרטים בקובץ center.log"),
-            w!("CompanyIsland"),
+            w!("מרכז יובל לא נפתח. פרטים בקובץ center.log"),
+            w!("Yuval"),
             MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST | MB_RTLREADING | MB_RIGHT,
         );
     });
@@ -296,17 +296,18 @@ mod tests {
 
     #[test]
     fn exe_is_next_to_the_island_in_center() {
-        let island = Path::new(r"C:\Program Files\CompanyIsland\CompanyIsland.exe");
+        let island = Path::new(r"C:\Program Files\Yuval\Yuval.exe");
         assert_eq!(
             exe_path(island, None, true),
-            Some(PathBuf::from(r"C:\Program Files\CompanyIsland\center\CompanyIsland.Center.exe"))
+            Some(PathBuf::from(r"C:\Program Files\Yuval\center\Yuval.Center.exe"))
         );
+        assert_eq!(CENTER_EXE, "Yuval.Center.exe");
     }
 
     #[test]
     fn the_override_only_works_when_allowed_and_absolute() {
-        let island = Path::new(r"C:\Apps\CompanyIsland.exe");
-        let normal = Some(PathBuf::from(r"C:\Apps\center\CompanyIsland.Center.exe"));
+        let island = Path::new(r"C:\Apps\Yuval.exe");
+        let normal = Some(PathBuf::from(r"C:\Apps\center\Yuval.Center.exe"));
         let custom = PathBuf::from(r"D:\build\Center.exe");
         assert_eq!(exe_path(island, Some(custom.clone()), true), Some(custom.clone()));
         assert_eq!(exe_path(island, Some(custom), false), normal, "release builds ignore it");

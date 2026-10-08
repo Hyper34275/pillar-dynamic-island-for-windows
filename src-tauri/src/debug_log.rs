@@ -1,7 +1,7 @@
 //! Diagnostic log file.
 //!
 //! Backend and frontend (via the `write_logs` command) log to
-//! `%LOCALAPPDATA%\CompanyIsland\logs\companyisland.log`. The file rotates at 1 MB
+//! `%LOCALAPPDATA%\Yuval\logs\yuval.log`. The file rotates at 1 MB
 //! and the newest 5 files are kept. Logging never fails the app: if the log
 //! directory cannot be used (APP-010) every call is a no-op.
 //!
@@ -24,7 +24,7 @@ const KEEP_FILES: usize = 5;
 const MAX_MESSAGE_BYTES: usize = 2_000;
 const MAX_PANIC_BYTES: usize = 8_000;
 const MAX_SCOPE_CHARS: usize = 40;
-const BASE_NAME: &str = "companyisland";
+const BASE_NAME: &str = "yuval";
 const CLEAN_EXIT_MARKER: &str = "---- clean exit ----";
 const TRUNCATED: &str = "...[truncated]";
 
@@ -86,7 +86,7 @@ fn file_name(index: usize) -> String {
     }
 }
 
-/// Shift `companyisland.log` -> `.1.log` -> ... keeping `keep` files in total.
+/// Shift `yuval.log` -> `.1.log` -> ... keeping `keep` files in total.
 fn rotate(dir: &Path, keep: usize) -> std::io::Result<()> {
     for i in (0..keep.saturating_sub(1)).rev() {
         let from = dir.join(file_name(i));
@@ -212,7 +212,7 @@ pub fn init(version: &str) {
         "INFO",
         "app",
         &format!(
-            "==== CompanyIsland {} session {} ({} {}) ====",
+            "==== Yuval {} session {} ({} {}) ====",
             version,
             session_id(),
             std::env::consts::OS,

@@ -1,11 +1,11 @@
-# CompanyIsland
+# Yuval (יובל)
 
 A small always-on-top "Dynamic Island" for Windows 10 (21H2+) and Windows 11, built for managed
 company PCs. It shows today's date and weekday at the top of the screen, and expands into a
 date and time view, your next Outlook meetings, and an About page with diagnostics.
 
 - **Standard users only.** Nothing needs administrator rights at runtime; all data lives under
-  `%LOCALAPPDATA%\CompanyIsland\`.
+  `%LOCALAPPDATA%\Yuval\` (an older `CompanyIsland` folder is moved there once, on the first start).
 - **Offline.** No cloud services, no accounts, no telemetry.
 - **Classic Outlook.** Meetings are read from the running classic Outlook (attach only, default
   calendar, read only). The new Outlook is detected and reported but not supported.
@@ -35,5 +35,5 @@ Frontend code talks to Rust only through `src/lib/ipc.ts`.
 
 ## Upstream and license
 
-CompanyIsland descends from [PILLAR](https://github.com/warpirate/pillar-dynamic-island-for-windows)
+Yuval (formerly CompanyIsland) descends from [PILLAR](https://github.com/warpirate/pillar-dynamic-island-for-windows)
 (MIT License) and keeps its license; see [LICENSE](LICENSE).

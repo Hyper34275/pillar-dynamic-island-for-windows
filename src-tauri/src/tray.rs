@@ -24,6 +24,9 @@ const ABOUT: &str = "tray_about";
 const LOGS: &str = "tray_logs";
 const QUIT: &str = "tray_quit";
 
+/// The tray icon's tooltip: the product name, as Windows shows it everywhere else.
+const TOOLTIP: &str = "Yuval";
+
 struct Labels {
     toggle: &'static str,
     center: &'static str,
@@ -37,7 +40,7 @@ struct Labels {
 /// The app is Hebrew whatever language Windows runs in, like the island itself (main.tsx).
 const LABELS: Labels = Labels {
     toggle: "הצג / הסתר",
-    center: "מרכז האי",
+    center: "מרכז יובל",
     notes: "פתקים",
     search: "חיפוש חכם",
     about: "אודות",
@@ -45,7 +48,7 @@ const LABELS: Labels = Labels {
     quit: "יציאה",
 };
 
-/// Opens the Island Center on `page`. Starting a process or talking to the pipe stays off the UI thread.
+/// Opens the Yuval Center on `page`. Starting a process or talking to the pipe stays off the UI thread.
 fn open_center(app: &AppHandle, page: &'static str) {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -70,7 +73,7 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&toggle, &center, &notes, &search, &about, &logs, &separator, &quit])?;
 
     let mut builder = TrayIconBuilder::new()
-        .tooltip("CompanyIsland")
+        .tooltip(TOOLTIP)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| {
@@ -115,9 +118,19 @@ mod tests {
     fn the_menu_is_hebrew() {
         assert_eq!(LABELS.quit, "יציאה");
         assert_eq!(LABELS.toggle, "הצג / הסתר");
-        assert_eq!(LABELS.center, "מרכז האי");
+        assert_eq!(LABELS.center, "מרכז יובל");
         assert_eq!(LABELS.notes, "פתקים");
         assert_eq!(LABELS.search, "חיפוש חכם");
         assert_eq!(LABELS.about, "אודות");
+    }
+
+    #[test]
+    fn nothing_in_the_tray_carries_the_old_product_name() {
+        assert_eq!(TOOLTIP, "Yuval");
+        for label in [
+            LABELS.toggle, LABELS.center, LABELS.notes, LABELS.search, LABELS.about, LABELS.logs, LABELS.quit, TOOLTIP,
+        ] {
+            assert!(!label.contains("CompanyIsland") && !label.contains("האי"), "{label}");
+        }
     }
 }

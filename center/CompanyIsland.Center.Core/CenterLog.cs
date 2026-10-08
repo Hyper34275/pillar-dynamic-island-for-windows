@@ -132,13 +132,13 @@ public sealed class FileLog
     }
 }
 
-/// <summary>The Center's process-wide log: <c>%LOCALAPPDATA%\CompanyIsland\logs\center.log</c>.</summary>
+/// <summary>The Center's process-wide log: <c>%LOCALAPPDATA%\Yuval\logs\center.log</c> (see <see cref="DataFolder"/>).</summary>
 public static class CenterLog
 {
     private static readonly Lazy<FileLog> Log = new(() =>
     {
-        string root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return new FileLog(System.IO.Path.Combine(root, "CompanyIsland", "logs", "center.log"));
+        string root = DataFolder.Resolve();
+        return new FileLog(System.IO.Path.Combine(root, "logs", "center.log"));
     });
 
     public static string Path => Log.Value.Path;

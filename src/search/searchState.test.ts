@@ -204,7 +204,7 @@ describe("strings", () => {
     for (const loc of ["he", "en"] as const) for (const v of Object.values(SEARCH_STRINGS[loc])) expect(v.trim().length).toBeGreaterThan(0);
   });
   it("uses the contract wording", () => {
-    expect(SEARCH_STRINGS.he.placeholder).toBe("שאל את CompanyIsland…");
+    expect(SEARCH_STRINGS.he.placeholder).toBe("שאל את יובל…");
     expect(SEARCH_STRINGS.he.aiToggle).toBe("יציאה ממצב AI");
     expect(SEARCH_STRINGS.he.choicesHint).toBe("אפשר לבחור באי או להקליד תשובה");
   });

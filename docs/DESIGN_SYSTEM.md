@@ -1,4 +1,4 @@
-# CompanyIsland — island design system
+# Yuval — island design system
 
 One visual language for every island presentation: the compact pill, the ring/silent pill, the
 meeting alert, notification toasts, and the open island (panel) with its tabs and dock. Apple's

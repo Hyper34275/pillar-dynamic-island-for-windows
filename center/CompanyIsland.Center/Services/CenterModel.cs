@@ -299,7 +299,7 @@ public sealed class CenterModel : IDisposable
     {
         try
         {
-            string path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "CompanyIsland.exe"));
+            string path = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "Yuval.exe"));
             if (!File.Exists(path))
             {
                 return false;

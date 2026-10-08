@@ -234,7 +234,7 @@ fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
         return Ok(w);
     }
     let win = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("search.html".into()))
-        .title("CompanyIsland search")
+        .title("Yuval search")
         .inner_size(572.0, 60.0)
         .transparent(true)
         .decorations(false)
