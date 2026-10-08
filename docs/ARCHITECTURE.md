@@ -298,7 +298,8 @@ src/
   lib/island/             state.ts, timing.ts, geometryQueue.ts, compactLayout.ts, morph.ts, silence.ts,
                           spring.ts (closed-form spring), islandMotion.ts (the one owner of the island's shape)
   lib/notifications/      history.ts (this session's notifications, memory only)
-  lib/notes/              store.ts (createNotesStore, sortNotes, newNoteId), store.test.ts
+  lib/notes/              store.ts (createNotesStore, sortNotes, newNoteId), store.test.ts,
+                          sticky.ts (Windows Sticky Notes: wire types, normaliser, 10 s store), stickyColour.ts, useSticky.ts
   tour/                   main.tsx, TourApp.tsx, TourStage.tsx, steps.tsx, crossFade.tsx, compact.ts, mockData.ts,
                           host.ts (messages to the Center's WebView2), params.ts, tour.css, tour.test.tsx
 tour.html                 second Vite page (CSP meta, connect-src 'none'); built into dist/ next to index.html
@@ -324,6 +325,7 @@ src-tauri/
   src/notifications.rs, system.rs, monitors.rs, window.rs, fullscreen.rs, tray.rs, clipboard.rs
   src/paths.rs, settings.rs, reminder_state.rs, autostart.rs, debug_log.rs, rt.rs
   src/notes.rs            notes.json: sanitize, canonical order, load / save, commands notes_load / notes_save
+  src/sticky_notes.rs     Windows Sticky Notes, read only: winsqlite3 loaded dynamically, plum.sqlite copy, cache, commands sticky_notes_list / sticky_notes_open (section 11)
   src/center.rs           valid_page, open (navigate or spawn), command open_center
   src/center_ipc.rs       pipe name + DACL, accept loop, per-connection protocol, Hub (broadcast, navigate)
 docs/                     ENTERPRISE_DESIGN, INSTALLER, DEPLOYMENT, QA_MATRIX, ARCHITECTURE
@@ -335,7 +337,7 @@ IPC commands (registered in `lib.rs`): `write_logs`, `log_frontend_error`, `open
 `set_island_geometry`, `get_monitors`, `get_fullscreen_state`, `get_system_info`, `get_format_locale`, `get_diagnostics`,
 `copy_text_to_clipboard`, `notifications_get_status`, `notifications_request_access`, `activate_notification`,
 `activate_app_by_aumid`, `outlook_open_calendar`, `outlook_respond_invite`, `open_meeting_url`, `calendar_get_range`, `notes_load`, `notes_save`,
-`open_center`. Events (Rust to JS): `calendar-snapshot`, `notification-received`,
+`open_center`, `sticky_notes_list`, `sticky_notes_open`. Events (Rust to JS): `calendar-snapshot`, `notification-received`,
 `notification-status`, `settings-changed`, `fullscreen-changed`, `display-changed`, `island-toggle`, `foreground-changed`, `notes-changed`.
 
 Pipe commands (Rust to the Center, not Tauri IPC; `center_ipc.rs`; details in ENTERPRISE_DESIGN section 1): `hello`,
@@ -430,6 +432,7 @@ failed to start`, process exits with code 1).
 | WIN-502 | System tray unavailable | `tray.rs` | No tray icon | None (second launch still toggles) |
 | WIN-503 | Monitor enumeration failed / no monitors | `monitors.rs`, `window.rs` | Display chooser unavailable | Report |
 | WIN-504 | Clipboard busy, text too large, or write failed | `clipboard.rs` | "Copy failed" | Retry |
+| STICKY-201 | The Sticky Notes app could not be started (`sticky_notes_open`, or a click on a Sticky Notes search hit) | `sticky_notes.rs` | Nothing opens; no toast. (An unreadable Sticky Notes database is not an error: it is the `unavailable` state of the section, logged at INFO only) | Check that the Sticky Notes app is installed |
 
 ## 9. Privacy rules
 
@@ -523,3 +526,40 @@ The engine already schedules a list of offsets, one reminder each, and persists 
 5. Privacy: calendar display names are user content; treat them like subjects (UI only, never logged).
 6. Tests: extend the fake source in `calendar.rs` tests and `outlook.rs` tests; add a QA row for multiple
    accounts (scenario 10 changes from "default only" to "selected calendars").
+
+## 11. Windows Sticky Notes (read only)
+
+The island's Notes tab shows the user's Windows Sticky Notes under their own notes, and smart search
+(`notes.search`) finds them too (`docs/AI_SEARCH.md`, section 8). The island never writes to them: editing
+happens in the Sticky Notes app, which a click opens.
+
+1. **Where the data is.** Sticky Notes 3.x/4.x and later (Store package `Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe`)
+   keep their notes in `%LOCALAPPDATA%\Packages\<package>\LocalState\plum.sqlite`, table `Note` (`Id`, `Text`,
+   `Theme`, `CreatedAt`, `UpdatedAt`, `DeletedAt`, ...; times are .NET ticks). That is the only layout read.
+   `Text` holds the paragraphs as `\id=<guid> line` markers, with markdown-like inline markers; `sticky_notes::parse_text`
+   returns plain text (Hebrew and direction marks untouched). Notes with `DeletedAt` set are skipped.
+   On the development machine the app is installed (4.0.6104.0) but `LocalState` is empty (never used), so the
+   real-database path is covered by a fixture built with the same `winsqlite3.dll` in the tests.
+2. **How it is read.** No SQLite crate. `winsqlite3.dll` (in `System32` on Windows 10 and 11) is loaded with
+   `LoadLibraryExW(LOAD_LIBRARY_SEARCH_SYSTEM32)` and five or six entry points are bound (`open_v2`, `prepare_v2`,
+   `step`, `column_*`, `finalize`, `close`). The live file is never opened: `plum.sqlite` and `plum.sqlite-wal` (where the newest
+   notes are) are copied to `%LOCALAPPDATA%\CompanyIsland\sticky-tmp\<pid>-<n>\`, the copy is opened with
+   `SQLITE_OPEN_READONLY`, read, closed and deleted (a copy older than 10 minutes left by a crash is removed at the
+   next read). The `-shm` is not copied: SQLite rebuilds the WAL index from the copied `-wal`, which a stale copy
+   of the index could contradict. The columns are discovered with `PRAGMA table_info(Note)`, so a layout that
+   kept `Id` and `Text` still reads.
+3. **Cache.** The answer is cached; it is read again only when the size or modification time of `plum.sqlite` or
+   its `-wal` changed (two `stat` calls). The page asks (`sticky_notes_list`) at once and then every 10 s, only while
+   the Notes tab is open and the page is visible (`lib/notes/sticky.ts`); a search asks too. A failed re-read keeps the last good list
+   and retries after 5 s; a first failure is retried after 30 s.
+4. **States, never an error.** `ok`, `noData` (installed, no `plum.sqlite`: never used, or the notes are only in the
+   cloud), `notInstalled` (the Notes tab shows no section), `unsupported` (a `Note` table without `Id`/`Text`, or only the
+   Windows 7-era `StickyNotes.snt`), `unavailable` (`winsqlite3.dll` missing, copy or open failed). The section shows a
+   calm empty / "not available" state from `ui/states.tsx`; nothing is toasted. State changes are logged at INFO (state
+   names only).
+5. **Privacy.** Note text goes to the page and to smart search only (memory), like the island's own notes; it is never
+   logged and never written anywhere except the temporary copy of the database, which is deleted at once. At most 500
+   notes of 10,000 characters are returned.
+6. **Opening.** `sticky_notes_open` (and a click on a Sticky Notes search hit, id `sticky:<guid>`) launches
+   `shell:AppsFolder\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe!App` through `notifications::launch_aumid`. The target is a
+   constant: the page cannot name another app.
