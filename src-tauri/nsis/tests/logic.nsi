@@ -327,7 +327,7 @@ Function TestStopProcess
   StrCpy $1 0
   ${Do}
     Sleep 500
-    nsExec::Exec 'cmd /c tasklist /NH /FI "IMAGENAME eq YuvalNsisTestProc.exe" | find /I "YuvalNsisTestProc.exe"'
+    nsis_tauri_utils::FindProcess "YuvalNsisTestProc.exe"
     Pop $0
     ${If} $0 == 0
       ${Break}
@@ -337,7 +337,7 @@ Function TestStopProcess
   !insertmacro Eq "stop process" "test process is up before" "$0" "0"
   StrCpy $YuvalWasRunning 0
   !insertmacro YUVAL_STOP_PRODUCT "" "YuvalNsisTestProc.Center.exe" "YuvalNsisTestProc.exe"
-  nsExec::Exec 'cmd /c tasklist /NH /FI "IMAGENAME eq YuvalNsisTestProc.exe" | find /I "YuvalNsisTestProc.exe"'
+  nsis_tauri_utils::FindProcess "YuvalNsisTestProc.exe"
   Pop $0
   !insertmacro Eq "stop process" "process is gone after" "$0" "1"
   !insertmacro Eq "stop process" "app was running: remembered for the restart" "$YuvalWasRunning" "1"

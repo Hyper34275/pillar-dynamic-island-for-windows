@@ -216,22 +216,29 @@ SectionEnd
 ; Elevated taskkill without /F only reaches windows of the session the installer runs in; /F reaches any session.
 ; In: $YuvalProc = image name. Out: $YuvalProcWasRunning. find exits 0 when the image name appears in tasklist's
 ; output, whatever the OS language.
+; The setup is elevated, so every program it starts is named by its full path under $SYSDIR: nothing is looked up
+; through PATH or the setup's own folder (CreateProcess searches that folder, often Downloads, before the system
+; folders). A bare "find" also found a GNU find.exe (Git for Windows, Cygwin) first when that is early in PATH, which
+; answered "not running" for a running program; the unit tests failed that way when run from Git Bash. The doubled
+; quote after /c is cmd's rule for a command line that has more than one quoted part: it drops the first and the last
+; quote and runs the rest.
+!define YUVAL_CMD_IS_RUNNING '"$SYSDIR\cmd.exe" /c ""$SYSDIR\tasklist.exe" /NH /FI "IMAGENAME eq $YuvalProc" | "$SYSDIR\find.exe" /I "$YuvalProc""'
 ; Defined twice: the installer's copy and the uninstaller's copy (un. prefix) are separate functions in NSIS.
 !macro YUVAL_STOP_PROCESS_FUNCTION PREFIX
   Function ${PREFIX}YuvalStopProcess
     Push $0
     Push $1
     StrCpy $YuvalProcWasRunning 0
-    nsExec::Exec 'cmd /c tasklist /NH /FI "IMAGENAME eq $YuvalProc" | find /I "$YuvalProc"'
+    nsExec::Exec '${YUVAL_CMD_IS_RUNNING}'
     Pop $0
     ${If} $0 == 0
       StrCpy $YuvalProcWasRunning 1
-      nsExec::Exec 'taskkill /IM "$YuvalProc"'
+      nsExec::Exec '"$SYSDIR\taskkill.exe" /IM "$YuvalProc"'
       Pop $0
       StrCpy $1 0
       ${Do}
         Sleep 500
-        nsExec::Exec 'cmd /c tasklist /NH /FI "IMAGENAME eq $YuvalProc" | find /I "$YuvalProc"'
+        nsExec::Exec '${YUVAL_CMD_IS_RUNNING}'
         Pop $0
         ${If} $0 != 0
           ${Break}
@@ -240,7 +247,7 @@ SectionEnd
       ${LoopWhile} $1 < 10
       ; Still running after the grace period: force it (a hung program must not block an upgrade).
       ${If} $0 == 0
-        nsExec::Exec 'taskkill /F /IM "$YuvalProc"'
+        nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM "$YuvalProc"'
         Pop $0
         Sleep 500
       ${EndIf}

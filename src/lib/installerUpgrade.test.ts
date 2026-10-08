@@ -50,11 +50,16 @@ describe("the installer updates in place (nsis/installer.nsi)", () => {
     expect(tplCode).not.toContain("PageLeaveReinstall");
     expect(tplCode).not.toContain("reinst_uninstall");
     expect(tplCode).not.toContain("_?=");
-    // The hooks start processes only through nsExec::Exec with fixed tasklist/taskkill command lines.
+    // The hooks start processes only through nsExec::Exec, and every program by its full path under $SYSDIR: nothing
+    // is resolved through PATH or the setup's own folder (the setup is elevated; a GNU find.exe early in PATH made
+    // "is it running" answer no).
     const execs = code(hooks).split("\n").filter((l) => /\bExec(Wait|Shell|ShellWait)?\b|\bnsExec::/.test(l));
     expect(execs.length).toBeGreaterThan(0);
-    for (const line of execs) expect(line).toMatch(/nsExec::Exec '(cmd \/c tasklist|taskkill)/);
-    expect(code(hooks)).not.toMatch(/ExecWait|ExecShell|ExecDos/);
+    for (const line of execs) expect(line).toMatch(/nsExec::Exec '("\$SYSDIR\\taskkill\.exe" |\$\{YUVAL_CMD_IS_RUNNING\}')/);
+    const running = code(hooks).match(/^!define YUVAL_CMD_IS_RUNNING .*$/m)[0];
+    expect(running).toContain('"$SYSDIR\\cmd.exe" /c ""$SYSDIR\\tasklist.exe" /NH /FI');
+    expect(running).toContain('| "$SYSDIR\\find.exe" /I');
+    expect(code(hooks).replace(running, "")).not.toMatch(/ExecWait|ExecShell|ExecDos|\bcmd\b|\btasklist\b|\bfind\b/);
   });
 
   it("decides in .onInit (page callbacks do not run under /S) and skips the folder pages on an update", () => {
@@ -155,9 +160,10 @@ describe("migration from CompanyIsland (installer-hooks.nsh)", () => {
 
   it("closes programs politely, then forces them, for both products", () => {
     const stop = macro("YUVAL_STOP_PROCESS_FUNCTION");
-    expect(stop).toContain('taskkill /IM "$YuvalProc"');
-    expect(stop).toContain('taskkill /F /IM "$YuvalProc"');
-    expect(stop.indexOf("taskkill /IM")).toBeLessThan(stop.indexOf("taskkill /F"));
+    expect(stop).toContain('taskkill.exe" /IM "$YuvalProc"');
+    expect(stop).toContain('taskkill.exe" /F /IM "$YuvalProc"');
+    expect(stop.indexOf('taskkill.exe" /IM')).toBeLessThan(stop.indexOf('taskkill.exe" /F'));
+    expect(stop.match(/nsExec::Exec '\$\{YUVAL_CMD_IS_RUNNING\}'/g)).toHaveLength(2);
     expect(hooks).toContain('!insertmacro YUVAL_STOP_PROCESS_FUNCTION "un."');
   });
 

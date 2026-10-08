@@ -257,8 +257,9 @@ before each case.
   self-contained WinUI 3 app and its runtime, `center\web\` for the tour). Tauri's own running-app check only
   watches `Yuval.exe`, so `NSIS_HOOK_PREINSTALL` and `NSIS_HOOK_PREUNINSTALL` close both programs themselves
   (`YuvalStopProcess`, and an `un.` copy for the uninstaller): `taskkill /IM` (no `/F`), a poll of `tasklist` every
-  0.5 s for up to 5 s, then `taskkill /F`. An open Center would otherwise lock its files during an upgrade or
-  uninstall.
+  0.5 s for up to 5 s, then `taskkill /F`. Every program (`cmd`, `tasklist`, `find`, `taskkill`) is started by its
+  full path under the system folder, never through `PATH` or the setup's own folder (the setup is elevated). An open
+  Center would otherwise lock its files during an upgrade or uninstall.
 - Uninstall: closes the Center and the island (above, any session), then Tauri removes files (the `center\` files
   are deleted one by one from the install script's resource list, then our hook removes `center\` completely and the
   folder when empty), shortcuts and the `Run` value (not on `/UPDATE`). A file that is not in the list and not under
