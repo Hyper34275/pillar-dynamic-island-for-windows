@@ -1,4 +1,4 @@
-//! When the Island Center dies before it connects, find out why and say it in one message box,
+//! When the Yuval Center dies before it connects, find out why and say it in one message box,
 //! so a field report is a single photo instead of typed commands on an offline PC.
 //!
 //! The Center is started with the .NET runtime's own crash reporting switched on (a mini dump plus a
@@ -110,7 +110,7 @@ impl Summary {
     }
 
     fn message(&self) -> String {
-        let mut m = format!("מרכז האי נסגר מיד אחרי ההפעלה.\nקוד יציאה: {}\n", self.code_hex());
+        let mut m = format!("מרכז יובל נסגר מיד אחרי ההפעלה.\nקוד יציאה: {}\n", self.code_hex());
         if !self.stage.is_empty() {
             m.push_str("\nשלב אחרון (center.log):\n");
             for l in &self.stage {
@@ -118,7 +118,7 @@ impl Summary {
                 m.push('\n');
             }
         } else {
-            m.push_str("\ncenter.log: אין שורות (הקריסה קרתה לפני הקוד של מרכז האי)\n");
+            m.push_str("\ncenter.log: אין שורות (הקריסה קרתה לפני הקוד של מרכז יובל)\n");
         }
         match &self.report {
             Some(r) => {
@@ -146,7 +146,7 @@ fn show(text: &str) {
         MessageBoxW(
             HWND::default(),
             &HSTRING::from(text),
-            &HSTRING::from("CompanyIsland – מרכז האי"),
+            &HSTRING::from("Yuval – מרכז יובל"),
             MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST | MB_RTLREADING | MB_RIGHT,
         );
     }
@@ -290,11 +290,11 @@ mod tests {
         let json = r#"{"payload":{"protocol_version":"1.0.0","threads":[
             {"is_managed":true,"crashed":false,"stack_frames":[{"method_name":"Idle","filename":"x.dll"}]},
             {"is_managed":true,"crashed":true,"managed_exception_type":"System.TypeLoadException","managed_exception_hresult":"0x80131522",
-             "stack_frames":[{"is_managed":true,"method_name":"CompanyIsland.Center.App..ctor()","filename":"C:\\Program Files\\CompanyIsland\\center\\CompanyIsland.Center.dll"},
+             "stack_frames":[{"is_managed":true,"method_name":"CompanyIsland.Center.App..ctor()","filename":"C:\\Program Files\\Yuval\\center\\Yuval.Center.dll"},
                              {"is_managed":false,"filename":"coreclr.dll"}]}]}}"#;
         let s = summarize_report(json).unwrap();
         assert_eq!(s.exception.as_deref(), Some("System.TypeLoadException (0x80131522)"));
-        assert_eq!(s.frames[0], "CompanyIsland.Center.App..ctor() [CompanyIsland.Center.dll]");
+        assert_eq!(s.frames[0], "CompanyIsland.Center.App..ctor() [Yuval.Center.dll]");
         assert_eq!(s.frames[1], "[coreclr.dll]");
     }
 
@@ -325,5 +325,7 @@ mod tests {
         let m = s.message();
         assert!(m.contains("0x80131506") && m.contains("app resources loaded") && m.contains("System.X") && m.contains("A [b.dll]"));
         assert!(s.one_line().contains("exit=0x80131506"));
+        assert!(m.starts_with("מרכז יובל נסגר"), "{m}");
+        assert!(!m.contains("CompanyIsland") && !m.contains("מרכז האי"), "{m}");
     }
 }

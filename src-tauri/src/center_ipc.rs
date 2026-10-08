@@ -1,4 +1,4 @@
-//! The named pipe the Island Center talks to the island through (docs: contract section 4).
+//! The named pipe the Yuval Center talks to the island through (docs: contract section 4).
 //!
 //! `\\.\pipe\CompanyIsland.Center.<session>.<sidhash>`, readable and writable by the current
 //! user only (protected DACL), no remote clients, one server per user session. The protocol is

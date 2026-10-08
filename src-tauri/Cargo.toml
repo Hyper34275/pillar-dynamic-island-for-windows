@@ -1,8 +1,8 @@
 [package]
 name = "companyisland"
 version = "1.0.13"
-description = "CompanyIsland - a Dynamic Island style date, time and calendar overlay for Windows"
-authors = ["CompanyIsland"]
+description = "Yuval - a Dynamic Island style date, time and calendar overlay for Windows"
+authors = ["Yuval"]
 license = "MIT"
 edition = "2021"
 
@@ -11,7 +11,7 @@ name = "companyisland_lib"
 crate-type = ["lib"]
 
 [[bin]]
-name = "CompanyIsland"
+name = "Yuval"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -23,7 +23,7 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
-# Named pipe server for the Island Center (same major as the copy tauri already pulls in).
+# Named pipe server for the Yuval Center (same major as the copy tauri already pulls in).
 tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt", "rt-multi-thread", "macros"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # The `implement` macro (IMessageFilter for the Outlook COM worker) expands to `windows_core::` paths.
