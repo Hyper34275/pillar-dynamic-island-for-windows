@@ -149,7 +149,7 @@ function Headline({ text, onClose }: { text: string; onClose?: () => void }) {
 
 function ItemRow({ card, item, showTime }: { card: Card; item: AssistantItem; showTime: boolean }) {
   const meta = itemMeta(item);
-  const accent = item.accent ?? (item.kind === "event" ? color.accent : color.fgQuaternary);
+  const accent = item.accent ?? (item.kind === "event" || item.kind === "action" ? color.accent : color.fgQuaternary);
   const body = (
     <>
       <span aria-hidden="true" className="flex-none" style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: accent }} />
@@ -189,7 +189,8 @@ function ItemRow({ card, item, showTime }: { card: Card; item: AssistantItem; sh
         type="button"
         className="ci-action hit-area w-full flex items-center pointer-events-auto"
         style={{ ...rowStyle, "--btn-bg": color.surface, "--btn-bg-hover": color.surfaceHover, "--btn-bg-pressed": color.surfacePressed } as CSSProperties}
-        aria-label={t("ai.openItem", { title: item.title })}
+        // A command item ("חפש בגוגל") is named together with what it will do (the card's headline).
+        aria-label={item.kind === "action" ? [item.title, card.title].filter(Boolean).join(". ") : t("ai.openItem", { title: item.title })}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();

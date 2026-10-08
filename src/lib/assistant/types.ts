@@ -4,7 +4,7 @@
 // Cards carry mail subjects, names and calendar details: memory only, never logged or persisted.
 
 export type CardPhase = "processing" | "answer" | "choices" | "error";
-export type ItemKind = "event" | "mail" | "note" | "file" | "app" | "calc" | "slot" | "info";
+export type ItemKind = "event" | "mail" | "note" | "file" | "app" | "calc" | "slot" | "info" | "action";
 export type ChoiceKind = "mailbox" | "allMailboxes" | "option";
 export type AssistantLang = "he" | "en";
 
@@ -51,7 +51,7 @@ export type AssistantCard = {
 };
 
 const PHASES: readonly CardPhase[] = ["processing", "answer", "choices", "error"];
-const ITEM_KINDS: readonly ItemKind[] = ["event", "mail", "note", "file", "app", "calc", "slot", "info"];
+const ITEM_KINDS: readonly ItemKind[] = ["event", "mail", "note", "file", "app", "calc", "slot", "info", "action"];
 const CHOICE_KINDS: readonly ChoiceKind[] = ["mailbox", "allMailboxes", "option"];
 const QUERY_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const MAX_ITEMS = 50;
