@@ -13,7 +13,7 @@ import { LayerContext, ShellContext, useIslandPartFade, useTransitionLayer } fro
 export const IslandOriginContext = createContext<IslandOrigin | null>(null);
 
 /** Layers whose arrival depends on the origin, by name. */
-const ARRIVAL_KIND: Record<string, "compact" | "temporary"> = { compact: "compact", meetingAlert: "temporary", ringer: "temporary", toast: "temporary" };
+const ARRIVAL_KIND: Record<string, "compact" | "temporary"> = { compact: "compact", meetingAlert: "temporary", ringer: "temporary", toast: "temporary", assistant: "temporary" };
 
 /**
  * The fade a layer called `name` uses: its own while leaving (or outside a shell), the

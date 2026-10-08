@@ -2,7 +2,8 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { TabId } from "../components/Pill/tabs";
 import type { IslandNotification } from "../lib/ipc";
 import { initialIslandState, islandReducer, selectView, type IslandState, type IslandView, type Ringer } from "../lib/island/state";
-import { ALERT_MS, INVITE_TOAST_MS, NOTIFICATION_GRACE_MS, notificationDwellMs } from "../lib/island/timing";
+import { ALERT_MS, assistantDwellMs, INVITE_TOAST_MS, NOTIFICATION_GRACE_MS, notificationDwellMs } from "../lib/island/timing";
+import type { AssistantCard } from "../lib/assistant/types";
 import type { ReminderAlert } from "../lib/reminders/types";
 
 /**
@@ -55,6 +56,12 @@ export interface IslandController {
   showRinger: (ringer: Omit<Ringer, "toggles">) => void;
   toggleRinger: () => void;
   dismissRinger: () => void;
+  /** A smart-search card takes the island (closing the panel); the same query id changes it in place. */
+  showAssistant: (card: AssistantCard) => void;
+  /** A later state of a card; same as showAssistant (the reducer tells in-place from new by the query id). */
+  updateAssistant: (card: AssistantCard) => void;
+  /** The card goes (timeout, close, results opened). With `queryId`, only if that card is the one on screen. */
+  dismissAssistant: (queryId?: string) => void;
 }
 
 /** The ring / silent pill stays this long, and this long after each tap. */
@@ -91,6 +98,9 @@ export function useIslandState({ suppressed = false }: UseIslandStateOptions = {
       showRinger: (ringer: Omit<Ringer, "toggles">) => dispatch({ type: "RINGER_SHOW", ringer }),
       toggleRinger: () => dispatch({ type: "RINGER_TOGGLE" }),
       dismissRinger: () => dispatch({ type: "RINGER_DONE" }),
+      showAssistant: (card: AssistantCard) => dispatch({ type: "ASSISTANT_SHOW", card, at: Date.now() }),
+      updateAssistant: (card: AssistantCard) => dispatch({ type: "ASSISTANT_UPDATE", card, at: Date.now() }),
+      dismissAssistant: (queryId?: string) => dispatch({ type: "ASSISTANT_DONE", at: Date.now(), queryId }),
     }),
     []
   );
@@ -117,6 +127,17 @@ export function useIslandState({ suppressed = false }: UseIslandStateOptions = {
     state.ringer && state.ringer.toggles > 0 ? RINGER_AFTER_TOGGLE_MS : RINGER_MS,
     paused || view.kind !== "ringer",
     actions.dismissRinger
+  );
+
+  // The smart-search card: an answer or error 12 s, a question 60 s, a working card only a backstop.
+  // The key follows what the person sees (the phase, partial -> final), so a new state starts its
+  // own time while an in-place change of the same state does not. Behind a meeting alert it holds.
+  const assistant = state.assistant;
+  useCountdown(
+    assistant ? `${assistant.queryId}:${assistant.phase}:${assistant.partial ? "partial" : "final"}` : null,
+    assistant ? assistantDwellMs(assistant.phase) : 0,
+    paused || view.kind !== "assistant",
+    () => actions.dismissAssistant(assistant?.queryId)
   );
 
   // Whatever waited behind a hidden window (a fullscreen app) may have gone stale.

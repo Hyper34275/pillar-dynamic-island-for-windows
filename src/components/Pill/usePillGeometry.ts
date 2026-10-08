@@ -5,6 +5,7 @@ import { getIslandLimits, useIslandLimits, type IslandLimits } from "../../lib/i
 import { ipc, type IslandGeometry } from "../../lib/ipc";
 import { dlog } from "../../lib/debugLog";
 import { expandedSize, ISLAND_TOP_INSET, limitSize, meetingAlertSize, pillDimensions } from "./animations";
+import { assistantMaxSize } from "./assistantLayout";
 import { toastMaxSize } from "./toastLayout";
 
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -22,10 +23,12 @@ export function maxShapeSize(limits: IslandLimits = getIslandLimits()): { width:
   const expanded = expandedSize(limits);
   const alert = limitSize(meetingAlertSize(2, true, true), limits);
   const notification = limitSize(toastMaxSize(), limits);
+  // The smart-search card stays inside the panel's bound, so this never grows the stage.
+  const assistant = limitSize(assistantMaxSize(), limits);
   const compactMax = Math.min(d.compact.maxWidth, limits.maxWidth);
   return {
-    width: Math.max(expanded.width, alert.width, notification.width, Math.min(d.compactMeeting.maxWidth, limits.maxWidth), compactMax, Math.min(d.ringer.width, limits.maxWidth)),
-    height: Math.max(expanded.height, alert.height, notification.height, d.compact.height, d.ringer.height),
+    width: Math.max(expanded.width, alert.width, notification.width, assistant.width, Math.min(d.compactMeeting.maxWidth, limits.maxWidth), compactMax, Math.min(d.ringer.width, limits.maxWidth)),
+    height: Math.max(expanded.height, alert.height, notification.height, assistant.height, d.compact.height, d.ringer.height),
   };
 }
 

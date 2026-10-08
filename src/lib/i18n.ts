@@ -252,6 +252,15 @@ const en = {
     one: "You missed 1 notification",
     other: "You missed {n} notifications",
   },
+  // Smart search: the island's assistant card.
+  "ai.label": "Smart search",
+  "ai.processing": "Working…",
+  "ai.showAll": "Show all results",
+  "ai.extend": "Search 10 s more",
+  "ai.remember": "Remember my choice",
+  "ai.close": "Close",
+  "ai.openItem": "Open: {title}",
+  "ai.unavailable": "This answer can't be shown",
 } satisfies Record<string, Message>;
 
 export type MessageKey = keyof typeof en;
@@ -502,6 +511,15 @@ const he: Record<MessageKey, Message> = {
     two: "פספסת שתי התראות",
     other: "פספסת {n} התראות",
   },
+  // Smart search: the island's assistant card.
+  "ai.label": "חיפוש חכם",
+  "ai.processing": "מחפש…",
+  "ai.showAll": "הצג את כל התוצאות",
+  "ai.extend": "חפש עוד 10 שניות",
+  "ai.remember": "זכור את הבחירה",
+  "ai.close": "סגור",
+  "ai.openItem": "פתח: {title}",
+  "ai.unavailable": "לא ניתן להציג את התשובה",
 };
 
 const tables: Record<Locale, Record<MessageKey, Message>> = { en, he };

@@ -1,6 +1,9 @@
 import { useMotionValue } from "motion/react";
 import type { ReactNode } from "react";
 import { alertIslandSize } from "../components/Pill/alertLayout";
+import { assistantIslandSize } from "../components/Pill/assistantLayout";
+import { AssistantCard as AssistantCardView } from "../components/Pill/AssistantCard";
+import type { AssistantCard, AssistantItem } from "../lib/assistant/types";
 import { expandedSize, ringerSize, type IslandSize } from "../components/Pill/animations";
 import { toastLayout } from "../components/Pill/toastLayout";
 import type { HistoryEntry } from "../lib/notifications/history";
@@ -183,6 +186,105 @@ function ExpandedPreview({ tab, panel }: { tab: TabId; panel?: ReactNode }) {
   );
 }
 
+// --- Smart search: the island's assistant card (made-up data, like the rest of the gallery). ---
+const tomorrowAt = (hour: number, minute: number): number => {
+  const d = new Date(TOUR_NOW);
+  d.setDate(d.getDate() + 1);
+  d.setHours(hour, minute, 0, 0);
+  return d.getTime();
+};
+const CARD_BASE: AssistantCard = {
+  queryId: "gallery",
+  query: "",
+  phase: "answer",
+  lang: "he",
+  title: "",
+  summary: "",
+  question: null,
+  choices: [],
+  items: [],
+  total: 0,
+  partial: false,
+  canExtend: false,
+  errorCode: null,
+  sources: [],
+  createdAt: TOUR_NOW,
+  followUp: false,
+};
+const meetingItem = (id: string, hour: number, minute: number, title: string, accent: string | null, source: string | null): AssistantItem => ({
+  id,
+  kind: "event",
+  title,
+  subtitle: null,
+  time: tomorrowAt(hour, minute),
+  endTime: tomorrowAt(hour + 1, minute),
+  accent,
+  openable: false,
+  unread: false,
+  source,
+});
+const mailItem = (id: string, title: string, sender: string, mailbox: string, daysAgo: number, unread = false): AssistantItem => ({
+  id,
+  kind: "mail",
+  title,
+  subtitle: sender,
+  time: TOUR_NOW - daysAgo * 86_400_000,
+  endTime: null,
+  accent: null,
+  openable: true,
+  unread,
+  source: mailbox,
+});
+const ITZIK_CARD: AssistantCard = {
+  ...CARD_BASE,
+  queryId: "gallery-itzik",
+  title: "מחר יש לאיציק 3 פגישות",
+  summary: "09:00 · 11:30 · 14:00",
+  items: [
+    meetingItem("e1", 9, 0, "סטנד־אפ צוות תשתיות", "#0A84FF", "היומן של איציק"),
+    meetingItem("e2", 11, 30, "סקירת תקציב רבעונית", "#BF5AF2", "היומן של איציק"),
+    meetingItem("e3", 14, 0, "Vendor sync — Contoso", "#30D158", "היומן של איציק"),
+  ],
+  total: 3,
+  sources: ["היומן של איציק"],
+};
+const PROCESSING_CARD: AssistantCard = { ...CARD_BASE, queryId: "gallery-working", phase: "processing" };
+const MAIL_PARTIAL_CARD: AssistantCard = {
+  ...CARD_BASE,
+  queryId: "gallery-mail",
+  title: "מצאתי 14 מיילים עם המילה תקציב",
+  summary: "החיפוש עדיין לא הושלם בכל התיבות.",
+  items: [
+    mailItem("m1", "תקציב 2027 — גרסה סופית לאישור", "דנה כהן", "תיבת הדואר שלי", 1, true),
+    mailItem("m2", "RE: Budget forecast Q4", "Michael Levi", "Finance (shared)", 2),
+    mailItem("m3", "אישור חריגת תקציב מחלקת IT", "רונית אברהם", "תיבת הדואר שלי", 4),
+  ],
+  total: 14,
+  partial: true,
+  canExtend: true,
+  sources: ["תיבת הדואר שלי", "Finance (shared)"],
+};
+const MAILBOX_CHOICES_CARD: AssistantCard = {
+  ...CARD_BASE,
+  queryId: "gallery-choices",
+  phase: "choices",
+  question: "באיזו תיבת דואר לחפש?",
+  choices: [
+    { id: "mb1", label: "תיבת הדואר שלי", kind: "mailbox", preferred: true },
+    { id: "mb2", label: "Finance (shared)", kind: "mailbox", preferred: false },
+    { id: "all", label: "אני לא יודע — חפש בכל התיבות שיש לי הרשאה אליהן.", kind: "allMailboxes", preferred: false },
+  ],
+};
+const ERROR_CARD: AssistantCard = {
+  ...CARD_BASE,
+  queryId: "gallery-error",
+  phase: "error",
+  title: "לא הצלחתי לקרוא את היומן של איציק",
+  summary: "פתח את היומן שלו ב-Outlook כדי לאפשר גישה, ואז נסה שוב.",
+  errorCode: "MAIL-101",
+};
+const assistantExhibit = (id: string, label: string, card: AssistantCard): Exhibit => ({ id, label, size: assistantIslandSize(card), node: <AssistantCardView card={card} /> });
+
 interface Exhibit {
   id: string;
   label: string;
@@ -215,6 +317,11 @@ function exhibits(): Exhibit[] {
     { id: "alert", label: "Meeting alert · join + snooze", size: alertIslandSize(TOUR_ALERT), node: <MeetingAlert alert={TOUR_ALERT} /> },
     { id: "alert-now", label: "Meeting alert · starting now", size: alertIslandSize(SOON_ALERT), node: <MeetingAlert alert={SOON_ALERT} /> },
     { id: "alert-long", label: "Meeting alert · long Hebrew", size: alertIslandSize(LONG_ALERT), node: <MeetingAlert alert={LONG_ALERT} /> },
+    assistantExhibit("assistant-processing", "Assistant · working", PROCESSING_CARD),
+    assistantExhibit("assistant-answer", "Assistant · answer, 3 meetings", ITZIK_CARD),
+    assistantExhibit("assistant-choices", "Assistant · which mailbox?", MAILBOX_CHOICES_CARD),
+    assistantExhibit("assistant-partial", "Assistant · partial mail answer, extend", MAIL_PARTIAL_CARD),
+    assistantExhibit("assistant-error", "Assistant · error", ERROR_CARD),
     t2("invite", "Invitation · three actions", invite),
     t2("teams", "Teams", TEAMS_NOTIFICATION),
     t2("teams-long", "Teams · long mixed", TEAMS_LONG),

@@ -21,7 +21,8 @@ import { useScreenReader, ScreenReaderLiveRegions } from "../../hooks/useScreenR
 import { useDesktopGestures } from "../../hooks/useDesktopGestures";
 import { APP_NAME } from "../../lib/appInfo";
 import { NO_LIMITS, setIslandLimits, useIslandLimits, type IslandLimits } from "../../lib/island/limits";
-import { ipc, type IslandNotification } from "../../lib/ipc";
+import { ipc, onEvent, type IslandNotification } from "../../lib/ipc";
+import { ASSISTANT_UPDATE_EVENT, normalizeAssistantCard, type AssistantCard as AssistantCardData } from "../../lib/assistant/types";
 import { t } from "../../lib/i18n";
 import { dlog } from "../../lib/debugLog";
 import { bootAnimationDuration, expandedSize, islandSpringsReduced, type IslandOrigin, ISLAND_TOP_INSET, islandSprings, limitSize, pillDimensions, ringerSize, springConfig, type IslandSize } from "./animations";
@@ -30,6 +31,8 @@ import { ShellContext, TransitionContext, useDrivenTransition } from "./drivenTr
 import { useIslandMotion } from "./useIslandMotion";
 import type { ReminderStore } from "../../lib/reminders/types";
 import { alertIslandSize } from "./alertLayout";
+import { assistantIslandSize } from "./assistantLayout";
+import { AssistantCard, assistantAnnouncement, assistantLabel } from "./AssistantCard";
 import { CompactIsland } from "./CompactIsland";
 import { IslandOriginContext } from "./IslandLayer";
 import { ContextMenu } from "./ContextMenu";
@@ -117,7 +120,7 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
 
   const { isBooting, completeBootAnimation, pointerEnter, pointerLeave, holdCollapsed, foregroundChanged } = usePillState({
     expanded: state.expanded,
-    temporary: view.kind === "meetingAlert" || view.kind === "notification" || view.kind === "ringer",
+    temporary: view.kind === "meetingAlert" || view.kind === "assistant" || view.kind === "notification" || view.kind === "ringer",
     expand: islandState.expand,
     pin: islandState.pin,
     collapse: islandState.collapse,
@@ -145,6 +148,8 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         return expandedSize(limits);
       case "meetingAlert":
         return limitSize(alertIslandSize(view.alert), limits);
+      case "assistant":
+        return limitSize(assistantIslandSize(view.card), limits);
       case "ringer":
         return limitSize(ringerSize(), limits);
       case "notification":
@@ -197,6 +202,8 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     ? "boot"
     : view.kind === "meetingAlert"
       ? `alert-${view.alert.key}`
+      : view.kind === "assistant"
+        ? `assistant-${view.card.queryId}`
       : view.kind === "ringer"
         ? `ringer-${view.ringer.key}`
         : view.kind === "notification"
@@ -285,6 +292,44 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
     if (shownRinger) announce(ringerLabel(shownRinger));
   }, [shownRinger, announce]);
 
+  // ---------------------------------------------------------------------------
+  // Smart search: the backend streams the states of a question as "assistant-update" events
+  // (working, answer, question, error); the card is shown without ever taking the keyboard. A
+  // card is memory only: nothing of it is logged here.
+  // ---------------------------------------------------------------------------
+  const { showAssistant, dismissAssistant } = islandState;
+  // Questions whose work the person cancelled by closing their "working" card: the answer that
+  // still arrives for them is not shown (the Center's history has it).
+  const cancelledQueriesRef = useRef<string[]>([]);
+  const applyAssistantCard = useCallback(
+    (card: AssistantCardData) => {
+      if (cancelledQueriesRef.current.includes(card.queryId)) return;
+      showAssistant(card);
+    },
+    [showAssistant]
+  );
+  useEffect(
+    () =>
+      onEvent<unknown>(ASSISTANT_UPDATE_EVENT, (raw) => {
+        const card = normalizeAssistantCard(raw);
+        if (card) applyAssistantCard(card);
+      }),
+    [applyAssistantCard]
+  );
+  // Close, Escape, a toggle: the card goes and the backend is told (it stops working for it).
+  const dismissAssistantCard = useCallback(
+    (card: AssistantCardData) => {
+      if (card.phase === "processing") cancelledQueriesRef.current = [...cancelledQueriesRef.current, card.queryId].slice(-20);
+      void ipc.assistantDismiss(card.queryId);
+      dismissAssistant(card.queryId);
+    },
+    [dismissAssistant]
+  );
+  const shownAssistant = view.kind === "assistant" ? view.card : null;
+  useEffect(() => {
+    if (shownAssistant) announce(assistantAnnouncement(shownAssistant));
+  }, [shownAssistant, announce]);
+
   // Opening the calendar side of things is when stale data is most visible: ask for a sync.
   useEffect(() => {
     if (isExpanded) void calendar.refresh();
@@ -347,13 +392,14 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       dlog("info", "pill", `collapse: ${reason}`);
       holdCollapsed();
       if (view.kind === "meetingAlert") islandState.dismissAlert();
+      else if (view.kind === "assistant") dismissAssistantCard(view.card);
       else if (view.kind === "ringer") islandState.dismissRinger();
       // Swipe, Escape, a click elsewhere: the whole notification session goes (the Notification
       // Center keeps every one of them), not just the toast on screen.
       else if (view.kind === "notification") islandState.endNotificationSession();
       else islandState.collapse();
     },
-    [holdCollapsed, view.kind, islandState]
+    [holdCollapsed, view, islandState, dismissAssistantCard]
   );
 
   const toggleIsland = useCallback(
@@ -365,11 +411,12 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
         return;
       }
       if (view.kind === "meetingAlert") islandState.dismissAlert();
+      else if (view.kind === "assistant") dismissAssistantCard(view.card);
       else if (view.kind === "ringer") islandState.dismissRinger();
       else if (view.kind === "notification") islandState.endNotificationSession();
       islandState.pin(tab);
     },
-    [view.kind, activeTab, islandState, closeAll]
+    [view, activeTab, islandState, closeAll, dismissAssistantCard]
   );
 
   // A display or DPI change: take the new monitor's limits (from the event, or ask when an older
@@ -430,6 +477,11 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
       // itself, a confirmation cancelling) has called preventDefault or stopped the event: not ours.
       if (e.key === "Escape" && view.kind !== "idle") {
         if (e.defaultPrevented) return;
+        // The smart-search card: Escape dismisses it and tells the backend, before anything generic.
+        if (view.kind === "assistant") {
+          dismissAssistantCard(view.card);
+          return;
+        }
         closeAll("escape key");
         return;
       }
@@ -448,13 +500,15 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [view.kind, closeAll, toggleIsland]);
+  }, [view, closeAll, toggleIsland, dismissAssistantCard]);
 
-  const carriesControls = view.kind === "notification" || view.kind === "meetingAlert";
+  const carriesControls = view.kind === "notification" || view.kind === "meetingAlert" || view.kind === "assistant";
   const ariaLabel = isExpanded
     ? t("island.expandedLabel", { app: APP_NAME })
     : view.kind === "meetingAlert"
       ? `${meetingAlertLabel(view.alert, minute)}. ${meetingAlertSubject(view.alert)}`
+      : view.kind === "assistant"
+        ? assistantLabel()
       : view.kind === "ringer"
         ? `${ringerLabel(view.ringer)}. ${view.ringer.phase === "start" ? t("ringer.hint") : ""}`
         : compact.ariaLabel;
@@ -554,6 +608,17 @@ export function PillShell({ reminderStore }: PillShellProps = {}) {
                   snooze(view.alert);
                   closeAll("alert snoozed");
                 }}
+              />
+            )}
+            {view.kind === "assistant" && !isDot && (
+              <AssistantCard
+                key={shownKey}
+                card={view.card}
+                reducedMotion={reducedMotion}
+                onClose={() => dismissAssistantCard(view.card)}
+                // The results opened in the Center: the card goes, the backend keeps the results.
+                onHide={() => dismissAssistant(view.card.queryId)}
+                onCard={applyAssistantCard}
               />
             )}
             {view.kind === "ringer" && !isDot && <RingerPill key={shownKey} ringer={view.ringer} />}

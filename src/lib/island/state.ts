@@ -1,6 +1,6 @@
 // Island state manager: a pure reducer that decides what the island shows.
 //
-// Priority (docs/ENTERPRISE_DESIGN.md section 0):  meetingAlert (3) > ringer (2.5) > notification (2) > userExpanded (1) > idle (0)
+// Priority (docs/ENTERPRISE_DESIGN.md section 0):  meetingAlert (3) > assistant (2.6) > ringer (2.5) > notification (2) > userExpanded (1) > idle (0)
 //  - A higher state preempts a lower one; a lower one never interrupts a higher one.
 //  - What the user had open (expanded, which tab, pinned) lives in its own layer and is never
 //    touched by temporary states, so it is simply shown again when they end.
@@ -14,10 +14,11 @@
 //  - Timing belongs to the caller (useIslandState): every event that needs a clock carries `at`.
 
 import type { TabId } from "../../components/Pill/tabs";
+import type { AssistantCard } from "../assistant/types";
 import type { IslandNotification } from "../ipc";
 import type { ReminderAlert } from "../reminders/types";
 
-export const PRIORITY = { meetingAlert: 3, ringer: 2.5, notification: 2, userExpanded: 1, idle: 0 } as const;
+export const PRIORITY = { meetingAlert: 3, assistant: 2.6, ringer: 2.5, notification: 2, userExpanded: 1, idle: 0 } as const;
 
 /**
  * A notification that WAITED (behind a meeting alert or a hidden window) longer than this is
@@ -96,6 +97,12 @@ export interface IslandState {
   /** Pending notifications dropped because of the cap (diagnostics). */
   droppedFromQueue: number;
   ringer: Ringer | null;
+  /**
+   * The smart-search card the user asked for (processing, answer, choices or error). It is not part
+   * of the notification session: a meeting alert pre-empts it and it simply shows again after the
+   * alert; notifications wait behind it in the queue.
+   */
+  assistant: AssistantCard | null;
 }
 
 export type IslandEvent =
@@ -117,11 +124,18 @@ export type IslandEvent =
   | { type: "RINGER_SHOW"; ringer: Omit<Ringer, "toggles"> }
   | { type: "RINGER_TOGGLE" }
   | { type: "RINGER_DONE" }
+  /** A smart-search card: a new query takes the island (closing the panel); the same query id updates in place. */
+  | { type: "ASSISTANT_SHOW"; card: AssistantCard; at: number }
+  /** A later state of a card (processing -> answer): same query id = in place, no new session. Otherwise it is a show. */
+  | { type: "ASSISTANT_UPDATE"; card: AssistantCard; at: number }
+  /** The card ended (timeout, close, Escape, results opened). `queryId` guards against ending a newer card. */
+  | { type: "ASSISTANT_DONE"; at: number; queryId?: string }
   /** Time passed with nothing else happening (e.g. the island was hidden): refreshes or drops stale alerts and notifications that waited. */
   | { type: "TICK"; at: number };
 
 export type IslandView =
   | { kind: "meetingAlert"; alert: ReminderAlert }
+  | { kind: "assistant"; card: AssistantCard }
   | { kind: "ringer"; ringer: Ringer }
   | {
       kind: "notification";
@@ -147,10 +161,12 @@ export const initialIslandState: IslandState = {
   shownGeneration: 0,
   droppedFromQueue: 0,
   ringer: null,
+  assistant: null,
 };
 
 export function selectView(state: IslandState): IslandView {
   if (state.alert) return { kind: "meetingAlert", alert: state.alert };
+  if (state.assistant) return { kind: "assistant", card: state.assistant };
   if (state.ringer) return { kind: "ringer", ringer: state.ringer };
   // The panel the user opened is never hidden by a toast: opening it ends the session, and while
   // it is open nothing becomes current, so the two never coexist in the state; this order only
@@ -238,8 +254,8 @@ function admit(state: IslandState, received: ReceivedNotification, at: number): 
   if (index !== -1) {
     return { ...state, notificationQueue: state.notificationQueue.map((queued, i) => (i === index ? received : queued)) };
   }
-  // Behind a meeting alert (or behind pending ones): wait in line.
-  if (state.alert || state.notificationQueue.length > 0) return enqueue(state, [...state.notificationQueue, received]);
+  // Behind a meeting alert or a smart-search card (or behind pending ones): wait in line.
+  if (state.alert || state.assistant || state.notificationQueue.length > 0) return enqueue(state, [...state.notificationQueue, received]);
   if (!current) return makeCurrent(state, received, at, true);
   // Grace: the session is still open, the late arrival simply takes the screen.
   if (current.phase === "lingering") return makeCurrent(state, received, at, false);
@@ -252,13 +268,37 @@ function clearSession(state: IslandState): IslandState {
 }
 
 /**
+ * Nothing higher is on screen any more (the last alert or the assistant card ended): the session
+ * continues with what is still fresh, which waited behind it.
+ */
+function releaseQueue(state: IslandState, at: number): IslandState {
+  const fresh = state.notificationQueue.filter((received) => isFresh(received, at));
+  const done = { ...state, notificationQueue: fresh };
+  return advance(done, at) ?? done;
+}
+
+/** A card for `card.queryId` takes the island, or (same id) changes where it stands. */
+function placeAssistant(state: IslandState, card: AssistantCard, at: number): IslandState {
+  if (state.assistant?.queryId === card.queryId) return { ...state, assistant: card };
+  // A new query closes the panel (it is what the user asked for just now) and sends the toast on
+  // screen back to the front of the line, exactly like an alert does. Time-sensitive notifications
+  // that waited for the panel join the line (the panel will not close on its own any more).
+  const current = state.notification;
+  const back = current && current.phase === "showing" ? [{ notification: current.notification, receivedAt: current.receivedAt }] : [];
+  const waited = state.deferred.filter((received) => at - received.receivedAt < DEFERRED_FRESH_MS);
+  const queue = [...back, ...state.notificationQueue];
+  for (const received of waited) if (!queue.some((queued) => queued.notification.id === received.notification.id)) queue.push(received);
+  return { ...enqueue(state, queue), assistant: card, notification: null, expanded: false, pinned: false, deferred: [] };
+}
+
+/**
  * Throws if the notification session is in a state it must never reach. Run by the reducer in
  * development and tests (import.meta.env.DEV): a session that goes to Compact with pending items
  * would silently lose them.
  */
 export function assertNotificationInvariants(state: IslandState): void {
   const { notification, notificationQueue: queue } = state;
-  if (queue.length > 0 && !notification && !state.alert && !state.ringer) {
+  if (queue.length > 0 && !notification && !state.alert && !state.ringer && !state.assistant) {
     throw new Error("notification session: the queue is not empty but nothing is showing");
   }
   if (queue.length > MAX_QUEUED_NOTIFICATIONS) throw new Error(`notification session: the queue holds ${queue.length} (max ${MAX_QUEUED_NOTIFICATIONS})`);
@@ -289,10 +329,11 @@ function reduce(state: IslandState, event: IslandEvent): IslandState {
       if (!state.alert) return state;
       const [next, ...rest] = state.alertQueue;
       if (next) return { ...state, alert: next, alertQueue: rest };
+      const done = { ...state, alert: null, alertQueue: [] };
+      // A smart-search card under the alert shows again; the queue keeps waiting behind it.
+      if (done.assistant) return done;
       // The session continues with what is still fresh: these waited behind the alert.
-      const fresh = state.notificationQueue.filter((received) => isFresh(received, event.at));
-      const done = { ...state, alert: null, alertQueue: [], notificationQueue: fresh };
-      return advance(done, event.at) ?? done;
+      return releaseQueue(done, event.at);
     }
 
     case "NOTIFICATION_SHOW": {
@@ -334,6 +375,17 @@ function reduce(state: IslandState, event: IslandEvent): IslandState {
 
     case "RINGER_DONE":
       return state.ringer ? { ...state, ringer: null } : state;
+
+    case "ASSISTANT_SHOW":
+    case "ASSISTANT_UPDATE":
+      return placeAssistant(state, event.card, event.at);
+
+    case "ASSISTANT_DONE": {
+      if (!state.assistant || (event.queryId !== undefined && event.queryId !== state.assistant.queryId)) return state;
+      const done = { ...state, assistant: null };
+      // Under an alert nothing else may start; the alert's end releases the queue.
+      return state.alert ? done : releaseQueue(done, event.at);
+    }
 
     case "USER_EXPAND":
       return { ...clearSession(state), expanded: true, tab: event.tab ?? state.tab };

@@ -34,6 +34,23 @@ export function notificationDwellMs(notification: IslandNotification, pendingCou
   if (pendingCount <= 6) return NOTIFICATION_DWELL_BUSY_MS;
   return NOTIFICATION_DWELL_BACKLOG_MS;
 }
+/** A smart-search answer (or error) stays this long unattended; hover pauses it. */
+export const ASSISTANT_ANSWER_MS = 12_000;
+/** A question card ("which mailbox?") waits this long for a click, then goes (typing in the search bar still answers it). */
+export const ASSISTANT_CHOICES_MS = 60_000;
+/**
+ * A "working" card has no timer of its own: the backend always ends it with an answer or an
+ * error. This is only the backstop for a backend that never does (search budget 10 s + 10 s
+ * extension, IPC timeout 45 s).
+ */
+export const ASSISTANT_PROCESSING_MAX_MS = 90_000;
+
+/** How long a smart-search card of `phase` stays on screen when nobody touches it. */
+export function assistantDwellMs(phase: "processing" | "answer" | "choices" | "error"): number {
+  if (phase === "choices") return ASSISTANT_CHOICES_MS;
+  if (phase === "processing") return ASSISTANT_PROCESSING_MAX_MS;
+  return ASSISTANT_ANSWER_MS;
+}
 /** The pointer must rest on the island this long before it expands (a fly-by does nothing). */
 export const HOVER_INTENT_MS = 120;
 /**
