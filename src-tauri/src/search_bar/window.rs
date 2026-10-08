@@ -11,17 +11,25 @@
 //! popup + tool-window styles back in. The window region is rounded to the bar so nothing paints
 //! outside it, and the creation happens off the main thread (Tauri deadlocks when a window is
 //! built on the thread that has to process the request).
+//!
+//! The centre "Spotlight glass" variant differs in two ways. Its window is fixed at the tallest sheet
+//! (the sheet grows in CSS), so its region is not rounded but a rectangle over the sheet and its
+//! shadow that follows the sheet's height (`set_sheet_height`): the transparent rest lets clicks
+//! through. And before it shows, the screen under it is captured (`snapshot.rs`, window hidden) and
+//! pushed to the page, which paints it blurred as the glass.
 
 use super::anchor::{gather, ShellProbe, Win32Probe};
+use super::glass::{self, GlassGeometry};
 use super::guard::guarded;
-use super::layout::{compute_layout, spotlight_layout, Layout, Variant};
+use super::layout::{compute_layout, sheet_region, spotlight_layout, Layout, Variant};
+use super::snapshot::{self, GlassBackdrop};
 use super::{thread, SearchBarState, WINDOW_LABEL};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
+use windows::Win32::Graphics::Gdi::{CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -85,6 +93,11 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 pub fn is_open() -> bool {
     OPEN.load(Ordering::Acquire)
+}
+
+/// The centre glass bar is open right now (not the taskbar-anchored or floating variants).
+pub fn glass_open() -> bool {
+    is_open() && current_variant() == Variant::Spotlight
 }
 
 /// The geometry the page should lay out to (also pushed as `search-bar-state`).
@@ -180,12 +193,49 @@ fn apply_geometry(hwnd: HWND, layout: &Layout) {
     let w = layout.window;
     unsafe {
         let _ = SetWindowPos(hwnd, HWND_TOPMOST, w.left, w.top, w.width(), w.height(), SWP_NOACTIVATE);
+    }
+    if layout.variant == Variant::Spotlight {
+        // The glass: a rectangle over the sheet and its shadow, following the sheet's height.
+        glass::set_geometry(GlassGeometry { width_px: w.width(), height_px: w.height(), scale: layout.scale });
+        apply_glass_region(hwnd);
+        return;
+    }
+    unsafe {
         // Rounded to the bar (+1: the right/bottom edge is excluded). On success the system owns it.
         let d = layout.region_radius_px * 2;
         let rgn = CreateRoundRectRgn(0, 0, w.width() + 1, w.height() + 1, d, d);
         if SetWindowRgn(hwnd, rgn, true) == 0 {
             let _ = DeleteObject(HGDIOBJ(rgn.0));
             dlog!("WARN", "search_bar", "WIN-507 SetWindowRgn failed");
+        }
+    }
+}
+
+/// The glass window's region: a rectangle from the top edge to the bottom of the sheet's shadow, as
+/// wide as the window. The transparent rest of the fixed-size window passes clicks to what is below.
+fn apply_glass_region(hwnd: HWND) {
+    let Some(g) = glass::geometry() else { return };
+    let r = sheet_region(g.width_px, g.height_px, g.scale, glass::sheet_dip());
+    unsafe {
+        let rgn = CreateRectRgn(r.left, r.top, r.right, r.bottom);
+        if SetWindowRgn(hwnd, rgn, true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(rgn.0));
+            dlog!("WARN", "search_bar", "WIN-507 SetWindowRgn (glass) failed");
+        }
+    }
+}
+
+/// The page reports the sheet's height (DIP) whenever it changes. Safe from any thread: the region
+/// is applied at once (a sync Tauri command already runs on the window's thread), so the page can
+/// wait for the call before it grows the sheet and the new area is clickable from the first frame.
+pub fn set_sheet_height(app: &AppHandle, dip: f64) {
+    glass::store_sheet(dip);
+    if !glass_open() {
+        return;
+    }
+    if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+        if let Some(hwnd) = hwnd_of(&win) {
+            apply_glass_region(hwnd);
         }
     }
 }
@@ -294,7 +344,7 @@ fn fail_open() {
     reset_failed_open(&OPEN, thread::post);
 }
 
-fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_contrast: bool) {
+fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_contrast: bool, backdrop: Option<&GlassBackdrop>) {
     let Some(hwnd) = hwnd_of(win) else {
         dlog!("WARN", "search_bar", "WIN-507 search window has no handle");
         fail_open();
@@ -303,6 +353,11 @@ fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_cont
     apply_styles(hwnd);
     apply_geometry(hwnd, layout);
     publish_state(app, layout, high_contrast);
+    // Capture -> event -> show: the page already holds the picture (or knows there is none) when the
+    // first frame is composed; if it is still decoding, the tinted panel shows and the picture fades in.
+    if let Some(backdrop) = backdrop {
+        glass::publish_backdrop(app, backdrop);
+    }
     if let Err(e) = win.show() {
         dlog!("WARN", "search_bar", "WIN-507 search window could not be shown: {}", e);
         fail_open();
@@ -314,6 +369,18 @@ fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_cont
     let _ = win.set_focus();
     force_foreground(hwnd);
     thread::post(thread::CMD_ACTIVE);
+}
+
+/// Start of a glass session (a no-op for the other shapes): earlier answers are the island's again,
+/// the sheet is the field alone, and the screen under the (hidden) window is captured. `None` for
+/// the other variants.
+fn begin_glass(layout: &Layout, high_contrast: bool) -> Option<GlassBackdrop> {
+    if layout.variant != Variant::Spotlight {
+        return None;
+    }
+    glass::reset_queries();
+    glass::reset_sheet();
+    Some(snapshot::capture(layout.window, high_contrast))
 }
 
 fn open_blocking(app: &AppHandle, spotlight: bool) {
@@ -336,11 +403,14 @@ fn open_blocking(app: &AppHandle, spotlight: bool) {
             return;
         }
     };
+    // The glass: a new session (its answers are the sheet's), the sheet starts as the field alone, and
+    // the screen under the window is captured now, while the window is still hidden.
+    let backdrop = begin_glass(&layout, high_contrast);
     OPEN.store(true, Ordering::Release);
     *lock(&OPENED_AT) = Some(Instant::now());
     thread::post(thread::CMD_IDLE_CANCEL);
     let handle = app.clone();
-    if let Err(e) = app.run_on_main_thread(move || show_on_main(&handle, &win, &layout, high_contrast)) {
+    if let Err(e) = app.run_on_main_thread(move || show_on_main(&handle, &win, &layout, high_contrast, backdrop.as_ref())) {
         fail_open();
         dlog!("WARN", "search_bar", "WIN-507 opening could not be queued: {}", e);
     }
@@ -366,9 +436,25 @@ fn switch_blocking(app: &AppHandle, spotlight: bool) {
     let probe = Win32Probe::default();
     let layout = build_layout(&probe, spotlight);
     let high_contrast = probe.high_contrast();
+    let was_glass = current_variant() == Variant::Spotlight;
     *lock(&VARIANT) = layout.variant;
     *lock(&STATE) = Some(layout.to_state(high_contrast));
     *lock(&OPENED_AT) = Some(Instant::now());
+    // Into the glass the window has to be out of the way while the screen under the new place is
+    // captured (it is on screen as the old shape): hide it, wait for the hide to land, capture, and
+    // show it again with the picture. Out of the glass the picture goes.
+    let backdrop = if spotlight {
+        hide_for_capture(app);
+        let backdrop = begin_glass(&layout, high_contrast);
+        // the deactivation the hide causes is the system settling, not the user leaving
+        *lock(&OPENED_AT) = Some(Instant::now());
+        backdrop
+    } else {
+        if was_glass {
+            glass::clear_backdrop();
+        }
+        None
+    };
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         if !is_open() {
@@ -378,11 +464,36 @@ fn switch_blocking(app: &AppHandle, spotlight: bool) {
             if let Some(hwnd) = hwnd_of(&win) {
                 apply_geometry(hwnd, &layout);
                 publish_state(&handle, &layout, high_contrast);
+                if let Some(backdrop) = backdrop.as_ref() {
+                    glass::publish_backdrop(&handle, backdrop);
+                    let _ = win.show();
+                    apply_styles(hwnd);
+                    apply_geometry(hwnd, &layout);
+                }
                 let _ = win.set_focus();
                 force_foreground(hwnd);
             }
         }
     });
+}
+
+/// Hide the (visible) search window and wait until the hide has run on the window's thread plus one
+/// composition frame, so the screen captured next does not hold the old bar. Bounded: a stuck main
+/// thread costs the picture's cleanliness, not the open.
+fn hide_for_capture(app: &AppHandle) {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        if let Some(win) = handle.get_webview_window(WINDOW_LABEL) {
+            let _ = win.hide();
+        }
+        let _ = tx.send(());
+    });
+    if queued.is_ok() {
+        let _ = rx.recv_timeout(Duration::from_millis(500));
+        // one composition frame (16.7 ms at 60 Hz) for DWM to drop the window from the screen
+        std::thread::sleep(Duration::from_millis(24));
+    }
 }
 
 /// Alt+`: closed -> open the spotlight; another shape open -> switch to the spotlight; spotlight
@@ -413,6 +524,9 @@ pub fn close(app: &AppHandle) {
     if !OPEN.swap(false, Ordering::AcqRel) {
         return;
     }
+    // The picture of the user's screen goes the moment the bar closes. (The noted questions stay: an
+    // answer that arrives after this is the island's, see glass::route_for.)
+    glass::clear_backdrop();
     let handle = app.clone();
     let queued = app.run_on_main_thread(move || {
         if let Some(win) = handle.get_webview_window(WINDOW_LABEL) {

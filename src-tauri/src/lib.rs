@@ -163,6 +163,8 @@ pub fn run() {
             assistant::assistant_dismiss,
             search_bar::search_bar_state,
             search_bar::search_bar_close,
+            search_bar::search_bar_region,
+            search_bar::search_bar_backdrop,
             sticky_notes::sticky_notes_list,
             sticky_notes::sticky_notes_open,
         ])

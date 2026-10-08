@@ -95,12 +95,12 @@ pub fn ring_rects(island: Bounds, monitor: Bounds) -> Vec<Bounds> {
 }
 
 /// Rec. 709 luma (0..1) of one gamma-encoded pixel, as `keyline.ts` `lumaOf`.
-fn luma(r: u8, g: u8, b: u8) -> f64 {
+pub(crate) fn luma(r: u8, g: u8, b: u8) -> f64 {
     (0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64) / 255.0
 }
 
 /// Sum of luma and pixel count over a top-down 32 bpp BGRA buffer.
-fn luma_sum(bgra: &[u8]) -> (f64, usize) {
+pub(crate) fn luma_sum(bgra: &[u8]) -> (f64, usize) {
     let mut sum = 0.0;
     let mut count = 0;
     for px in bgra.chunks_exact(4) {

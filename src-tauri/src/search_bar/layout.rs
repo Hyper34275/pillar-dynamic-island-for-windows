@@ -19,13 +19,19 @@ pub const FLOAT_WIDTH_DIP: f64 = 560.0;
 pub const FLOAT_HEIGHT_DIP: f64 = 48.0;
 pub const FLOAT_GAP_DIP: f64 = 16.0;
 pub const FLOAT_RADIUS_DIP: f64 = 24.0;
-/// Spotlight (centre of the screen): bar size, the margin around it for the page's shadow/glow,
-/// where the bar's top sits in the work area, and the bar's corner radius (DIP).
+/// Spotlight glass (centre of the screen). The window has a fixed size, the largest the sheet can
+/// reach plus a transparent margin for the page's shadow; the sheet itself grows downward in CSS
+/// inside it, so the window is never resized while an answer arrives. Sizes in DIP: the sheet's width,
+/// the side / top / bottom margins, the tallest sheet, the sheet with only the field (ready; the 72 DIP field plus the 1 DIP frame on each side), where
+/// the sheet's top sits in the work area, and its corner radius.
 pub const SPOT_WIDTH_DIP: f64 = 680.0;
-pub const SPOT_HEIGHT_DIP: f64 = 60.0;
-pub const SPOT_MARGIN_DIP: f64 = 28.0;
+pub const SPOT_MARGIN_X_DIP: f64 = 40.0;
+pub const SPOT_MARGIN_TOP_DIP: f64 = 24.0;
+pub const SPOT_MARGIN_BOTTOM_DIP: f64 = 64.0;
+pub const SPOT_SHEET_MAX_DIP: f64 = 552.0;
+pub const SPOT_FIELD_DIP: f64 = 74.0;
 pub const SPOT_TOP_FRACTION: f64 = 0.26;
-pub const SPOT_RADIUS_DIP: f64 = 20.0;
+pub const SPOT_RADIUS_DIP: f64 = 16.0;
 /// A rectangle smaller than this is not a search box (a collapsed or half-animated control).
 const MIN_BOX_WIDTH_DIP: f64 = 80.0;
 const MIN_BOX_HEIGHT_DIP: f64 = 20.0;
@@ -251,10 +257,11 @@ pub fn compute_layout(i: &Inputs) -> Layout {
     anchored(i).unwrap_or_else(|| floating(i))
 }
 
-/// The centred "spotlight" bar: on the monitor that contains `cursor` (physical px; the primary
-/// monitor when it is on none), horizontally centred in that monitor's work area, the bar's top at
-/// 26% of the work height. The window is the bar plus a margin on every side (the page draws its
-/// shadow and glow there), clamped into the work area; the window region is the whole rectangle.
+/// The centred "spotlight glass": on the monitor that contains `cursor` (physical px; the primary
+/// monitor when it is on none), horizontally centred in that monitor's work area, the sheet's top at
+/// 26% of the work height. The window is fixed at the tallest sheet plus its margins (side, top,
+/// bottom), clamped into the work area. Its window region is a rectangle that follows the sheet's
+/// height (`sheet_region`), set by the window code.
 pub fn spotlight_layout(monitors: &[MonitorGeom], cursor: (i32, i32), edge: Option<Edge>) -> Layout {
     let fallback = MonitorGeom {
         bounds: Bounds { left: 0, top: 0, right: 1920, bottom: 1080 },
@@ -272,11 +279,13 @@ pub fn spotlight_layout(monitors: &[MonitorGeom], cursor: (i32, i32), edge: Opti
         .unwrap_or(fallback);
     let scale = scale_of(monitor.dpi);
     let work = if monitor.work.width() > 0 && monitor.work.height() > 0 { monitor.work } else { monitor.bounds };
-    let margin = px(SPOT_MARGIN_DIP, scale);
-    let width = (px(SPOT_WIDTH_DIP, scale) + 2 * margin).min(work.width()).max(1);
-    let height = (px(SPOT_HEIGHT_DIP, scale) + 2 * margin).min(work.height()).max(1);
+    let margin_x = px(SPOT_MARGIN_X_DIP, scale);
+    let margin_top = px(SPOT_MARGIN_TOP_DIP, scale);
+    let margin_bottom = px(SPOT_MARGIN_BOTTOM_DIP, scale);
+    let width = (px(SPOT_WIDTH_DIP, scale) + 2 * margin_x).min(work.width()).max(1);
+    let height = (margin_top + px(SPOT_SHEET_MAX_DIP, scale) + margin_bottom).min(work.height()).max(1);
     let left = work.left + (work.width() - width) / 2;
-    let wanted_top = work.top + (SPOT_TOP_FRACTION * work.height() as f64).round() as i32 - margin;
+    let wanted_top = work.top + (SPOT_TOP_FRACTION * work.height() as f64).round() as i32 - margin_top;
     let top = wanted_top.min(work.bottom - height).max(work.top);
     Layout {
         variant: Variant::Spotlight,
@@ -290,6 +299,18 @@ pub fn spotlight_layout(monitors: &[MonitorGeom], cursor: (i32, i32), edge: Opti
         edge: edge.unwrap_or(Edge::Bottom),
         monitor: monitor.bounds,
     }
+}
+
+/// The click-through region of the glass window, in the window's own client pixels: a rectangle
+/// that covers the sheet (its current height) and its shadow, from the top edge down to the bottom
+/// margin under the sheet. Everything below it is transparent and lets clicks through to the
+/// windows underneath. `sheet_dip` is the sheet's height as the page reports it; it is clamped to
+/// what the window can hold, and a non-finite value counts as the field alone.
+pub fn sheet_region(window_w_px: i32, window_h_px: i32, scale: f64, sheet_dip: f64) -> Bounds {
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    let sheet = if sheet_dip.is_finite() { sheet_dip.clamp(SPOT_FIELD_DIP, SPOT_SHEET_MAX_DIP) } else { SPOT_FIELD_DIP };
+    let bottom = px(SPOT_MARGIN_TOP_DIP + sheet + SPOT_MARGIN_BOTTOM_DIP, scale).clamp(1, window_h_px.max(1));
+    Bounds { left: 0, top: 0, right: window_w_px.max(1), bottom }
 }
 
 /// Whether the AI button is shown at all. `flyout`: the Windows search flyout / task switcher is
@@ -626,16 +647,52 @@ mod tests {
             assert!(!l.anchored && l.button.is_none());
             let st = l.to_state(false);
             assert_eq!(st.variant, "spotlight");
-            assert!((st.width - 736.0).abs() < 1.0, "dpi {dpi}: {}", st.width);
-            assert!((st.height - 116.0).abs() < 1.0, "dpi {dpi}: {}", st.height);
+            // 680 sheet + 2 x 40 side margins; 24 top + 552 tallest sheet + 64 bottom
+            assert!((st.width - 760.0).abs() < 1.0, "dpi {dpi}: {}", st.width);
+            assert!((st.height - 640.0).abs() < 1.0, "dpi {dpi}: {}", st.height);
+            assert_eq!(st.radius, 16.0);
             assert_eq!(l.region_radius_px, 0);
             let w = m.work;
             assert!(((l.window.left - w.left) - (w.right - l.window.right)).abs() <= 1, "dpi {dpi}");
-            let margin = (28.0 * s).round() as i32;
+            let margin_top = (24.0 * s).round() as i32;
             let expected = w.top + (0.26 * w.height() as f64).round() as i32;
-            assert_eq!(l.window.top + margin, expected, "dpi {dpi}");
+            assert_eq!(l.window.top + margin_top, expected, "dpi {dpi}");
             assert!(w.contains(&l.window));
         }
+    }
+
+    #[test]
+    fn sheet_region_follows_the_sheet_and_never_leaves_the_window() {
+        for dpi in [96, 120, 144, 192] {
+            let m = monitor(0, 0, dpi, true);
+            let l = spotlight_layout(&[m], (10, 10), None);
+            let s = scale_of(dpi);
+            let (w, h) = (l.window.width(), l.window.height());
+            // the field alone: the top margin, 74 DIP of sheet and the shadow room below
+            let ready = sheet_region(w, h, s, SPOT_FIELD_DIP);
+            assert_eq!((ready.left, ready.top, ready.right), (0, 0, w));
+            assert_eq!(ready.bottom, ((24.0 + 74.0 + 64.0) * s).round() as i32, "dpi {dpi}");
+            // growing: monotonic, and the tallest sheet is the whole window
+            let mid = sheet_region(w, h, s, 300.0);
+            assert!(mid.bottom > ready.bottom);
+            let full = sheet_region(w, h, s, SPOT_SHEET_MAX_DIP);
+            assert!(full.bottom >= mid.bottom && full.bottom <= h);
+            assert!((full.bottom - h).abs() <= 1, "dpi {dpi}: {} vs {h}", full.bottom);
+            // the page cannot ask for more than the window holds, or for a negative / NaN sheet
+            assert_eq!(sheet_region(w, h, s, 99_999.0), full);
+            assert_eq!(sheet_region(w, h, s, -5.0), ready);
+            assert_eq!(sheet_region(w, h, s, f64::NAN), ready);
+            assert_eq!(sheet_region(w, h, s, f64::INFINITY), ready);
+        }
+    }
+
+    #[test]
+    fn sheet_region_is_clamped_into_a_small_window() {
+        // a work area shorter than the window: the region is cut to the window, never below 1 px
+        let r = sheet_region(500, 100, 1.0, SPOT_SHEET_MAX_DIP);
+        assert_eq!((r.right, r.bottom), (500, 100));
+        let r = sheet_region(0, 0, 0.0, 100.0);
+        assert!(r.right >= 1 && r.bottom >= 1);
     }
 
     #[test]
@@ -664,7 +721,13 @@ mod tests {
         let l = spotlight_layout(&[m], (1, 1), None);
         assert!(m.work.contains(&l.window));
         let l = spotlight_layout(&[], (0, 0), None);
-        assert_eq!(l.window.width(), 736);
+        assert_eq!(l.window.width(), 760);
+        // a short screen: the window moves up so the tallest sheet still fits
+        let mut m = monitor(0, 0, 96, true);
+        m.work = b(0, 0, 1366, 728);
+        let l = spotlight_layout(&[m], (1, 1), None);
+        assert!(m.work.contains(&l.window), "{:?}", l.window);
+        assert_eq!(l.window.height(), 640);
     }
 
     #[test]

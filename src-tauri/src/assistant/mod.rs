@@ -33,6 +33,7 @@ pub use wire::*;
 use crate::calendar::{CalendarSourceDto, RangeRead};
 use crate::local::{AppHit, FileSearch, NoteHit};
 use crate::outlook_mail::{FreeBusy, MailCursor, MailQuery, MailSearchResult, MailboxInfo};
+use crate::search_bar::{self, CardRoute};
 use crate::{calendar, center, center_ipc, intent, local, outlook, outlook_mail, rt, window};
 use chrono::{DateTime, Local, Utc};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -111,7 +112,18 @@ fn emit_card(app: &AppHandle, card: &AssistantCard) {
     if engine().is_dismissed(&card.query_id) {
         return;
     }
-    if let Err(e) = app.emit("assistant-update", card) {
+    // A question asked from the open centre glass bar is answered in its own sheet, next to the
+    // question: the island is left out. If the sheet was closed meanwhile the island shows it as ever.
+    let sent = match search_bar::card_route(&card.query_id) {
+        CardRoute::GlassOnly => app.emit_to(search_bar::WINDOW_LABEL, "assistant-update", card),
+        CardRoute::IslandAfterGlass => {
+            // The question never woke the island (the glass had it): wake it for this answer.
+            window::show(app);
+            app.emit("assistant-update", card)
+        }
+        CardRoute::Everyone => app.emit("assistant-update", card),
+    };
+    if let Err(e) = sent {
         crate::dlog!("WARN", "assistant", "emit assistant-update failed: {}", e);
     }
 }
@@ -166,9 +178,17 @@ pub async fn submit(app: AppHandle, text: String, origin: String) -> Result<Assi
         }
         flow::Route::New => (new_query_id(), text.clone(), intent::detect_lang(&text), None),
     };
+    // Asked from the open centre glass bar (not the taskbar or floating bar): the answer is shown in
+    // its sheet, so the island neither wakes nor shows a card for it (`search_bar::card_route`).
+    let from_glass = origin == "searchBar" && search_bar::glass_open();
+    if from_glass {
+        search_bar::note_glass_query(&query_id);
+    }
     // At once, before any Outlook call: the island wakes and shows that the question was heard.
     emit_card(&app, &flow::processing_card(&query_id, &query, lang, now_ms()));
-    window::show(&app);
+    if !from_glass {
+        window::show(&app);
+    }
     let id = query_id.clone();
     run_query(&app, "assistant_submit", &query_id, &query, lang, move |live| match option {
         Some(option_id) => eng.choose(live, &id, &option_id, false, Local::now()),

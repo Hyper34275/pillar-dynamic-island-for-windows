@@ -5,20 +5,27 @@
 //!   injection, nothing inside explorer.exe, Windows' own search untouched.
 //! - Ctrl+Alt+Space (RegisterHotKey) opens the same input anywhere (fallback, Windows 11, icon-only
 //!   or hidden search box, taskbar on the side).
-//! - Alt+` (the key left of 1) opens a centred "spotlight" bar on the monitor under the cursor;
-//!   pressing it again closes it. Both hotkeys follow `aiSearchHotkey`.
+//! - Alt+` (the key left of 1) opens a centred "spotlight glass" bar on the monitor under the cursor;
+//!   pressing it again closes it. Both hotkeys follow `aiSearchHotkey`. The glass captures the
+//!   screen under it before it shows (`snapshot.rs`) and shows the answer in its own sheet: a question
+//!   asked from it is not also shown as a card in the island (`glass.rs`).
 //! - The input + glow is a lazily created Tauri window, label `search`, page `search.html`.
 //!
 //! CONTRACT: `start`, `apply_settings`, `open`, `close` and the Tauri commands below.
 
 mod anchor;
 mod button;
+mod glass;
 mod guard;
 mod hotkey;
 mod layout;
 mod raise;
+mod snapshot;
 mod thread;
 mod window;
+
+pub(crate) use glass::CardRoute;
+use snapshot::GlassBackdrop;
 
 use crate::settings::{Settings, SettingsStore};
 use serde::Serialize;
@@ -132,4 +139,34 @@ pub fn search_bar_state() -> SearchBarState {
 #[tauri::command]
 pub fn search_bar_close(app: AppHandle) {
     close(&app);
+}
+
+/// The page reports the height of the glass sheet (DIP): the click-through window region follows it,
+/// so the transparent part of the fixed-size window never swallows a click. Sync, so it runs on the
+/// window's thread and the page can wait for it before it grows the sheet.
+#[tauri::command]
+pub fn search_bar_region(app: AppHandle, height: f64) {
+    window::set_sheet_height(&app, height);
+}
+
+/// The picture of the screen under the glass bar (memory only), for a page that was not loaded when
+/// the bar opened. `None` outside the glass, after it closed, or when the screen could not be read.
+#[tauri::command]
+pub fn search_bar_backdrop() -> Option<GlassBackdrop> {
+    window::glass_open().then(glass::current_backdrop).flatten()
+}
+
+/// The centre glass bar is open (not the taskbar-anchored or floating bar).
+pub(crate) fn glass_open() -> bool {
+    window::glass_open()
+}
+
+/// A question was asked from the open glass bar: its answer is shown in the sheet.
+pub(crate) fn note_glass_query(query_id: &str) {
+    glass::note_query(query_id);
+}
+
+/// Where the `assistant-update` card of this query goes (see `glass::route_for`).
+pub(crate) fn card_route(query_id: &str) -> CardRoute {
+    glass::route_for(glass::is_glass_query(query_id), window::glass_open())
 }
