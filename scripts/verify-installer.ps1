@@ -1,15 +1,23 @@
-# Sanity-checks a built CompanyIsland NSIS installer.
+# Sanity-checks a built NSIS installer.
 #
-# Usage:  powershell -File scripts/verify-installer.ps1 <path-to-CompanyIsland_<version>_x64-setup.exe>
+# Usage:  powershell -File scripts/verify-installer.ps1 <path-to-<Product>_<version>_x64-setup.exe>
 #
 # Prints size and SHA256, confirms the file is a PE executable, and checks the file name follows
-# CompanyIsland_<version>_x64-setup.exe with <version> equal to package.json. Exits 1 on any failure.
+# <productName>_<version>_x64-setup.exe (e.g. Yuval_1.0.14_x64-setup.exe), with productName from
+# src-tauri/tauri.conf.json and <version> equal to package.json. Exits 1 on any failure.
 # NSIS installers are 32-bit PE stubs even when the payload is x64, so both x86 and x64 PE pass; the
-# x64 payload is expressed by the file name. Inspect CompanyIsland.exe inside (7z x) for its own machine type.
-# It also checks that Tauri's generated installer.nsi (next to the setup's bundle folder) lists the Island Center
-# (centerCompanyIsland.Center.exe, its .pri and web	our.html).
+# x64 payload is expressed by the file name. Inspect <product>.exe inside (7z x) for its own machine type.
+# It also checks Tauri's generated installer.nsi (next to the setup's bundle folder):
+#   - it lists the Island Center (center\<product>.Center.exe, its .pri and web\tour.html), and
+#   - it was generated from OUR template (src-tauri/nsis/installer.nsi, marked YUVAL-CHANGE) and has no
+#     "uninstall before installing" page: a build made without tauri.installer.conf.json would ask to uninstall the
+#     previous version, which is what the upgrade design forbids (docs/INSTALLER.md, "Upgrades and migration").
 # It does not check the Authenticode signature; see docs/INSTALLER.md for signing.
-param([Parameter(Mandatory = $true)][string]$Path)
+param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    # Override only for a build whose productName differs from tauri.conf.json.
+    [string]$ProductName
+)
 
 $ErrorActionPreference = 'Stop'
 $failed = $false
@@ -60,7 +68,11 @@ if ($isPe -and $machine -eq 0x8664) {
 
 $packageJson = Join-Path $PSScriptRoot '..\package.json'
 $version = (Get-Content -LiteralPath $packageJson -Raw | ConvertFrom-Json).version
-$expected = "CompanyIsland_${version}_x64-setup.exe"
+if (-not $ProductName) {
+    $tauriConf = Join-Path $PSScriptRoot '..\src-tauri\tauri.conf.json'
+    $ProductName = (Get-Content -LiteralPath $tauriConf -Raw | ConvertFrom-Json).productName
+}
+$expected = "${ProductName}_${version}_x64-setup.exe"
 if ($file.Name -ceq $expected) {
     '{0,-10} {1} (matches)' -f 'Name', $file.Name
 } else {
@@ -73,6 +85,20 @@ $file = Get-Item -LiteralPath $Path
 $nsi = Join-Path $file.Directory.Parent.Parent.FullName 'nsis\x64\installer.nsi'
 & node (Join-Path $PSScriptRoot 'build-center.cjs') --check-installer-script --nsi $nsi
 if ($LASTEXITCODE -ne 0) { $failed = $true }
+
+if (Test-Path -LiteralPath $nsi -PathType Leaf) {
+    $script = Get-Content -LiteralPath $nsi -Raw
+    if ($script -match 'YUVAL-CHANGE') {
+        '{0,-10} generated from src-tauri/nsis/installer.nsi (updates in place)' -f 'Template'
+    } else {
+        '{0,-10} NOT our template: installer.nsi lacks YUVAL-CHANGE. Build with `npm run build:installer` (it passes src-tauri/tauri.installer.conf.json, which sets bundle.windows.nsis.template).' -f 'Template'
+        $failed = $true
+    }
+    if ($script -match 'Page custom PageReinstall') {
+        '{0,-10} the "uninstall before installing" page is present; an upgrade would run the old uninstaller' -f 'Template'
+        $failed = $true
+    }
+}
 
 if ($failed) {
     Write-Output 'RESULT: FAILED'
