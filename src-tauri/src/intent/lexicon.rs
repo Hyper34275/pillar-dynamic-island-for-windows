@@ -260,7 +260,7 @@ impl Lexicon {
                         continue;
                     }
                     // "כהן" is not כ + הן, "הבה" is not ה + בה: a two-letter grammar word takes no proclitic
-                    if v.chars().count() == 2 && (matches!(*c, "STOP" | "CONJ" | "REFBACK") || c.starts_with("P_")) {
+                    if v.chars().count() == 2 && !prefix.chars().all(|p| p == 'ו' || p == 'ש') && (matches!(*c, "STOP" | "CONJ" | "REFBACK") || c.starts_with("P_")) {
                         continue;
                     }
                     return Some(Hit::exact(c, prefix));
@@ -296,7 +296,7 @@ impl Lexicon {
             }
             // a stripped proclitic is a guess too
             let extra = if k == 0 { 0.0 } else { 0.25 };
-            let max = spell::max_cost(n.max(norm.chars().count().saturating_sub(1)));
+            let max = spell::max_cost(if k == 0 { n } else { norm.chars().count() });
             for len in n.saturating_sub(2)..=n + 2 {
                 let Some(list) = self.typo.get(&len) else { continue };
                 for (form, concept, prior) in list {
@@ -396,13 +396,15 @@ fn split_joined(lex: &Lexicon, t: &Token) -> Option<(Token, Token)> {
 fn correction_supported(a: &[Ann], i: usize) -> bool {
     let Some(h) = &a[i].hit else { return false };
     let others = |pred: &dyn Fn(&Hit) -> bool| a.iter().enumerate().any(|(k, t)| k != i && t.hit.as_ref().map_or(false, |x| !x.typo && pred(x)));
-    let asks = others(&|x| matches!(x.concept, "V_SEARCH" | "V_SHOW" | "Q_WHAT" | "Q_WHICH" | "Q_WHERE" | "Q_HOWMANY"));
+    let asks = others(&|x| matches!(x.concept, "V_SEARCH" | "V_SHOW" | "Q_WHAT" | "Q_WHICH" | "Q_WHERE" | "Q_HOWMANY"))
+        || others(&|x| x.concept.starts_with("T_") || x.concept.starts_with("D_"));
     let c = h.concept;
     if c.starts_with("N_") {
         asks && !others(&|x| matches!(x.concept, "N_MAIL" | "N_FILE" | "N_NOTE" | "N_APP" | "N_CAL" | "N_MEETING"))
     } else if c.starts_with("T_") || c.starts_with("D_") {
-        others(&|x| matches!(x.concept, "YESH" | "FREE" | "N_CAL" | "N_MEETING" | "Q_WHAT" | "Q_WHEN"))
-            && !others(&|x| is_day_word(x.concept))
+        let cue = others(&|x| matches!(x.concept, "YESH" | "FREE" | "N_CAL" | "N_MEETING" | "Q_WHAT" | "Q_WHEN"))
+            || (!is_day_word(c) && others(&|x| matches!(x.concept, "N_MAIL" | "N_FILE" | "N_NOTE" | "N_PPT") || x.concept.starts_with("A_")));
+        cue && !others(&|x| is_day_word(x.concept))
     } else if c.starts_with("V_") {
         i <= 1 && !others(&|x| x.concept.starts_with("V_"))
     } else {
@@ -473,11 +475,18 @@ pub fn annotate(tokens: &[Token]) -> Vec<Ann> {
         }
         i += 1;
     }
+    let mut topic_left = 0;
     for k in 0..a.len() {
-        let after_marker = k > 0 && (a[k - 1].is("P_ABOUT") || a[k - 1].is("MARK") || a[k - 1].is("P_REGARD"));
+        if k > 0 && (a[k - 1].is("P_ABOUT") || a[k - 1].is("MARK") || a[k - 1].is("P_REGARD")) {
+            topic_left = 3;
+        }
         let t = &mut a[k];
-        if after_marker {
-            continue;
+        if topic_left > 0 {
+            topic_left -= 1;
+            if t.hit.is_none() {
+                continue;
+            }
+            topic_left = 0;
         }
         // names and number words ("ארבעים ושתיים") are never corrected into keywords
         let number = super::numwords::is_number_word(&t.tok.norm) || t.tok.norm.strip_prefix('ו').map_or(false, super::numwords::is_number_word);

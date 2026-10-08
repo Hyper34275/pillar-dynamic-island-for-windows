@@ -646,7 +646,7 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
                 let letter_form = a[i].tok.norm.ends_with('\'') && a[i].tok.norm.chars().count() == 2;
                 let prev_day = i > 0 && a[i - 1].is("T_DAY");
                 let pre_ok = hit.prefix.ends_with('ב') || hit.prefix.ends_with('ל');
-                let ok = !he || prev_day || (pre_ok && !letter_form) || a[i].tok.norm == "שבת";
+                let ok = !he || prev_day || (pre_ok && !letter_form) || a[i].tok.norm == "שבת" || (n == 1 && !letter_form);
                 if !ok || (letter_form && !prev_day) {
                     continue;
                 }

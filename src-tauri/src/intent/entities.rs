@@ -296,7 +296,7 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
 
     // ---- named mailbox (matched against the real mailboxes only) ----
     if !known.mailboxes.is_empty() {
-        let cue = a.iter().any(|t| t.is("N_MAILBOX"));
+        let cue = a.iter().any(|t| t.is("N_MAILBOX")) || (1..n).any(|k| a[k].is("P_OF") && a[k - 1].is("N_MAIL"));
         let mut best: Option<(usize, &str, Vec<usize>)> = None;
         let mut tie = false;
         for mb in &known.mailboxes {
@@ -338,9 +338,11 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             let mut found: Vec<(&str, usize)> = Vec::new();
             for mb in &known.mailboxes {
                 for w in fold(&mb.name).split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 3) {
+                    let wc: Vec<char> = w.chars().collect();
+                    let near = |x: &str| x == w || (wc.len() >= 4 && crate::intent::spell::weighted(&x.chars().collect::<Vec<char>>(), &wc, 0.5).is_some());
                     let at = (0..n).find(|&k| {
                         let nm = a[k].norm();
-                        !a[k].tok.sym && ((nm == w && cue) || crate::intent::stem::prefix_splits(nm).iter().any(|(_, rest)| rest == w))
+                        !a[k].tok.sym && !a[k].used && ((near(nm) && cue) || crate::intent::stem::prefix_splits(nm).iter().any(|(_, rest)| near(rest)))
                     });
                     if let Some(k) = at {
                         if !found.iter().any(|(id, _)| *id == mb.id.as_str()) {
@@ -406,7 +408,7 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
         }
         a[i].used = true;
         let mut j = i + 1;
-        while j < n && !a[j].used && a[j].is("STOP") {
+        while j < n && !a[j].used && matches!(a[j].norm(), "את" | "the" | "a" | "an") {
             j += 1;
         }
         let mut taken = 0;
@@ -484,6 +486,9 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
         }
     }
 
+    let withs = std::mem::take(&mut e.with_names);
+    e.with_names = withs.into_iter().map(|w| complete_name(a, known, &w)).collect();
+
     // ---- the calendar owner ----
     let mut persons: Vec<String> = Vec::new();
     let mut last_person_idx: Option<usize> = None;
@@ -558,6 +563,20 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             if let Some(k) = next_content(a, j + 2, false) {
                 push_unique(&mut persons, a[k].raw().to_string());
                 a[k].used = true;
+            }
+        }
+    }
+    let persons: Vec<String> = persons.into_iter().map(|p| complete_name(a, known, &p)).collect();
+    // a second full name after "ו": "ליובל כהן ולשרון לוי"
+    let mut persons = persons;
+    if let Some(j) = a.iter().rposition(|t| t.used && persons.iter().any(|p| p.ends_with(t.raw()))) {
+        if let Some(k) = next_content(a, j + 1, false) {
+            let raw = a[k].raw().to_string();
+            if let Some(rest) = raw.strip_prefix('ו').filter(|r| r.chars().count() >= 3) {
+                let name = without_lamed(rest).unwrap_or(rest.to_string());
+                a[k].used = true;
+                let full = complete_name(a, known, &name);
+                push_unique(&mut persons, full);
             }
         }
     }
