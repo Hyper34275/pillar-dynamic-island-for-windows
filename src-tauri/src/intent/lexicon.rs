@@ -539,12 +539,35 @@ pub fn annotate(tokens: &[Token]) -> Vec<Ann> {
 }
 
 /// Why a write / out-of-scope word is refused, for the answer's wording (see `Analysis`).
+/// How a VETO word stops a request (see `score::Features::topic_veto`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VetoClass {
+    /// An action the app never does (delete, send, install...).
+    Write,
+    /// A topic it cannot answer (weather, news).
+    Topic,
+    /// A topic word that is also a normal subject of a document (forecast, dollar, stocks, a game).
+    Subject,
+}
+
+pub fn veto_class(norm: &str) -> VetoClass {
+    let w = norm;
+    let has = |list: &[&str]| list.iter().any(|x| w == *x || w.ends_with(x));
+    if has(&["תחזית", "forecast", "דולר", "מניה", "מניית", "מניות", "בורסה", "משחק", "ניצח", "ניצחה"]) {
+        VetoClass::Subject
+    } else if has(&["מזג", "weather", "חדשות", "news", "כותרות", "גשמ", "טמפרטורה"]) {
+        VetoClass::Topic
+    } else {
+        VetoClass::Write
+    }
+}
+
 pub fn unsupported_kind(norm: &str) -> &'static str {
     let w = norm;
     let has = |list: &[&str]| list.iter().any(|x| w == *x || w.ends_with(x));
     if has(&["מזג", "weather", "forecast", "גשמ", "טמפרטורה"]) {
         "weather"
-    } else if has(&["חדשות", "news", "כותרות"]) {
+    } else if has(&["חדשות", "news", "כותרות", "דולר", "מניה", "מניית", "מניות", "בורסה", "משחק", "ניצח", "ניצחה"]) {
         "news"
     } else if has(&["תרגמ", "תתרגמ", "translate"]) {
         "translate"

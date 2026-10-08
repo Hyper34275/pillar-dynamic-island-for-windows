@@ -7,7 +7,7 @@
 //! `holdout` half checks that they do not overfit.
 
 use super::entities::Entities;
-use super::lexicon::Ann;
+use super::lexicon::{self, Ann};
 use super::types::*;
 
 /// Execute needs at least this score ...
@@ -46,6 +46,12 @@ pub struct Features {
     pub v_launch: bool,
     pub v_calc: bool,
     pub veto: bool,
+    /// A topic the app cannot answer (weather, news): out of scope unless the text names the user's
+    /// own mail, files, notes or calendar as the place to search.
+    pub topic_veto: bool,
+    /// A word that is a topic as a question but an ordinary subject of a document ("תחזית", "דולר"):
+    /// out of scope only without a place to search and without a search verb.
+    pub subject_veto: bool,
     pub q_what: bool,
     pub q_which: bool,
     pub q_when: bool,
@@ -101,7 +107,11 @@ impl Features {
                 "V_OPEN" => f.v_open = true,
                 "V_LAUNCH" => f.v_launch = true,
                 "V_CALC" => f.v_calc = true,
-                "VETO" => f.veto = true,
+                "VETO" => match lexicon::veto_class(t.norm()) {
+                    lexicon::VetoClass::Write => f.veto = true,
+                    lexicon::VetoClass::Topic => f.topic_veto = true,
+                    lexicon::VetoClass::Subject => f.subject_veto = true,
+                },
                 "Q_WHAT" => f.q_what = true,
                 "Q_WHICH" => f.q_which = true,
                 "Q_WHEN" => f.q_when = true,
@@ -110,6 +120,12 @@ impl Features {
                 "FREE" => f.free = true,
                 _ => {}
             }
+        }
+        // "מייל על שער הדולר", "תחפש את תחזית המכירות": a topic word is the subject of a search of the
+        // user's own data there, not an out-of-scope question
+        let place = f.mail || f.file || f.note || f.cal || f.meeting || f.file_hint || f.note_hint || f.mail_hint;
+        if (f.topic_veto && !place) || (f.subject_veto && !place && !(f.v_search || f.v_show)) {
+            f.veto = true;
         }
         // a hint counts only when no other object noun says what is meant
         if f.file_hint && !(f.mail || f.note || f.app) {
