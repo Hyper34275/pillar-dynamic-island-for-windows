@@ -1,0 +1,194 @@
+/* Glow of the smart search bar. Original implementation, see docs/DESIGN_SYSTEM.md.
+ *
+ * Budget: three layers (aura, ring, the bar's own plate). Only transform and opacity change over
+ * time; no filter, no backdrop-filter, no blend modes, no @property, no mask-composite (WebView2
+ * 111). The sweep's rotation runs through the Web Animations API (AiSearchGlow.tsx) so changing
+ * state changes its speed without a jump; everything else here is a CSS transition on opacity.
+ *
+ * Clipping: the host is overflow:hidden + contain:paint with the window's own rounded shape, so
+ * nothing can leave the window. Geometry arrives as custom properties from the component. */
+
+.ci-glow {
+  --g-fade: 220ms;
+  --g-aura: 0;
+  --g-ring: 0;
+  --g-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  contain: paint;
+  border-radius: var(--g-hr, 12px);
+  pointer-events: none;
+  user-select: none;
+}
+
+/* ---- Layer 1: aura. Static coloured shadows, pre-blurred by the browser once (never animated,
+   only its opacity). The blur stays inside the window margin. ---- */
+.ci-glow__aura {
+  position: absolute;
+  inset: var(--g-m);
+  border-radius: var(--g-rr);
+  opacity: var(--g-aura);
+  box-shadow:
+    -2px 0 6px -1px color-mix(in srgb, var(--g-cyan) 85%, transparent),
+    2px 0 6px -1px color-mix(in srgb, var(--g-pink) 85%, transparent),
+    0 -2px 6px -1px color-mix(in srgb, var(--g-violet) 80%, transparent),
+    0 2px 6px -1px color-mix(in srgb, var(--g-magenta) 80%, transparent);
+  transition: opacity var(--g-fade) var(--g-ease);
+}
+
+/* ---- Layer 2: ring. A big conic square rotated behind the bar and clipped to the bar's own
+   shape; the bar's plate (inset by the ring width) leaves only a thin ring visible. ---- */
+.ci-glow__ring {
+  position: absolute;
+  inset: var(--g-m);
+  border-radius: var(--g-rr);
+  overflow: hidden;
+  opacity: var(--g-ring);
+  transition: opacity var(--g-fade) var(--g-ease);
+}
+
+.ci-glow__sweep {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--g-s);
+  height: var(--g-s);
+  margin: calc(var(--g-s) / -2) 0 0 calc(var(--g-s) / -2);
+  background: conic-gradient(
+    from 0deg,
+    var(--g-cyan),
+    var(--g-violet),
+    var(--g-indigo),
+    var(--g-magenta),
+    var(--g-pink),
+    var(--g-cyan)
+  );
+  transform: rotate(0deg);
+  transition: background-color var(--g-fade) var(--g-ease);
+}
+.ci-glow[data-animated="true"] .ci-glow__sweep {
+  will-change: transform;
+}
+
+/* Before the first frame the layers are transparent, so they fade in instead of popping. */
+.ci-glow[data-entered="false"] .ci-glow__aura,
+.ci-glow[data-entered="false"] .ci-glow__ring {
+  opacity: 0;
+}
+
+/* ---- States (data-state drives everything) ---- */
+.ci-glow[data-state="activated"] {
+  --g-aura: 0.55;
+  --g-ring: 0.9;
+  --g-fade: 220ms;
+}
+.ci-glow[data-state="typing"] {
+  --g-aura: 0.45;
+  --g-ring: 0.85;
+  --g-fade: 160ms;
+}
+.ci-glow[data-state="submitting"] {
+  --g-aura: 0.8;
+  --g-ring: 1;
+  --g-fade: 120ms;
+}
+.ci-glow[data-state="submitting"][data-mode="full"] .ci-glow__aura {
+  animation: ci-glow-pulse 180ms var(--g-ease) 1;
+}
+.ci-glow[data-state="processing"] {
+  --g-aura: 0.7;
+  --g-ring: 1;
+  --g-fade: 200ms;
+}
+.ci-glow[data-state="processing"][data-mode="full"] .ci-glow__aura {
+  animation: ci-glow-breathe 1.6s ease-in-out infinite alternate;
+}
+.ci-glow[data-state="completed"] {
+  --g-aura: 0.6;
+  --g-ring: 0.9;
+  --g-fade: 300ms;
+}
+/* Error: one red, no gradient, no aura. Holds until the next input. */
+.ci-glow[data-state="error"] {
+  --g-aura: 0;
+  --g-ring: 1;
+  --g-fade: 120ms;
+}
+.ci-glow[data-state="error"] .ci-glow__sweep {
+  background: var(--g-error);
+}
+
+/* Document hidden: whatever was animating stops (the component also pauses the rotation). */
+.ci-glow[data-paused="true"] .ci-glow__aura {
+  animation-play-state: paused;
+}
+
+@keyframes ci-glow-pulse {
+  0% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes ci-glow-breathe {
+  from {
+    opacity: 0.55;
+  }
+  to {
+    opacity: 0.8;
+  }
+}
+
+/* ---- Reduced motion: a frozen gradient. State shows by opacity and colour only. ---- */
+.ci-glow[data-mode="reduced"] .ci-glow__sweep {
+  transform: rotate(-25deg);
+}
+.ci-glow[data-mode="reduced"][data-state="activated"],
+.ci-glow[data-mode="reduced"][data-state="typing"] {
+  --g-aura: 0.5;
+  --g-ring: 0.9;
+}
+.ci-glow[data-mode="reduced"][data-state="submitting"],
+.ci-glow[data-mode="reduced"][data-state="processing"] {
+  --g-aura: 0.75;
+  --g-ring: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  /* index.css turns every duration into 0.01 ms for reduced motion, which would make a fade a
+     flash. These selectors are more specific, so the opacity fades stay (short, no movement). */
+  .ci-glow .ci-glow__aura,
+  .ci-glow .ci-glow__ring {
+    transition-duration: 120ms !important;
+    animation: none !important;
+  }
+}
+
+/* ---- High contrast / forced colours: a plain 2 px system-colour ring, no gradient. ---- */
+.ci-glow--plain {
+  overflow: visible;
+  contain: none;
+}
+.ci-glow--plain .ci-glow__plain {
+  position: absolute;
+  inset: calc(var(--g-m) - 2px);
+  border-radius: calc(var(--g-rr) + 2px);
+  border: 2px solid Highlight;
+  opacity: 1;
+}
+.ci-glow--plain[data-state="error"] .ci-glow__plain {
+  border-style: dashed;
+}
+@media (forced-colors: active) {
+  .ci-glow--plain .ci-glow__plain {
+    forced-color-adjust: none;
+    border-color: Highlight;
+  }
+  .ci-glow--plain[data-state="error"] .ci-glow__plain {
+    border-color: LinkText;
+  }
+}

@@ -334,6 +334,31 @@ export const scrollbar = {
   trackInset: 8,
 } as const;
 
+/**
+ * The smart search bar's glow (src/search/AiSearchGlow.tsx). These hues are not semantic island
+ * colours: they live on the light Windows 10 search bar only, never on the black island.
+ */
+export const glow = {
+  cyan: "#40C8E0",
+  violet: "#BF5AF2",
+  indigo: "#5E5CE6",
+  magenta: "#E040C8",
+  softPink: "#FFA3C7",
+  /** Error recolours the whole ring to this single red. */
+  error: "#FF453A",
+  /** Disabled: a desaturated grey. */
+  disabled: "rgba(120,120,120,0.5)",
+  /** Window margin around the bar that the aura may use (DIPs). Blur never exceeds it. */
+  margin: 6,
+  /** Visible thickness of the ring: the light plate is inset by this much. */
+  ringWidth: 1.5,
+  /** A finished answer keeps its glow this long before settling (visual hold, not a delay). */
+  completedHoldMs: 600,
+} as const;
+
+/** The conic stops in order; cyan repeats at the end so the loop closes without a seam. */
+export const glowStops = [glow.cyan, glow.violet, glow.indigo, glow.magenta, glow.softPink, glow.cyan] as const;
+
 // -----------------------------------------------------------------------------
 // Tailwind theme (tailwind.config.js imports this)
 // -----------------------------------------------------------------------------

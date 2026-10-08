@@ -196,6 +196,29 @@ Verified in Edge at 1 / 1.25 / 1.5 / 2 ×: `scrollbar-gutter: stable both-edges`
 cards are 376 wide with or without scrolling; the thumb is 4 visible in a 12-wide grabbable strip on the
 left in RTL; hover and active brighten it; in forced colours it is ButtonText.
 
+### Search bar glow (`src/search/`, tokens `glow`, `glowStops`)
+The smart search bar (a light Windows 10 style bar in its own window) glows while AI Mode is on. It is
+an original implementation with three composited layers and no filter: (1) a static aura of coloured
+box-shadows whose blur never exceeds the 6 DIP window margin, (2) a conic-gradient square rotated with
+`transform` only and clipped to the bar, which shows as a 1.5 px ring, (3) the bar's own opaque
+padding box. Colours: Cyan `#40C8E0`, Violet `#BF5AF2`, Indigo `#5E5CE6`, Magenta `#E040C8`, Soft
+Pink `#FFA3C7`; Error is one red, `#FF453A`.
+
+| State | Look |
+|---|---|
+| Idle, Disabled | nothing is rendered (no layers, no animation) |
+| Activated | ring turns every 12 s, aura 0.55 |
+| Typing | slower, 18 s |
+| Submitting | 6 s, one 180 ms pulse |
+| Processing | 3.5 s, aura breathes; only while the request runs, never a minimum duration |
+| Completed | frozen for 600 ms, then Activated |
+| Error | red ring, held until the next input |
+
+Only `transform` and `opacity` animate, only in Activated / Typing / Submitting / Processing, and not
+while the document is hidden. Reduced motion: the gradient is frozen and states show by opacity and
+colour only (a scoped override keeps 120 ms fades alive under the global 0.01 ms rule). Forced colours or
+`highContrast`: a plain 2 px system-colour ring, no gradient.
+
 ## 4. Verification
 
 `npm run dev` → `/gallery.html` renders every presentation from the real components with the
