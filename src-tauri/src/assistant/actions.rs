@@ -301,15 +301,20 @@ pub fn with_web_offer(mut o: Outcome, interp: &Interpretation, text: &str) -> Ou
         return o;
     }
     let lang = interp.lang;
-    let Some(kind) = commands::fallback_kind(text) else { return o };
+    if commands::fallback_kind(text).is_none() {
+        return o;
+    }
+    // A topic title ("את מזג האוויר אפשר לבדוק בגוגל") only for a question that names nothing of the user's own
+    // ("מה יש לי עם מכבי מחר" is about their day, "תחזית מכירות" is a document, not the weather).
+    let topic = commands::web_topic_kind(text);
     match interp.decision {
         Decision::NoMatch if o.question.is_none() => {}
-        Decision::Clarify { .. } if kind != commands::Fallback::Generic => o.question = None,
+        Decision::Clarify { .. } if topic.is_some() => o.question = None,
         _ => return o,
     }
     let Some(query) = sys::clean_query(text) else { return o };
     let Some(url) = sys::search_url("google", &query, None, None) else { return o };
-    if let Some(title) = kind_title(kind, lang) {
+    if let Some(title) = topic.and_then(|kind| kind_title(kind, lang)) {
         o.title = title.to_string();
         o.summary = String::new();
     }
@@ -349,9 +354,21 @@ pub fn add_note(existing: Vec<Note>, text: &str, now_ms: i64, id: String) -> Res
     Ok(out)
 }
 
+/// A second click on "שמור פתק" (a double click, a key repeat) must not add the same note twice.
+const DUPLICATE_WINDOW_MS: i64 = 60_000;
+
+/// A note with exactly this text was created less than a minute ago.
+pub fn recent_duplicate(existing: &[Note], text: &str, now_ms: i64) -> bool {
+    existing.iter().any(|n| n.text.trim() == text.trim() && (0..DUPLICATE_WINDOW_MS).contains(&(now_ms - n.created_at)))
+}
+
 fn save_note(app: &tauri::AppHandle, text: &str) -> Result<(), String> {
     let now = chrono::Local::now().timestamp_millis();
-    let list = add_note(notes::load()?, text, now, new_note_id())?;
+    let existing = notes::load()?;
+    if recent_duplicate(&existing, text, now) {
+        return Ok(());
+    }
+    let list = add_note(existing, text, now, new_note_id())?;
     notes::save(app, list).map(|_| ())
 }
 
@@ -660,6 +677,18 @@ mod tests {
     }
 
     #[test]
+    fn a_second_click_does_not_add_the_same_note_twice() {
+        let now = 1_800_000_000_000;
+        let saved = vec![note("n1", "לקנות חלב", now - 2_000), note("n2", "ישן", now - 600_000)];
+        assert!(recent_duplicate(&saved, "לקנות חלב", now));
+        assert!(recent_duplicate(&saved, "  לקנות חלב \n", now), "the same text, whitespace aside");
+        assert!(!recent_duplicate(&saved, "לקנות לחם", now));
+        // the same words long after are a new note on purpose
+        assert!(!recent_duplicate(&saved, "ישן", now));
+        assert!(!recent_duplicate(&[], "לקנות חלב", now));
+    }
+
+    #[test]
     fn a_note_is_never_silently_lost() {
         let now = 1_800_000_000_000;
         assert!(add_note(Vec::new(), "   \n", now, "x".into()).unwrap_err().starts_with("APP-054"));
@@ -710,6 +739,38 @@ mod tests {
             let c = ask(&engine, &src, t);
             assert!(c.items.is_empty(), "{t}: {:?}", c.items);
             assert!(c.title.starts_with("אפשר לשאול") || c.title.starts_with("You can ask"), "{t}: {}", c.title);
+        }
+    }
+
+    #[test]
+    fn the_answer_to_a_question_of_a_command_completes_it() {
+        for (first, answer, expected) in [
+            ("תרשום פתק", "לקנות חלב", Action::SaveNote("לקנות חלב".into())),
+            ("תחפש בגוגל", "חתולים", Action::OpenUrl("https://www.google.com/search?q=%D7%97%D7%AA%D7%95%D7%9C%D7%99%D7%9D".into())),
+            ("תחפש ביוטיוב", "lofi", Action::OpenUrl("https://www.youtube.com/results?search_query=lofi".into())),
+            ("תתרגם", "שלום", Action::OpenUrl("https://translate.google.com/?sl=auto&tl=en&text=%D7%A9%D7%9C%D7%95%D7%9D".into())),
+        ] {
+            let engine = Engine::new();
+            let src = Probe::default();
+            let asked = engine.submit(&src, first, "q0000000000000001", Local::now());
+            assert!(asked.question.is_some() && asked.items.is_empty(), "{first}");
+            let card = engine.submit(&src, answer, "q0000000000000002", Local::now());
+            assert_eq!(card.items.len(), 1, "{first} -> {answer}: {card:?}");
+            assert_eq!(card.items[0].kind, ItemKind::Action, "{first} -> {answer}");
+            assert!(src.performed.lock().unwrap().is_empty(), "{first} -> {answer}: ran before the click");
+            click(&engine, &src, &card).unwrap();
+            assert_eq!(*src.performed.lock().unwrap(), vec![expected], "{first} -> {answer}");
+        }
+    }
+
+    #[test]
+    fn a_search_of_this_pc_is_not_turned_into_a_web_offer() {
+        let engine = Engine::new();
+        let src = Probe::default();
+        for t in ["תחפש את תחזית המכירות", "תמצא את הדוח על המניות", "מה יש לי עם מכבי מחר", "search stock options policy", "new mail from Dan"] {
+            let c = ask(&engine, &src, t);
+            assert!(c.items.iter().all(|i| i.kind != ItemKind::Action), "{t}: {:?}", c.items);
+            assert!(!c.title.contains("בגוגל") && !c.title.contains("Google"), "{t}: {}", c.title);
         }
     }
 
