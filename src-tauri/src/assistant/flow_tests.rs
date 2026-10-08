@@ -13,8 +13,19 @@ use std::collections::VecDeque;
 
 // ----- fakes ---------------------------------------------------------------------------------
 
+/// What the fake in-memory prefetch holds: the covered window, the calendars read in the last
+/// round (empty = all) and the events.
+struct Prefetch {
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    read: Vec<String>,
+    events: Vec<CalendarEventDto>,
+}
+
 #[derive(Default)]
 struct Fake {
+    prefetch: Option<Prefetch>,
+    prefetch_asked: Mutex<Vec<Option<Vec<String>>>>,
     boxes: Vec<MailboxInfo>,
     mail: Mutex<VecDeque<Result<MailSearchResult, String>>>,
     queries: Mutex<Vec<(MailQuery, bool)>>,
@@ -61,6 +72,26 @@ impl Sources for Fake {
             return Err(e.clone());
         }
         Ok(RangeRead { events: self.events.clone(), truncated: false, failed: Vec::new() })
+    }
+    fn prefetched(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<&[String]>) -> Option<RangeRead> {
+        self.prefetch_asked.lock().unwrap().push(only.map(|o| o.to_vec()));
+        let p = self.prefetch.as_ref()?;
+        if from < p.from || to > p.to {
+            return None;
+        }
+        if let Some(o) = only {
+            if !p.read.is_empty() && !o.iter().all(|id| p.read.contains(id)) {
+                return None;
+            }
+        }
+        let events = p
+            .events
+            .iter()
+            .filter(|e| e.start_utc < to && e.end_utc > from)
+            .filter(|e| only.map_or(true, |o| o.iter().any(|id| *id == e.calendar_id)))
+            .cloned()
+            .collect();
+        Some(RangeRead { events, truncated: false, failed: Vec::new() })
     }
     fn open_event(&self, _start: DateTime<Utc>) -> Result<(), String> {
         self.opened.lock().unwrap().push("event".into());
@@ -861,4 +892,76 @@ fn fifty_concurrent_submits_do_not_deadlock_and_each_gets_a_final_card() {
     assert_eq!(lock(&e.store).len(), MAX_QUERIES);
     println!("LOAD50 elapsed_ms={}", elapsed.as_millis());
     assert!(elapsed < std::time::Duration::from_secs(10));
+}
+
+// ----- prefetch ------------------------------------------------------------------------------
+
+/// Moves the three meetings into the prefetch (calendar "c-itzik", window day `from_day`..`to_day`)
+/// and leaves one different meeting for the live read, so the two paths tell apart.
+fn itzik_prefetch(f: &mut Fake, from_day: u32, to_day: u32, read: Vec<String>) {
+    let mut events = f.events.clone();
+    events.iter_mut().for_each(|e| e.calendar_id = "c-itzik".into());
+    f.prefetch = Some(Prefetch { from: at(from_day, 0, 0).with_timezone(&Utc), to: at(to_day, 0, 0).with_timezone(&Utc), read, events });
+    f.events = vec![event("live", "חי", at(11, 8, 0), 30, BusyStatus::Busy)];
+}
+
+fn itzik_slots() -> Slots {
+    Slots { person: Some("איציק".into()), time: Some(tomorrow()), ..Slots::default() }
+}
+
+#[test]
+fn a_prefetch_hit_answers_without_reading_outlook() {
+    let mut f = itzik_fake();
+    itzik_prefetch(&mut f, 9, 20, Vec::new());
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, itzik_slots()));
+    assert_eq!(card.title, "מחר יש לאיציק 3 פגישות");
+    assert!(f.ranges.lock().unwrap().is_empty(), "query_range must not run on a hit");
+    assert_eq!(f.prefetch_asked.lock().unwrap().as_slice(), &[Some(vec!["c-itzik".to_string()])]);
+}
+
+#[test]
+fn a_prefetch_hit_serves_search_and_availability_too() {
+    let mut f = itzik_fake();
+    itzik_prefetch(&mut f, 9, 20, Vec::new());
+    let slots = Slots { terms: terms("ראיון"), ..itzik_slots() };
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_SEARCH_EVENTS, slots));
+    assert_eq!(card.total, 1);
+    engine_run(&Engine::new(), &f, "q2", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, itzik_slots()));
+    assert!(f.ranges.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_window_outside_the_prefetch_reads_live() {
+    let mut f = itzik_fake();
+    itzik_prefetch(&mut f, 1, 5, Vec::new());
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, itzik_slots()));
+    assert_eq!(card.total, 1, "the live meeting, not the prefetched three");
+    assert_eq!(f.ranges.lock().unwrap().as_slice(), &[Some(vec!["c-itzik".to_string()])]);
+}
+
+#[test]
+fn a_stale_prefetch_or_an_unread_calendar_reads_live() {
+    // no fresh prefetch: prefetched() answers None
+    let f = itzik_fake();
+    engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, itzik_slots()));
+    assert_eq!(f.ranges.lock().unwrap().len(), 1);
+    // the calendar was not read in the last round
+    let mut g = itzik_fake();
+    itzik_prefetch(&mut g, 9, 20, vec!["c-me".to_string()]);
+    engine_run(&Engine::new(), &g, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, itzik_slots()));
+    assert_eq!(g.ranges.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn the_prefetch_only_filter_is_respected() {
+    let mut f = itzik_fake();
+    itzik_prefetch(&mut f, 9, 20, Vec::new());
+    let mut other = event("o1", "אחר", at(11, 10, 0), 30, BusyStatus::Busy);
+    other.calendar_id = "c-me".into();
+    f.prefetch.as_mut().unwrap().events.push(other);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, itzik_slots()));
+    assert_eq!(card.total, 3, "the other calendar's meeting must not leak into a person's answer");
+    let own = Slots { time: Some(tomorrow()), ..Slots::default() };
+    let card = engine_run(&Engine::new(), &f, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, own));
+    assert_eq!(card.total, 4);
 }

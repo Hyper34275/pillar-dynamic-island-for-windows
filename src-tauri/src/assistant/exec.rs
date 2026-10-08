@@ -37,6 +37,9 @@ pub trait Sources: Send + Sync {
     /// Organizers seen in the calendar snapshot (names only, for parsing).
     fn people(&self) -> Vec<String>;
     fn query_range(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String>;
+    /// The in-memory prefetch, when it is fresh, covers `[from, to)` and (given `only`) has read every
+    /// requested calendar. `None` means: read live with `query_range`.
+    fn prefetched(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<&[String]>) -> Option<RangeRead>;
     fn open_event(&self, start: DateTime<Utc>) -> Result<(), String>;
     fn search_files(&self, terms: &[Vec<String>], ext: Option<&str>, limit: usize, budget_ms: u64) -> Result<FileSearch, String>;
     fn open_file(&self, key: &str) -> Result<(), String>;
@@ -425,7 +428,11 @@ fn calendar(r: &Run, interp: &Interpretation, cap: CapId, chosen: Option<&str>) 
         return o;
     }
 
-    let read = match r.src.query_range(from_u, to_u, only.clone()) {
+    let live = match r.src.prefetched(from_u, to_u, only.as_deref()) {
+        Some(read) => Ok(read),
+        None => r.src.query_range(from_u, to_u, only.clone()),
+    };
+    let read = match live {
         Ok(read) => read,
         Err(e) => {
             let code = answer::code_of(&e, "OUTLOOK-102");

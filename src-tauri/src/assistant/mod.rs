@@ -277,6 +277,10 @@ impl exec::Sources for Live {
     fn query_range(&self, from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
         calendar::query_range(from, to, only)
     }
+    fn prefetched(&self, _from: DateTime<Utc>, _to: DateTime<Utc>, _only: Option<&[String]>) -> Option<RangeRead> {
+        // TODO: wired to calendar::prefetched at merge
+        None
+    }
     fn open_event(&self, start: DateTime<Utc>) -> Result<(), String> {
         outlook::open_calendar(Some(start))
     }
