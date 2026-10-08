@@ -270,6 +270,26 @@ describe("SettingsView", () => {
     expect(pressed).toEqual(["false", "false", "true"]);
   });
 
+  it("offers the schedule download in five options, marks 7 days and writes the choice", () => {
+    const props = viewProps();
+    render(props);
+    const group = container.querySelector<HTMLElement>('[role="group"][aria-label="Download schedule ahead"]')!;
+    const options = [...group.querySelectorAll("button")];
+    expect(options.map((o) => o.textContent)).toEqual(["Off", "3 days", "7 days", "14 days", "30 days"]);
+    expect(options.map((o) => o.getAttribute("aria-pressed"))).toEqual(["false", "false", "true", "false", "false"]);
+    expect(container.textContent).toContain("Kept in memory only.");
+    act(() => options[0].click());
+    expect(props.onChange).toHaveBeenCalledWith({ calendarPrefetchDays: 0 });
+    act(() => options[4].click());
+    expect(props.onChange).toHaveBeenCalledWith({ calendarPrefetchDays: 30 });
+  });
+
+  it("shows an unlisted stored prefetch value as its own number", () => {
+    render(viewProps({ settings: { ...SETTINGS_DEFAULTS, calendarPrefetchDays: 10 } }));
+    const group = container.querySelector<HTMLElement>('[role="group"][aria-label="Download schedule ahead"]')!;
+    expect([...group.querySelectorAll("button")].map((o) => o.textContent)).toEqual(["Off", "3 days", "7 days", "10 days", "14 days", "30 days"]);
+  });
+
   it("offers the display choice only with more than one display", () => {
     render(viewProps());
     expect(container.textContent).not.toContain("Display");

@@ -6,6 +6,7 @@ import {
   normalizeNotes,
   normalizeNotification,
   normalizeNotificationStatus,
+  normalizePrefetchStatus,
   normalizeReminderState,
   normalizeSettings,
   NOTE_MAX_CHARS,
@@ -29,6 +30,7 @@ describe("outside Tauri", () => {
     await expect(ipc.calendarRefresh()).resolves.toBe(false);
     await expect(ipc.reminderStateLoad()).resolves.toBeNull();
     await expect(ipc.reminderStateSave({ a: 1 })).resolves.toBe(false);
+    await expect(ipc.calendarPrefetchStatus()).resolves.toBeNull();
     await expect(ipc.notesLoad()).resolves.toBeNull();
     await expect(ipc.notesSave([])).resolves.toBeNull();
     await expect(ipc.openCenter("settings")).resolves.toBe(false);
@@ -74,7 +76,27 @@ describe("normalizeSettings", () => {
       aiSearchEnabled: true,
       aiSearchButton: true,
       aiSearchHotkey: true,
+      calendarPrefetchDays: 7,
     });
+  });
+
+  it("defaults the schedule download to 7 days, keeps 0..31 rounded, clamps the rest and rejects non-numbers", () => {
+    expect(SETTINGS_DEFAULTS.calendarPrefetchDays).toBe(7);
+    expect(normalizeSettings({}).calendarPrefetchDays).toBe(7);
+    expect(normalizeSettings({ calendarPrefetchDays: 0 }).calendarPrefetchDays).toBe(0);
+    expect(normalizeSettings({ calendarPrefetchDays: 14 }).calendarPrefetchDays).toBe(14);
+    expect(normalizeSettings({ calendarPrefetchDays: 13.6 }).calendarPrefetchDays).toBe(14);
+    expect(normalizeSettings({ calendarPrefetchDays: 99 }).calendarPrefetchDays).toBe(31);
+    expect(normalizeSettings({ calendarPrefetchDays: -4 }).calendarPrefetchDays).toBe(0);
+    for (const bad of [Number.NaN, Infinity, "10", null, {}]) expect(normalizeSettings({ calendarPrefetchDays: bad }).calendarPrefetchDays).toBe(7);
+  });
+
+  it("normalises the prefetch status and answers null for nonsense", () => {
+    expect(normalizePrefetchStatus(null)).toBeNull();
+    expect(normalizePrefetchStatus("x")).toBeNull();
+    expect(
+      normalizePrefetchStatus({ days: 7, fromUnixMs: 1, toUnixMs: 2, fetchedUnixMs: "3", calendarsTotal: 4, calendarsRead: -1, failed: [["a", "CAL-1"], [1, 2], "z"] })
+    ).toEqual({ days: 7, fromUnixMs: 1, toUnixMs: 2, fetchedUnixMs: null, calendarsTotal: 4, calendarsRead: 0, failed: [["a", "CAL-1"]] });
   });
 
   it("defaults the smart search switches to on and keeps explicit booleans", () => {

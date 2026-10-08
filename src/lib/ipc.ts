@@ -44,6 +44,21 @@ export type NotificationStatus = "allowed" | "denied" | "unspecified" | "unsuppo
 
 export const REMINDER_MINUTE_OPTIONS = [5, 10, 15, 30] as const;
 
+/** Days of schedule the backend downloads ahead (memory only); 0 = off. */
+export const PREFETCH_DAY_OPTIONS = [0, 3, 7, 14, 30] as const;
+export const PREFETCH_DAYS_MAX = 31;
+
+/** What the backend reports about its last schedule download. Unix ms; no calendar names or subjects. */
+export type PrefetchStatus = {
+  days: number;
+  fromUnixMs: number | null;
+  toUnixMs: number | null;
+  fetchedUnixMs: number | null;
+  calendarsTotal: number;
+  calendarsRead: number;
+  failed: Array<[string, string]>;
+};
+
 export type Settings = {
   launchWithWindows: boolean;
   hideInFullscreen: boolean;
@@ -68,6 +83,8 @@ export type Settings = {
   aiSearchButton: boolean;
   /** Ctrl+Alt+Space opens the smart search input. */
   aiSearchHotkey: boolean;
+  /** Days of schedule downloaded ahead for every calendar, independent of Outlook's cache mode; 0 = off. */
+  calendarPrefetchDays: number;
 };
 
 export type IslandDisplay = "full" | "clock" | "date";
@@ -91,6 +108,7 @@ export const SETTINGS_DEFAULTS: Settings = {
   aiSearchEnabled: true,
   aiSearchButton: true,
   aiSearchHotkey: true,
+  calendarPrefetchDays: 7,
 };
 
 /** A note, kept only on this computer. Times are unix ms. */
@@ -158,6 +176,11 @@ function bool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function prefetchDays(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return SETTINGS_DEFAULTS.calendarPrefetchDays;
+  return Math.min(PREFETCH_DAYS_MAX, Math.max(0, Math.round(value)));
+}
+
 export function normalizeSettings(raw: unknown): Settings {
   const r = isRecord(raw) ? raw : {};
   const minutes = typeof r.reminderMinutes === "number" && Number.isFinite(r.reminderMinutes) ? Math.round(r.reminderMinutes) : null;
@@ -176,6 +199,7 @@ export function normalizeSettings(raw: unknown): Settings {
     aiSearchEnabled: bool(r.aiSearchEnabled, SETTINGS_DEFAULTS.aiSearchEnabled),
     aiSearchButton: bool(r.aiSearchButton, SETTINGS_DEFAULTS.aiSearchButton),
     aiSearchHotkey: bool(r.aiSearchHotkey, SETTINGS_DEFAULTS.aiSearchHotkey),
+    calendarPrefetchDays: prefetchDays(r.calendarPrefetchDays),
   };
 }
 
@@ -239,6 +263,25 @@ function normalizeDiagnostics(raw: unknown): Diagnostics {
     outlookMode: mode === "classic" || mode === "new" || mode === "none" ? mode : null,
     notificationMode: r.notificationMode === "events" || r.notificationMode === "polling" || r.notificationMode === "none" ? r.notificationMode : null,
     recentErrorCodes: Array.isArray(r.recentErrorCodes) ? r.recentErrorCodes.filter((c): c is string => typeof c === "string") : [],
+  };
+}
+
+export function normalizePrefetchStatus(raw: unknown): PrefetchStatus | null {
+  if (!isRecord(raw)) return null;
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const count = (v: unknown): number => Math.max(0, num(v) ?? 0);
+  return {
+    days: prefetchDays(raw.days),
+    fromUnixMs: num(raw.fromUnixMs),
+    toUnixMs: num(raw.toUnixMs),
+    fetchedUnixMs: num(raw.fetchedUnixMs),
+    calendarsTotal: count(raw.calendarsTotal),
+    calendarsRead: count(raw.calendarsRead),
+    failed: Array.isArray(raw.failed)
+      ? raw.failed
+          .filter((f): f is [string, string] => Array.isArray(f) && typeof f[0] === "string" && typeof f[1] === "string")
+          .map((f) => [f[0], f[1]] as [string, string])
+      : [],
   };
 }
 
@@ -371,6 +414,11 @@ export const ipc = {
 
   /** Raw events of another stretch of the calendar (at most 7 days); the calendar module normalises them. */
   calendarGetRange: (fromUtc: string, toUtc: string) => call<unknown>("calendar_get_range", { fromUtc, toUtc }, { timeoutMs: 30_000 }),
+
+  /** State of the schedule download ahead; null when the backend is unavailable or answers nonsense. */
+  async calendarPrefetchStatus(): Promise<PrefetchStatus | null> {
+    return normalizePrefetchStatus(await call<unknown>("calendar_prefetch_status", undefined, { timeoutMs: 3000 }));
+  },
 
   /** Arguments are passed flat: invoke("set_island_geometry", { width, height, radius }). */
   setIslandGeometry: (geometry: IslandGeometry) => callVoid("set_island_geometry", { ...geometry }, { timeoutMs: 3000 }),

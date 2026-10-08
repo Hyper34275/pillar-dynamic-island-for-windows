@@ -17,6 +17,7 @@ import {
 import {
   ipc,
   onEvent,
+  PREFETCH_DAY_OPTIONS,
   REMINDER_MINUTE_OPTIONS,
   type Diagnostics,
   type IslandDisplay,
@@ -136,7 +137,11 @@ export function SettingsView({
     .sort((a, b) => a - b)
     .map((n) => ({ id: String(n), label: t("settings.minutes", { n }) }));
 
-  const displayOptions = DISPLAY_OPTIONS.map(({ id, labelKey }) => ({ id, label: t(labelKey) }));
+  const prefetchOptions = [...new Set<number>([...PREFETCH_DAY_OPTIONS, settings.calendarPrefetchDays])]
+    .sort((a, b) => a - b)
+    .map((n) => ({ id: String(n), label: n === 0 ? t("settings.prefetchDaysOff") : t("settings.prefetchDaysN", { n }) }));
+
+  const displayOptions =DISPLAY_OPTIONS.map(({ id, labelKey }) => ({ id, label: t(labelKey) }));
 
   const copyLabel = flash === "copied" ? t("about.copied") : flash === "failed" ? t("about.copyFailed") : t("about.copy");
 
@@ -178,6 +183,18 @@ export function SettingsView({
               onChange={(id) => change({ reminderMinutes: Number(id) })}
               ariaLabel={t("settings.reminderMinutes")}
             />
+          </div>
+          <div className="flex flex-col gap-2 p-3" data-row="prefetch-days">
+            <div className="flex items-center justify-between gap-3 min-h-hit -my-1">
+              <span className="text-body text-fg flex-shrink-0">{t("settings.prefetchDays")}</span>
+              <Segmented
+                options={prefetchOptions}
+                value={String(settings.calendarPrefetchDays)}
+                onChange={(id) => change({ calendarPrefetchDays: Number(id) })}
+                ariaLabel={t("settings.prefetchDays")}
+              />
+            </div>
+            <span className="text-meta text-fg-secondary">{t("settings.prefetchHint")}</span>
           </div>
           <SwitchRow
             label={t("settings.meetingInvites")}
