@@ -291,3 +291,7 @@ The dev machine runs Windows 11 with a non-Exchange Outlook profile. Not verifia
 - Hebrew word-breaking of the Windows Search indexer.
 
 `scripts/win10-taskbar-probe.ps1` is a read-only dump to run once on a Windows 10 21H2 PC; its output confirms or corrects the anchor's class names.
+
+## 7. Implementation status
+
+Phases 2-9 are implemented and unit-tested (cargo 474 passed with 6 ignored live probes, vitest 943, dotnet 161, tsc clean, vite build OK) but the new build has not been run live yet. A fix round for 36 adversarial-review findings is being merged. Phases 10-12 (optimization, installer 1.0.12, QA) are pending. Per-phase commits, tests and limits are in `docs/AI_SEARCH_PROGRESS.md`; the limits in section 6 still apply, and the Center chat UI has only been compiled, never rendered.

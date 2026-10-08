@@ -394,6 +394,10 @@ pub fn apply_patch(app: &AppHandle, patch: SettingsPatch) -> Settings {
         != (new.ai_search_enabled, new.ai_search_button, new.ai_search_hotkey)
     {
         search_bar::apply_settings(app, &new);
+        if old.ai_search_enabled && !new.ai_search_enabled {
+            // Switched off: the kept questions and answers go too (privacy off switch).
+            crate::assistant::on_disabled();
+        }
     }
     new
 }

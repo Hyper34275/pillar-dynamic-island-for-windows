@@ -179,3 +179,21 @@ tries. Reminder alert stays 8 s (hover pauses it); default reminder is 30 minute
   `%USERPROFILE%\.cargo\bin` on PATH) before a QA cycle and attach the output; add `dotnet test center/CompanyIsland.Center.Tests`
   (.NET 10 SDK) for the Center.
 - The dev box evidence above is from 2026-10-06 and 2026-10-07 and from build 26200 only.
+
+## Smart AI Search
+
+Status as of 2026-10-08. Details per phase: `docs/AI_SEARCH_PROGRESS.md`.
+
+| Area | Evidence | Not verified |
+|---|---|---|
+| Automated tests | cargo 474 passed (6 ignored live probes), vitest 943, dotnet 161, tsc clean, vite build OK | Counts change per commit; re-run before a QA cycle |
+| Intent engine | Corpus 227 cases: execute precision 100%, holdout recall 100% (corpus written alongside the engine, optimistic); independent set of 173 phrasings ~80% before fixes; p95 0.34-0.44 ms (debug) | Pass rate after the fix round |
+| End-to-end (unit level, fake sources) | Calendar query for a named person, mailbox question with 3 mailboxes, "אני לא יודע" searches all with 10 s budget plus extend, refine "רק מהשבוע שעבר" | Same flows live in the app |
+| Live read-only probes (Windows 11 dev box, non-Exchange single store) | Outlook GetTable + DASL with a Hebrew term; Table dates are UTC; Windows Search via ADO 50-230 ms; Apps folder 160 apps in ~0.8-1 s | Anything on Exchange |
+| Windows 10 21H2 taskbar anchor | none | Run `scripts/win10-taskbar-probe.ps1` on a Win10 21H2 PC |
+| Exchange shared/delegate mailboxes, archives, free/busy against a GAL | none | Needs an Exchange profile |
+| Hebrew word-breaking of the Windows Search index | none | Needs a live check |
+| Live run of the new build | none (live test approved by the user, pending) | Everything visual: glow, search bar, island answer card |
+| Center chat UI | compiled only | Never rendered |
+| Performance on 8 GB / integrated-GPU Windows 10 | none | Not measured |
+| Installer 1.0.12 | not built | |
