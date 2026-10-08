@@ -22,6 +22,8 @@ pub enum Target {
     Note(String),
     File(String),
     App(String),
+    /// A command confirmed by this click (web search, site, settings page, folder, note, new mail, lock).
+    Action(super::actions::Action),
     /// Information only.
     None,
 }

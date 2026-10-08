@@ -16,6 +16,7 @@
 //! (wording), `avail` (free slots), `store` (last 20 queries, 30 minutes), `prefs` (saved mailbox
 //! choice). The real sources are [`Live`] below.
 
+mod actions;
 mod answer;
 mod avail;
 mod exec;
@@ -306,6 +307,9 @@ impl exec::Sources for Live {
     }
     fn save_prefs(&self, p: &prefs::Prefs) -> Result<(), String> {
         prefs::save(p)
+    }
+    fn run_action(&self, action: &actions::Action) -> Result<(), String> {
+        actions::perform(&self.app, action)
     }
 }
 

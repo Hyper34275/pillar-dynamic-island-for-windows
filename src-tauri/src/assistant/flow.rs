@@ -224,6 +224,8 @@ impl Engine {
         let prefs = src.load_prefs();
         let run = Run { src, now, lang: interp.lang, prefs: prefs.as_ref(), inherited: inherited.as_deref(), allow_ask: true };
         let outcome = exec::execute(&run, interp);
+        // nothing understood: the honest message stays and "search it on Google" is offered as a click
+        let outcome = super::actions::with_web_offer(outcome, interp, text);
         self.finish(query_id, text, interp.lang, interp.follow_up, Some(interp), outcome, now_ms, now_ms, started)
     }
 
@@ -281,6 +283,7 @@ impl Engine {
             Target::Note(id) => src.open_note(&id),
             Target::File(key) => src.open_file(&key),
             Target::App(key) => src.launch_app(&key),
+            Target::Action(action) => src.run_action(&action),
             Target::None => Err("APP-042: nothing to open".into()),
         }
     }
