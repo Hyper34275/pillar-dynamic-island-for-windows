@@ -1,6 +1,6 @@
 [package]
 name = "companyisland"
-version = "1.0.9"
+version = "1.0.10"
 description = "CompanyIsland - a Dynamic Island style date, time and calendar overlay for Windows"
 authors = ["CompanyIsland"]
 license = "MIT"
