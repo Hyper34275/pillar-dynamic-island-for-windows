@@ -447,6 +447,10 @@ fn correction_supported(a: &[Ann], i: usize) -> bool {
         cue && !others(&|x| is_day_word(x.concept))
     } else if c.starts_with("V_") {
         i <= 1 && !others(&|x| x.concept.starts_with("V_"))
+    } else if c == "YESH" && !h.prefix.is_empty() {
+        // "לעשות" (to do) is one letter and one edit from ל + "עושות": it passes for "there is" only when a day
+        // is asked about ("מה לעשות מחר"). "מה אתה יודע לעשות" asks about no day and is not "מה יש לי?".
+        others(&|x| x.concept.starts_with("T_") || x.concept.starts_with("D_"))
     } else {
         false
     }
@@ -472,7 +476,7 @@ fn correction_stands(a: &[Ann], k: usize) -> bool {
         }
         return !h.real_word || correction_supported(a, k);
     }
-    if h.real_word || (!h.prefix.is_empty() && h.cost > 0.5 + 0.25 + 1e-6) {
+    if h.real_word || (!h.prefix.is_empty() && (h.cost > 0.5 + 0.25 + 1e-6 || h.concept == "YESH")) {
         return correction_supported(a, k);
     }
     true
@@ -789,6 +793,21 @@ mod tests {
         // numbers and names are never corrected
         assert!(concepts("ארבעים ושתיים").iter().all(|c| c.is_empty()));
         assert_eq!(concepts("מכחה לי מחר")[0], "YESH");
+    }
+
+    #[test]
+    fn the_infinitive_to_do_is_no_there_is_unless_a_day_is_asked_about() {
+        // "מה אתה יודע לעשות": ל + "עושות" was a cheap enough guess to read it as "מה יש לי?" and ask for a date
+        let concepts = |t: &str| -> Vec<&'static str> { annotate(&super::super::normalize::tokenize(t)).iter().map(|a| a.concept()).collect() };
+        for t in ["מה אתה יודע לעשות", "מה אתה יכול לעשות", "מה את יודעת לעשות", "מה אפשר לעשות", "מה אפשר לעשות בקובץ", "אתה יודע לעשות משהו"] {
+            assert!(!concepts(t).contains(&"YESH"), "{t}: {:?}", concepts(t));
+        }
+        // with a day it is still the question about that day, as it was
+        for t in ["מה לעשות היום", "מה אפשר לעשות מחר", "מה צריך לעשות מחר"] {
+            assert!(concepts(t).contains(&"YESH"), "{t}: {:?}", concepts(t));
+        }
+        // a misspelt "there is" with no proclitic is not touched
+        assert_eq!(concepts("מכחה לי")[0], "YESH");
     }
 
     #[test]
