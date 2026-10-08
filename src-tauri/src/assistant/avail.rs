@@ -1,6 +1,6 @@
 //! Availability arithmetic (pure): busy intervals, overlap, free slots in working hours.
 
-use chrono::{DateTime, Duration, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, NaiveDate, TimeZone, Utc, Weekday};
 
 pub const WORK_START_HOUR: u32 = 8;
 pub const WORK_END_HOUR: u32 = 18;
@@ -70,6 +70,30 @@ pub fn free_slots(busy: &[Span], from: DateTime<Local>, to: DateTime<Local>) -> 
     out
 }
 
+fn is_weekend(day: NaiveDate) -> bool {
+    matches!(day.weekday(), Weekday::Fri | Weekday::Sat)
+}
+
+/// Friday and Saturday are the weekend here: a question about a stretch of days ("מתי איציק פנוי
+/// השבוע") does not list them as free time. A window with no other day keeps them.
+pub fn skip_weekend(slots: Vec<Span>, from: DateTime<Local>, to: DateTime<Local>) -> Vec<Span> {
+    let last = (to - Duration::minutes(1)).date_naive();
+    let mut day = from.date_naive();
+    let mut workday = false;
+    for _ in 0..=MAX_DAYS {
+        if day > last {
+            break;
+        }
+        workday |= !is_weekend(day);
+        let Some(next) = day.succ_opt() else { break };
+        day = next;
+    }
+    if !workday {
+        return slots;
+    }
+    slots.into_iter().filter(|(s, _)| !is_weekend(s.with_timezone(&Local).date_naive())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +142,22 @@ mod tests {
         let slots = free_slots(&[(u(6, 0), u(8, 10)), (u(8, 20), u(18, 30))], f, t);
         // 8:10-8:20 is shorter than 15 minutes
         assert!(slots.is_empty());
+    }
+
+    #[test]
+    fn the_weekend_is_left_out_of_a_stretch_of_days_but_not_of_a_weekend() {
+        // 2027-03-10 is a Wednesday: Wed..Sun is five days with three working ones
+        let all = |from: DateTime<Local>, to: DateTime<Local>| free_slots(&[], from, to);
+        let from = Local.with_ymd_and_hms(2027, 3, 10, 0, 0, 0).unwrap();
+        let to = Local.with_ymd_and_hms(2027, 3, 15, 0, 0, 0).unwrap();
+        let slots = all(from, to);
+        assert_eq!(slots.len(), 5);
+        let kept = skip_weekend(slots, from, to);
+        let days: Vec<u32> = kept.iter().map(|(s, _)| s.with_timezone(&Local).day()).collect();
+        assert_eq!(days, vec![10, 11, 14]);
+        // only Friday and Saturday asked: they are kept
+        let (f, t) = (Local.with_ymd_and_hms(2027, 3, 12, 0, 0, 0).unwrap(), Local.with_ymd_and_hms(2027, 3, 14, 0, 0, 0).unwrap());
+        assert_eq!(skip_weekend(all(f, t), f, t).len(), 2);
     }
 
     #[test]

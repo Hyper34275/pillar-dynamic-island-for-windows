@@ -129,39 +129,70 @@ pub fn day_label(from: DateTime<Local>, to: DateTime<Local>, grain: Grain, now: 
             }
         },
         Grain::Instant => {
+            // "מחר בשעה 15:00": the day is part of the answer unless it is today
             let t = from.format("%H:%M");
-            if he { format!("בשעה {t}") } else { format!("at {t}") }
+            let at = if he { format!("בשעה {t}") } else { format!("at {t}") };
+            if diff == 0 {
+                at
+            } else {
+                format!("{} {at}", relative_day(from, diff, lang))
+            }
         }
         Grain::Day | Grain::Range => {
             let last = (to - Duration::minutes(1)).date_naive();
             if grain == Grain::Range && last != from.date_naive() {
                 return format!("{}–{}", from.format("%d/%m"), last.format("%d/%m"));
             }
-            match diff {
-                0 => if he { "היום".into() } else { "today".into() },
-                1 => if he { "מחר".into() } else { "tomorrow".into() },
-                2 if he => "מחרתיים".into(),
-                -1 => if he { "אתמול".into() } else { "yesterday".into() },
-                -2 if he => "שלשום".into(),
-                3..=6 => {
-                    let name = weekday_name(from.weekday(), lang);
-                    if he { format!("ביום {name}") } else { format!("on {name}") }
-                }
-                _ => {
-                    let d = from.format("%d/%m");
-                    if he { format!("ב-{d}") } else { format!("on {d}") }
-                }
+            let day = relative_day(from, diff, lang);
+            // a part of one day ("מחר ב-15:00", "אחר הצהריים") says which hours
+            if grain == Grain::Range && !is_whole_day(from, to) {
+                let end = if to.time() == chrono::NaiveTime::MIN { "24:00".to_string() } else { to.format("%H:%M").to_string() };
+                return format!("{day} {}–{end}", from.format("%H:%M"));
             }
+            day
         }
     }
 }
 
-/// "לך" or "לאיציק" ("ל-Dana" for a Latin name).
+/// From local midnight to local midnight.
+fn is_whole_day(from: DateTime<Local>, to: DateTime<Local>) -> bool {
+    from.time() == chrono::NaiveTime::MIN && to.time() == chrono::NaiveTime::MIN
+}
+
+/// One day in words, `diff` days from today: "היום", "מחר", "ביום חמישי", "ב-25/03".
+fn relative_day(from: DateTime<Local>, diff: i64, lang: Lang) -> String {
+    let he = lang == Lang::He;
+    match diff {
+        0 => if he { "היום".into() } else { "today".into() },
+        1 => if he { "מחר".into() } else { "tomorrow".into() },
+        2 if he => "מחרתיים".into(),
+        -1 => if he { "אתמול".into() } else { "yesterday".into() },
+        -2 if he => "שלשום".into(),
+        3..=6 => {
+            let name = weekday_name(from.weekday(), lang);
+            if he { format!("ביום {name}") } else { format!("on {name}") }
+        }
+        _ => {
+            let d = from.format("%d/%m");
+            if he { format!("ב-{d}") } else { format!("on {d}") }
+        }
+    }
+}
+
+fn is_he_letter(c: char) -> bool {
+    ('\u{05D0}'..='\u{05EA}').contains(&c)
+}
+
+/// "לך" or "לאיציק" ("ל-Dana" for a name that does not open with a Hebrew letter). A name that
+/// opens with a vav takes it doubled, as Hebrew spells a prefix before a consonant vav:
+/// ל+ורד = "לוורד", not "לורד" (which reads as "lord").
 pub fn he_to(person: Option<&str>) -> String {
-    match person {
-        None => "לך".into(),
-        Some(p) if p.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) => format!("ל-{p}"),
-        Some(p) => format!("ל{p}"),
+    let Some(p) = person.map(str::trim).filter(|p| !p.is_empty()) else { return "לך".into() };
+    let second = p.chars().nth(1);
+    match p.chars().next() {
+        Some('ו') if second.is_some_and(|n| n != 'ו') => format!("לו{p}"),
+        Some(c) if is_he_letter(c) => format!("ל{p}"),
+        _ => format!("ל-{p}"),
     }
 }
 
@@ -306,10 +337,6 @@ pub fn all_mailboxes_label(lang: Lang) -> &'static str {
     }
 }
 
-pub fn calendar_question(lang: Lang) -> &'static str {
-    if lang == Lang::He { "באיזה יומן לחפש?" } else { "Which calendar do you mean?" }
-}
-
 pub fn tap_to_open(lang: Lang) -> &'static str {
     if lang == Lang::He { "לחץ כדי לפתוח" } else { "Click to open" }
 }
@@ -326,12 +353,109 @@ pub fn busy_only_note(lang: Lang) -> &'static str {
     }
 }
 
-pub fn calendar_not_found(person: &str, lang: Lang) -> String {
-    if lang == Lang::He {
-        format!("לא מצאתי יומן של {person} — פתח אותו ב-Outlook")
-    } else {
-        format!("I could not find {person}'s calendar — open it in Outlook")
+/// Why a person's calendar could not be read: picks the one line that tells how to fix it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoAccess {
+    /// Not in Outlook's Calendar module and not resolved in the address book (not shared, not
+    /// Exchange, offline...).
+    NotShared,
+    /// The calendar is in Outlook but its owner has not allowed reading it (CAL-SHARED-101).
+    NoPermission,
+    /// Outlook, or the calendar, did not answer in time or is busy (CAL-SHARED-104/105,
+    /// OUTLOOK-105/109).
+    Unreachable,
+    /// Classic Outlook is not running or cannot be reached (OUTLOOK-101 and the other OUTLOOK codes).
+    OutlookDown,
+    /// The new Outlook is in use (OUTLOOK-104).
+    NewOutlook,
+}
+
+impl NoAccess {
+    pub fn from_code(code: &str) -> Self {
+        match code {
+            // our own marker for "the name resolved to nobody"
+            "OUTLOOK-107" => NoAccess::NotShared,
+            "OUTLOOK-104" => NoAccess::NewOutlook,
+            "OUTLOOK-105" | "OUTLOOK-109" | "CAL-SHARED-104" | "CAL-SHARED-105" => NoAccess::Unreachable,
+            c if c.starts_with("OUTLOOK-") => NoAccess::OutlookDown,
+            "CAL-SHARED-101" => NoAccess::NoPermission,
+            _ => NoAccess::NotShared,
+        }
     }
+}
+
+/// "אין לי גישה ליומן של איציק" / "I can't access Dana's calendar".
+pub fn no_access_title(who: &str, lang: Lang) -> String {
+    if lang == Lang::He {
+        format!("אין לי גישה ליומן {}", he_of(Some(who)))
+    } else {
+        format!("I can't access {who}'s calendar")
+    }
+}
+
+/// The one short line that tells how to fix it (no gendered pronoun for the person).
+pub fn no_access_hint(kind: NoAccess, code: &str, lang: Lang) -> String {
+    let he = lang == Lang::He;
+    match kind {
+        NoAccess::NotShared if he => "כדי שאוכל לבדוק, פתח ב-Outlook את היומן הזה (הוסף יומן ← מפנקס הכתובות)".into(),
+        NoAccess::NotShared => "To let me check, open that calendar in Outlook (Add Calendar → From Address Book)".into(),
+        NoAccess::NoPermission if he => "היומן נמצא ב-Outlook, אבל אין לי הרשאה לקרוא אותו. בקש מהבעלים לשתף אותו איתך".into(),
+        NoAccess::NoPermission => "The calendar is in Outlook, but I am not allowed to read it. Ask its owner to share it with you".into(),
+        NoAccess::Unreachable if he => "Outlook לא הגיב בזמן. נסה שוב בעוד רגע".into(),
+        NoAccess::Unreachable => "Outlook did not answer in time. Try again in a moment".into(),
+        NoAccess::OutlookDown | NoAccess::NewOutlook => error_text(code, lang).to_string(),
+    }
+}
+
+/// The question above the calendars offered when the asked person's own calendar is out of reach.
+pub fn no_access_choose(who: &str, lang: Lang) -> String {
+    if lang == Lang::He {
+        format!("{}. לבדוק אחד מהיומנים האלה?", no_access_title(who, lang))
+    } else {
+        format!("{}. Check one of these instead?", no_access_title(who, lang))
+    }
+}
+
+/// Several calendars fit the name: "איזה יומן של איציק?".
+pub fn which_calendar_of(who: &str, lang: Lang) -> String {
+    if lang == Lang::He {
+        format!("איזה יומן {}?", he_of(Some(who)))
+    } else {
+        format!("Which of {who}'s calendars?")
+    }
+}
+
+/// "היומן של איציק פנוי מחר בשעה 15:00" / "תפוס"; "היומן שלך ..." for the user.
+pub fn calendar_state(person: Option<&str>, busy: bool, day: &str, lang: Lang) -> String {
+    if lang == Lang::He {
+        format!("היומן {} {} {day}", he_of(person), if busy { "תפוס" } else { "פנוי" })
+    } else {
+        let whose = person.map_or("Your calendar".to_string(), |p| format!("{p}'s calendar"));
+        format!("{whose} is {} {day}", if busy { "busy" } else { "free" })
+    }
+}
+
+/// "תפוס: 10:00–11:00 · 14:00–15:30" (what free/busy shows: times only, no titles). A tentative or
+/// out-of-office block says so; with `with_date` every block carries its day.
+pub fn busy_summary(blocks: &[(DateTime<Utc>, DateTime<Utc>, BusyKind)], with_date: bool, lang: Lang) -> String {
+    const MAX: usize = 6;
+    let he = lang == Lang::He;
+    let mut parts: Vec<String> = blocks
+        .iter()
+        .take(MAX)
+        .map(|(a, b, kind)| {
+            let range = if with_date { format!("{} {}", dm(*a), range_hm(*a, *b)) } else { range_hm(*a, *b) };
+            match kind {
+                BusyKind::Busy => range,
+                BusyKind::Tentative => format!("{range} ({})", if he { "אולי" } else { "tentative" }),
+                BusyKind::Oof => format!("{range} ({})", busy_label(BusyKind::Oof, lang)),
+            }
+        })
+        .collect();
+    if blocks.len() > MAX {
+        parts.push("…".into());
+    }
+    format!("{}: {}", busy_label(BusyKind::Busy, lang), parts.join(" · "))
 }
 
 pub fn mailbox_suffix(kind: crate::outlook_mail::MailboxKind, lang: Lang) -> &'static str {
@@ -533,5 +657,83 @@ mod tests {
         assert_eq!(mailbox_suffix(K::Primary, Lang::He), "");
         assert_eq!(mailbox_question(Lang::He), "באיזו תיבת דואר לחפש?");
         assert_eq!(mailbox_question(Lang::En), "Which mailbox should I search?");
+    }
+
+    #[test]
+    fn a_name_takes_the_prefix_hebrew_gives_it() {
+        assert_eq!(he_to(Some("איציק")), "לאיציק");
+        assert_eq!(he_to(Some("דנה")), "לדנה");
+        assert_eq!(he_to(Some("בני")), "לבני");
+        assert_eq!(he_to(Some("לירון")), "ללירון");
+        assert_eq!(he_to(Some("  יובל ")), "ליובל");
+        assert_eq!(he_to(Some("איציק כהן")), "לאיציק כהן");
+        // a vav that opens the name is doubled, or "לורד" reads as "lord"
+        assert_eq!(he_to(Some("ורד")), "לוורד");
+        assert_eq!(he_to(Some("ויקי")), "לוויקי");
+        assert_eq!(he_to(Some("וון")), "לוון");
+        // not a Hebrew letter: a hyphen
+        assert_eq!(he_to(Some("Dana")), "ל-Dana");
+        assert_eq!(he_to(Some("Éric")), "ל-Éric");
+        assert_eq!(he_to(Some("3M")), "ל-3M");
+        assert_eq!(he_to(None), "לך");
+        assert_eq!(he_to(Some("  ")), "לך");
+        assert_eq!(he_of(Some("ורד")), "של ורד");
+    }
+
+    #[test]
+    fn headlines_for_names_that_open_with_vav_bet_and_lamed() {
+        assert_eq!(meetings_title(2, "מחר", Some("ורד"), Lang::He), "מחר יש לוורד 2 פגישות");
+        assert_eq!(meetings_title(0, "היום", Some("בני"), Lang::He), "היום אין לבני פגישות");
+        assert_eq!(meetings_title(1, "היום", Some("לירון"), Lang::He), "היום יש ללירון פגישה אחת");
+        assert_eq!(meetings_title(0, "היום", Some("דנה"), Lang::He), "היום אין לדנה פגישות");
+        assert_eq!(meetings_title(2, "tomorrow", Some("Ron"), Lang::En), "Ron has 2 meetings tomorrow");
+    }
+
+    #[test]
+    fn a_moment_and_a_part_of_a_day_say_which_day_and_hours() {
+        let now = local(10, 12, 0);
+        let at = |d, h, m| local(d, h, m);
+        assert_eq!(day_label(at(10, 15, 0), at(10, 16, 0), Grain::Instant, now, Lang::He), "בשעה 15:00");
+        assert_eq!(day_label(at(11, 15, 0), at(11, 16, 0), Grain::Instant, now, Lang::He), "מחר בשעה 15:00");
+        assert_eq!(day_label(at(11, 15, 0), at(11, 16, 0), Grain::Instant, now, Lang::En), "tomorrow at 15:00");
+        assert_eq!(day_label(at(14, 9, 0), at(14, 10, 0), Grain::Instant, now, Lang::He), "ביום ראשון בשעה 09:00");
+        // an explicit hour comes as a one-hour range
+        assert_eq!(day_label(at(11, 15, 0), at(11, 16, 0), Grain::Range, now, Lang::He), "מחר 15:00–16:00");
+        assert_eq!(day_label(at(11, 12, 0), at(12, 0, 0), Grain::Range, now, Lang::En), "tomorrow 12:00–24:00");
+        // a whole day, however it is labelled, has no hours
+        assert_eq!(day_label(at(11, 0, 0), at(12, 0, 0), Grain::Range, now, Lang::He), "מחר");
+        assert_eq!(day_label(at(11, 0, 0), at(12, 0, 0), Grain::Day, now, Lang::He), "מחר");
+    }
+
+    #[test]
+    fn no_access_texts_name_the_person_and_the_fix() {
+        assert_eq!(no_access_title("איציק", Lang::He), "אין לי גישה ליומן של איציק");
+        assert_eq!(no_access_title("Dana", Lang::En), "I can't access Dana's calendar");
+        assert_eq!(NoAccess::from_code("OUTLOOK-107"), NoAccess::NotShared);
+        assert_eq!(NoAccess::from_code("MAIL-109"), NoAccess::NotShared);
+        assert_eq!(NoAccess::from_code("CAL-SHARED-101"), NoAccess::NoPermission);
+        assert_eq!(NoAccess::from_code("CAL-SHARED-104"), NoAccess::Unreachable);
+        assert_eq!(NoAccess::from_code("OUTLOOK-101"), NoAccess::OutlookDown);
+        assert_eq!(NoAccess::from_code("OUTLOOK-104"), NoAccess::NewOutlook);
+        assert_eq!(no_access_hint(NoAccess::NotShared, "OUTLOOK-107", Lang::He), "כדי שאוכל לבדוק, פתח ב-Outlook את היומן הזה (הוסף יומן ← מפנקס הכתובות)");
+        assert_eq!(no_access_hint(NoAccess::OutlookDown, "OUTLOOK-101", Lang::En), "Outlook is not running. Open it and try again");
+        assert_eq!(no_access_choose("איציק", Lang::He), "אין לי גישה ליומן של איציק. לבדוק אחד מהיומנים האלה?");
+        assert_eq!(which_calendar_of("איציק", Lang::He), "איזה יומן של איציק?");
+        assert_eq!(which_calendar_of("Dana", Lang::En), "Which of Dana's calendars?");
+    }
+
+    #[test]
+    fn busy_times_and_calendar_state() {
+        let t = |h, m| local(10, h, m).with_timezone(&Utc);
+        let blocks = [(t(10, 0), t(11, 0), BusyKind::Busy), (t(14, 0), t(15, 30), BusyKind::Tentative), (t(16, 0), t(17, 0), BusyKind::Oof)];
+        assert_eq!(busy_summary(&blocks, false, Lang::He), "תפוס: 10:00–11:00 · 14:00–15:30 (אולי) · 16:00–17:00 (מחוץ למשרד)");
+        assert_eq!(busy_summary(&blocks[..1], true, Lang::En), "Busy: 10/03 10:00–11:00");
+        let many: Vec<_> = (0..8).map(|_| blocks[0]).collect();
+        assert!(busy_summary(&many, false, Lang::He).ends_with('…'));
+        assert_eq!(calendar_state(Some("איציק"), false, "מחר", Lang::He), "היומן של איציק פנוי מחר");
+        assert_eq!(calendar_state(Some("איציק"), true, "מחר", Lang::He), "היומן של איציק תפוס מחר");
+        assert_eq!(calendar_state(None, true, "היום", Lang::He), "היומן שלך תפוס היום");
+        assert_eq!(calendar_state(Some("Dana"), false, "today", Lang::En), "Dana's calendar is free today");
+        assert_eq!(calendar_state(None, true, "today", Lang::En), "Your calendar is busy today");
     }
 }
