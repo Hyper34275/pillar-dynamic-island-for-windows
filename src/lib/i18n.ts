@@ -61,7 +61,7 @@ const en = {
   "calendar.unsilence": "Turn notifications back on",
   "calendar.sources": "Calendar sources",
   "calendar.sourcesSummary": "{active} of {total} in use",
-  "calendar.sourcesHint": "Choose calendars in Outlook; the island follows your selection.",
+  "calendar.sourcesHint": "Switch calendars on or off here or in Outlook; the two stay in step.",
   "calendar.sourcesRemembered": "Outlook isn't showing its calendar right now, so the last selection is used.",
   "calendar.sourcesPrimaryOnly": "Open the calendar in Outlook once to include the calendars you selected there.",
   "calendar.kindPrimary": "My calendar",
@@ -72,6 +72,9 @@ const en = {
   "calendar.sourceNotSelected": "Not selected in Outlook",
   "calendar.sourceUnavailable": "Unavailable",
   "calendar.sourcePending": "Updating…",
+  "calendar.sourceOff": "Off",
+  "calendar.sourcePendingOutlook": "Outlook follows when its calendar is open",
+  "calendar.sourceSwitchFailed": "Couldn't change {name}. Try again.",
   "calendar.lastSynced": "Last updated {time}",
 
   "reminder.inMinutes": {
@@ -303,7 +306,7 @@ const he: Record<MessageKey, Message> = {
   "calendar.unsilence": "החזר את ההתראות",
   "calendar.sources": "מקורות יומן",
   "calendar.sourcesSummary": "{active} מתוך {total} פעילים",
-  "calendar.sourcesHint": "בוחרים יומנים ב-Outlook, והאי עוקב אחרי הבחירה.",
+  "calendar.sourcesHint": "מדליקים ומכבים יומנים כאן או ב-Outlook, והשניים מתעדכנים יחד.",
   "calendar.sourcesRemembered": "Outlook לא מציג כרגע את לוח השנה, לכן נעשה שימוש בבחירה האחרונה.",
   "calendar.sourcesPrimaryOnly": "פתחו פעם אחת את לוח השנה ב-Outlook כדי לכלול את היומנים שסימנתם שם.",
   "calendar.kindPrimary": "היומן שלי",
@@ -314,6 +317,9 @@ const he: Record<MessageKey, Message> = {
   "calendar.sourceNotSelected": "לא מסומן ב-Outlook",
   "calendar.sourceUnavailable": "לא זמין",
   "calendar.sourcePending": "מתעדכן…",
+  "calendar.sourceOff": "כבוי",
+  "calendar.sourcePendingOutlook": "יתעדכן ב-Outlook כשלוח השנה ייפתח",
+  "calendar.sourceSwitchFailed": "לא ניתן היה לשנות את {name}. נסו שוב.",
   "calendar.lastSynced": "עודכן לאחרונה ב-{time}",
 
   "reminder.inMinutes": {

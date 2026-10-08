@@ -350,6 +350,9 @@ export const ipc = {
   outlookRespondInvite: (id: string, response: InviteResponse) =>
     callVoid("outlook_respond_invite", { id, response }, { timeoutMs: 65_000 }),
 
+  /** Only ever from an explicit click on a calendar's switch: the island follows at once, Outlook's checkbox when Outlook shows its calendar. */
+  outlookSetCalendarSelected: (id: string, selected: boolean) => callVoid("outlook_set_calendar_selected", { id, selected }, { timeoutMs: 5000 }),
+
   /** Only ever from an explicit click, with a link the backend itself reported (event.meetingUrl). */
   openMeetingUrl: (url: string) => callVoid("open_meeting_url", { url }),
 

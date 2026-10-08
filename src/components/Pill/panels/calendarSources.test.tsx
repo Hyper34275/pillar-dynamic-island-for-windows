@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { CalendarView } from "./CalendarTab";
 import { CalendarSources } from "./CalendarSources";
 import { MeetingAlert, meetingAlertAnnouncement } from "../MeetingAlert";
-import { eventSourceLabel, sourceCounts, sourceStatusKeys } from "../../../lib/calendar/sources";
+import { eventSourceLabel, openRequests, sourceCounts, sourceStatusKeys, withRequest } from "../../../lib/calendar/sources";
 import type { CalendarEventDto, CalendarSnapshot, CalendarSourceDto, CalendarSourcesReport } from "../../../lib/calendar/types";
 import type { ReminderAlert } from "../../../lib/reminders/types";
 
@@ -32,7 +32,7 @@ function event(id: string, startMin: number, extra: Partial<CalendarEventDto> = 
 }
 
 function source(id: string, extra: Partial<CalendarSourceDto> = {}): CalendarSourceDto {
-  return { id, name: id, group: "shared", kind: "shared", selected: true, active: true, state: "ok", errorCode: null, eventCount: 1, lastReadUnixMs: NOW, ...extra };
+  return { id, name: id, group: "shared", kind: "shared", selected: true, active: true, pendingInOutlook: false, state: "ok", errorCode: null, eventCount: 1, lastReadUnixMs: NOW, ...extra };
 }
 
 const report = (sources: CalendarSourceDto[], selection: CalendarSourcesReport["selection"] = "outlook"): CalendarSourcesReport => ({
@@ -107,10 +107,36 @@ describe("calendar sources list", () => {
     expect(open).toContain("Not selected in Outlook");
     expect(open).toContain("Unavailable · CAL-SHARED-101");
     expect(open).toContain("Always included");
-    expect(open).toContain("Choose calendars in Outlook");
+    expect(open).toContain("here or in Outlook");
     expect(renderToStaticMarkup(<CalendarSources report={report(sources, "remembered")} defaultOpen />)).toContain("the last selection is used");
   });
 
+
+  it("offers a switch for every calendar but the default one, labelled with its name", () => {
+    const open = renderToStaticMarkup(<CalendarSources report={report(sources)} defaultOpen />);
+    const switches = [...open.matchAll(/role="switch" aria-checked="(true|false)" aria-label="([^"]*)"/g)].map((m) => [m[2], m[1]]);
+    expect(switches).toEqual(sources.filter((s) => s.kind !== "primary").map((s) => [s.name, String(s.active)]));
+  });
+
+  it("shows a switch the user turned at once, and says Outlook follows when its calendar is open", () => {
+    const off = sources[2];
+    const asked = withRequest(off, { on: true, atMs: NOW });
+    expect(asked).toMatchObject({ active: true, pendingInOutlook: true, state: "pending" });
+    expect(sourceStatusKeys(asked)).toEqual(["calendar.kindShared", "calendar.sourcePending", "calendar.sourcePendingOutlook"]);
+    expect(sourceStatusKeys({ ...sources[1], active: false, pendingInOutlook: true })).toEqual(["calendar.kindShared", "calendar.sourceOff", "calendar.sourcePendingOutlook"]);
+    // Already what the report says: nothing to hold.
+    expect(withRequest(sources[1], { on: true, atMs: NOW })).toBe(sources[1]);
+  });
+
+  it("holds a request until a report reflects it, and never longer than 15 s", () => {
+    const off = sources[2];
+    const requests = { [off.id]: { on: true, atMs: NOW } };
+    expect(openRequests(report(sources), requests, NOW + 1_000)).toEqual(requests);
+    expect(openRequests(report(sources), requests, NOW + 16_000)).toEqual({});
+    const caughtUp = report(sources.map((s) => (s.id === off.id ? { ...s, active: true, selected: true } : s)));
+    expect(openRequests(caughtUp, requests, NOW + 1_000)).toEqual({});
+    expect(openRequests(report([sources[0]]), requests, NOW + 1_000)).toEqual({});
+  });
   it("appears only when there is more than the default calendar", () => {
     const one = renderToStaticMarkup(<CalendarView nowMs={NOW} snapshot={snapshot([event("a", 30)], { sources: report([sources[0]]) })} />);
     expect(one).not.toContain("Calendar sources");

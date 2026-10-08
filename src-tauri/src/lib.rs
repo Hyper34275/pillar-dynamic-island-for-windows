@@ -134,6 +134,7 @@ pub fn run() {
             dnd::dnd_set,
             outlook::outlook_open_calendar,
             outlook::outlook_respond_invite,
+            outlook::outlook_set_calendar_selected,
             outlook::open_meeting_url,
             backdrop::get_island_backdrop,
             backdrop::refresh_island_backdrop,

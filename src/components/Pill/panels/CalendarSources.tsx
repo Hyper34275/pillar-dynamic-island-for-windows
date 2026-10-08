@@ -1,13 +1,16 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { sourceDirection, textDirection } from "../../../design/direction";
 import { color, compact } from "../../../design/tokens";
 import { t } from "../../../lib/i18n";
-import { sourceCounts, sourceStatusKeys } from "../../../lib/calendar/sources";
+import { ipc } from "../../../lib/ipc";
+import { canSwitchSource, openRequests, sourceCounts, sourceStatusKeys, withRequest, type SwitchRequest } from "../../../lib/calendar/sources";
 import type { CalendarSourceDto, CalendarSourcesReport } from "../../../lib/calendar/types";
-import { GROUP_CLASS } from "../ui/primitives";
+import { GROUP_CLASS, Switch } from "../ui/primitives";
 
-/** One calendar: a mark (filled = contributes events), its name, and what it is / why it is quiet. */
-function SourceRow({ source }: { source: CalendarSourceDto }) {
+type SetSelected = (id: string, selected: boolean) => Promise<boolean>;
+
+/** One calendar: a mark (filled = contributes events), its name, what it is / why it is quiet, and its switch. */
+function SourceRow({ source, onSwitch }: { source: CalendarSourceDto; onSwitch: (source: CalendarSourceDto) => void }) {
   const name = source.name || t(sourceStatusKeys(source)[0]);
   const detail = sourceStatusKeys(source).map((key) => t(key));
   if (source.state === "unavailable" && source.errorCode) detail.push(source.errorCode);
@@ -32,19 +35,46 @@ function SourceRow({ source }: { source: CalendarSourceDto }) {
           {detail.join(" · ")}
         </span>
       </div>
+      {canSwitchSource(source) && <Switch checked={source.active} onChange={() => onSwitch(source)} label={name} />}
     </li>
   );
 }
 
 /**
- * Which calendars the island found in Outlook and which it follows, for visibility and support only:
- * selection happens in Outlook. Collapsed to one summary line by default.
+ * Which calendars the island found in Outlook and which it follows. Each one but the default
+ * calendar has a switch: the island follows at once, and Outlook's own checkbox follows when
+ * Outlook shows its calendar. Collapsed to one summary line by default.
  */
-export function CalendarSources({ report, defaultOpen = false }: { report: CalendarSourcesReport; defaultOpen?: boolean }) {
+export function CalendarSources({
+  report,
+  defaultOpen = false,
+  setSelected = ipc.outlookSetCalendarSelected,
+}: {
+  report: CalendarSourcesReport;
+  defaultOpen?: boolean;
+  setSelected?: SetSelected;
+}) {
   const [open, setOpen] = useState(defaultOpen);
-  const { total, active } = sourceCounts(report);
+  const [requests, setRequests] = useState<Record<string, SwitchRequest>>({});
+  const [failed, setFailed] = useState<string | null>(null);
+  // A new report settles every request it reflects.
+  useEffect(() => setRequests((r) => openRequests(report, r, Date.now())), [report]);
+
+  const sources = report.sources.map((s) => withRequest(s, requests[s.id]));
+  const { total, active } = sourceCounts({ ...report, sources });
+  const onSwitch = (source: CalendarSourceDto) => {
+    const on = !source.active;
+    setFailed(null);
+    setRequests((r) => ({ ...r, [source.id]: { on, atMs: Date.now() } }));
+    void setSelected(source.id, on).then((ok) => {
+      if (ok) return;
+      setRequests(({ [source.id]: _, ...rest }) => rest);
+      setFailed(t("calendar.sourceSwitchFailed", { name: source.name }));
+    });
+  };
   const note =
-    report.selection === "remembered" ? t("calendar.sourcesRemembered") : report.selection === "primaryOnly" ? t("calendar.sourcesPrimaryOnly") : t("calendar.sourcesHint");
+    failed ??
+    (report.selection === "remembered" ? t("calendar.sourcesRemembered") : report.selection === "primaryOnly" ? t("calendar.sourcesPrimaryOnly") : t("calendar.sourcesHint"));
   return (
     <section aria-label={t("calendar.sources")} className="flex flex-col gap-1">
       <button
@@ -60,11 +90,13 @@ export function CalendarSources({ report, defaultOpen = false }: { report: Calen
       {open && (
         <>
           <ul className={GROUP_CLASS}>
-            {report.sources.map((source) => (
-              <SourceRow key={source.id} source={source} />
+            {sources.map((source) => (
+              <SourceRow key={source.id} source={source} onSwitch={onSwitch} />
             ))}
           </ul>
-          <p className="bidi px-3 text-micro text-fg-tertiary">{note}</p>
+          <p className="bidi px-3 text-micro text-fg-tertiary" role={failed ? "status" : undefined}>
+            {note}
+          </p>
         </>
       )}
     </section>

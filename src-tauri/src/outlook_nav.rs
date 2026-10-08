@@ -1,8 +1,10 @@
 //! Outlook's Calendar navigation pane: which calendars the user has (My Calendars, Shared
 //! Calendars, Other Calendars, groups of their own) and which of them are checked.
 //!
-//! Read-only. Nothing here selects, adds, removes, renames or reorders a calendar, switches a
-//! module or a view, or brings Outlook forward. In particular
+//! Read-only, with one exception: a calendar switched on or off in the island is checked or
+//! unchecked in Outlook too, and only while Outlook shows those checkboxes ([`scan`]). Nothing
+//! here adds, removes, renames or reorders a calendar, switches a module or a view, or brings
+//! Outlook forward. In particular
 //! `NavigationGroups.GetDefaultNavigationGroup` is never called: it *creates* a missing
 //! group in the user's pane.
 //!
@@ -248,8 +250,12 @@ impl FolderCache {
 /// `own_store_id` is the profile's default store. Only an Outlook-level failure is an error: a
 /// group or calendar that cannot be read is skipped or listed as unavailable. A scan that ran
 /// out of time before opening every new entry is partial and not [`NavScan::trusted`], so it
-/// never replaces the remembered checkboxes.
-pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache) -> ComResult<NavScan> {
+/// never replaces the remembered checkboxes. `apply` (calendar id -> checked) is written to
+/// Outlook's checkboxes when they are on screen; the scan reports the result.
+///
+/// This is the one place the island changes anything in Outlook's pane, and only on the user's
+/// own request from the island.
+pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache, apply: &HashMap<String, bool>) -> ComResult<NavScan> {
     let started = Instant::now();
     let over_budget = || started.elapsed().as_millis() > SCAN_BUDGET_MS;
     let trusted = selection_is_trustworthy(explorer)?;
@@ -291,7 +297,7 @@ pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache
                 }
             };
             seen.push(key);
-            let calendar = match folder {
+            let mut calendar = match folder {
                 FolderRef::NotCalendar => continue,
                 FolderRef::Calendar { entry_id, store_id } => NavCalendar {
                     id: hash16(&format!("{store_id}|{entry_id}")),
@@ -314,6 +320,19 @@ pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache
                     error: Some(code),
                 },
             };
+            // A switch turned in the island. Written only while the checkboxes are on screen,
+            // where setting IsSelected is exactly the user's click on one; elsewhere it would
+            // mean "select and display" and could move Outlook away from what it shows.
+            if let Some(&want) = apply.get(&calendar.id).filter(|&&want| trusted && want != calendar.selected) {
+                match contained(nav.put("IsSelected", com::variant_from_bool(want)))? {
+                    Ok(()) => {
+                        dlog!("INFO", "outlook", "calendar {} {} in Outlook from the island", crate::debug_log::hash_id(&calendar.id), if want { "checked" } else { "unchecked" });
+                        calendar.selected = want;
+                    }
+                    // E.g. the last checked calendar, which Outlook keeps checked.
+                    Err(e) => dlog!("WARN", "outlook", "calendar {} not changed in Outlook: {}", crate::debug_log::hash_id(&calendar.id), e),
+                }
+            }
             if !out.calendars.iter().any(|c| c.id == calendar.id) {
                 out.calendars.push(calendar);
             }
@@ -340,11 +359,14 @@ pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache
 // =============================================================================
 
 /// The last trustworthy readout of the checkboxes: calendar id -> checked. Reconciled with
-/// Outlook on every read that can see them; never a second selection system (nothing here is
-/// ever written back to Outlook, and Outlook always wins).
+/// Outlook on every read that can see them; never a second selection system. A switch turned
+/// in the island is a request to Outlook: it counts at once, and is written to Outlook's own
+/// checkbox by the next scan that sees the checkboxes ([`scan`]); after that, Outlook wins again.
 #[derive(Debug, Default)]
 pub struct SelectionMemory {
     checked: HashMap<String, bool>,
+    /// Turned in the island, not yet written to Outlook: calendar id -> checked.
+    pending: HashMap<String, bool>,
     /// Hash of the Outlook profile the readout belongs to.
     profile: Option<String>,
     /// Changed since it was last saved.
@@ -356,6 +378,8 @@ struct SavedSelection {
     v: u32,
     profile: String,
     checked: HashMap<String, bool>,
+    #[serde(default)]
+    pending: HashMap<String, bool>,
 }
 
 const SELECTION_FILE: &str = "calendar_selection.json";
@@ -370,16 +394,32 @@ impl SelectionMemory {
         }
         self.profile = Some(profile.to_string());
         self.dirty = false;
-        self.checked = dir.and_then(|d| load_selection(&d.join(SELECTION_FILE), profile)).unwrap_or_default();
+        let saved = dir.and_then(|d| load_selection(&d.join(SELECTION_FILE), profile)).unwrap_or_default();
+        (self.checked, self.pending) = saved;
     }
 
-    /// Which calendars are checked, and how that is known. A trusted scan replaces the memory.
+    /// The island asks for calendar `id` to be checked or not. It counts from now on; Outlook
+    /// itself follows when a scan can see its checkboxes.
+    pub fn request(&mut self, id: &str, checked: bool) {
+        self.checked.insert(id.to_string(), checked);
+        self.pending.insert(id.to_string(), checked);
+        self.dirty = true;
+    }
+
+    /// The requests not written to Outlook yet.
+    pub fn pending(&self) -> &HashMap<String, bool> {
+        &self.pending
+    }
+
+    /// Which calendars are checked, and how that is known. A trusted scan replaces the memory;
+    /// it has also written every pending request it could (see [`scan`]), so none is left.
     pub fn resolve(&mut self, scan: Option<&NavScan>) -> (HashMap<String, bool>, SelectionOrigin) {
         match scan {
             Some(s) if s.trusted => {
                 let readout: HashMap<String, bool> = s.calendars.iter().map(|c| (c.id.clone(), c.selected)).collect();
-                if readout != self.checked {
+                if readout != self.checked || !self.pending.is_empty() {
                     self.checked = readout;
+                    self.pending.clear();
                     self.dirty = true;
                 }
                 (self.checked.clone(), SelectionOrigin::Outlook)
@@ -395,7 +435,7 @@ impl SelectionMemory {
         if !self.dirty {
             return;
         }
-        let saved = SavedSelection { v: 1, profile: profile.clone(), checked: self.checked.clone() };
+        let saved = SavedSelection { v: 1, profile: profile.clone(), checked: self.checked.clone(), pending: self.pending.clone() };
         match serde_json::to_vec(&saved).map_err(std::io::Error::other).and_then(|b| crate::reminder_state::write_atomic(&dir.join(SELECTION_FILE), &b)) {
             Ok(()) => self.dirty = false,
             Err(e) => dlog!("WARN", "outlook", "calendar selection not saved: {}", e),
@@ -403,13 +443,19 @@ impl SelectionMemory {
     }
 }
 
-fn load_selection(path: &Path, profile: &str) -> Option<HashMap<String, bool>> {
+/// A calendar id as the scan makes them: 16 hex digits.
+pub fn is_calendar_id(id: &str) -> bool {
+    id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The saved checkboxes and pending requests for `profile`.
+fn load_selection(path: &Path, profile: &str) -> Option<(HashMap<String, bool>, HashMap<String, bool>)> {
     if std::fs::metadata(path).ok()?.len() > MAX_SELECTION_BYTES {
         return None;
     }
     let saved: SavedSelection = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-    let valid = |id: &String| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit());
-    (saved.v == 1 && saved.profile == profile && saved.checked.keys().all(valid)).then_some(saved.checked)
+    let valid = saved.checked.keys().chain(saved.pending.keys()).all(|id| is_calendar_id(id));
+    (saved.v == 1 && saved.profile == profile && valid).then_some((saved.checked, saved.pending))
 }
 
 /// The per-user folder the selection readout is kept in, when there is one.
@@ -560,6 +606,50 @@ mod tests {
         let (sel, _) = m.resolve(Some(&scan_of(true, vec![cal("aaaaaaaaaaaaaaaa", false), cal("bbbbbbbbbbbbbbbb", true)])));
         assert_eq!(sel["aaaaaaaaaaaaaaaa"], false);
         assert_eq!(sel["bbbbbbbbbbbbbbbb"], true);
+    }
+
+    #[test]
+    fn a_switch_in_the_island_counts_at_once_and_waits_for_outlooks_checkboxes() {
+        let (a, b) = ("aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb");
+        let mut m = SelectionMemory::default();
+        m.resolve(Some(&scan_of(true, vec![cal(a, true), cal(b, false)])));
+        // Switched on in the island while Outlook shows Mail: on now, still owed to Outlook.
+        m.request(b, true);
+        let (sel, origin) = m.resolve(Some(&scan_of(false, vec![cal(a, false), cal(b, false)])));
+        assert_eq!(origin, SelectionOrigin::Remembered);
+        assert!(sel[a] && sel[b]);
+        assert_eq!(m.pending().get(b), Some(&true));
+        // Outlook shows its calendar: the scan wrote it (the readout has it checked), nothing is owed.
+        let (sel, origin) = m.resolve(Some(&scan_of(true, vec![cal(a, true), cal(b, true)])));
+        assert_eq!(origin, SelectionOrigin::Outlook);
+        assert!(sel[b]);
+        assert!(m.pending().is_empty());
+        // Outlook refused (or the calendar went): its own checkbox wins, and nothing is owed either.
+        m.request(a, false);
+        let (sel, _) = m.resolve(Some(&scan_of(true, vec![cal(a, true), cal(b, true)])));
+        assert!(sel[a]);
+        assert!(m.pending().is_empty());
+    }
+
+    #[test]
+    fn a_switch_owed_to_outlook_survives_a_restart() {
+        let dir = scratch("pending");
+        let mut m = SelectionMemory::default();
+        m.switch_profile("p1hash", Some(&dir));
+        m.request("cccccccccccccccc", true);
+        m.save_if_dirty(Some(&dir));
+        let mut again = SelectionMemory::default();
+        again.switch_profile("p1hash", Some(&dir));
+        assert_eq!(again.pending().get("cccccccccccccccc"), Some(&true));
+        assert_eq!(again.resolve(None).0["cccccccccccccccc"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calendar_ids_are_16_hex_digits() {
+        assert!(is_calendar_id("0123456789abcdef"));
+        assert!(!is_calendar_id("0123456789abcde"));
+        assert!(!is_calendar_id("Support Team 123"));
     }
 
     fn scratch(name: &str) -> PathBuf {

@@ -352,8 +352,9 @@ call Tauri IPC: they meet only in Rust (`settings::apply_patch`, `notes::save`, 
 - No global mouse/keyboard hook, no raw-input registration (`DeviceEventFilter::Always`), no injection;
   fullscreen detection uses out-of-context WinEvent hooks.
 - Outlook: attach-only (`GetActiveObject`), same session + SID + elevation, read-only, safe properties only,
-  every object released after each read. The one write-like call is showing the user's own Outlook on its
-  calendar after a click on an invitation (`AllowSetForegroundWindow` for that Outlook PID only, never `ASFW_ANY`).
+  every object released after each read. The write-like calls, each only after a click in the island: showing the
+  user's own Outlook on its calendar, answering an invitation, and checking or unchecking a calendar in Outlook's
+  Calendar pane (only while that pane is on screen; see CALENDAR_SHARED.md). Showing Outlook uses `AllowSetForegroundWindow` for that Outlook PID only, never `ASFW_ANY`.
 - Notifications: read-only (`RemoveNotification` is never called); activation of a toast's app is limited to
   AUMIDs the app has itself seen (allow-list of 64) and validated against shell metacharacters.
 - External programs are started by absolute path (`explorer.exe` from the Windows known folder).

@@ -77,7 +77,31 @@ So:
 The profile's default calendar is **always** active, even when it is unchecked in Outlook. This
 keeps the existing personal-calendar behaviour and its reminders unchanged.
 
-The island never sets `IsSelected`, never switches module or view, and never activates Outlook.
+The island sets `IsSelected` only for a switch the employee turned in the island, and only while
+Outlook shows its checkboxes (below). It never switches module or view and never activates Outlook.
+
+## Switching calendars from the island
+
+Since 1.0.9 every calendar in the sources list except the default one has a switch. A switch is a
+request to Outlook, not a second selection:
+
+1. `outlook_set_calendar_selected(id, selected)` queues the request and asks for a sync. The id is
+   a calendar id from the last report (16 hex). Requests for the default calendar or an unknown id
+   are dropped.
+2. The next regular sync puts it into the selection memory (`SelectionMemory::request`): it counts
+   in the island at once, and is kept as *pending* (also in `calendar_selection.json`, so it
+   survives a restart). The source reports `pendingInOutlook: true`, and the list says "Outlook
+   follows when its calendar is open".
+3. The first scan that sees Outlook's checkboxes (the trusted state above) sets
+   `NavigationFolder.IsSelected` on that entry. That is exactly what the employee's own click on
+   the checkbox does. The readout then replaces the memory and nothing is pending any more. If
+   Outlook refuses (it keeps the last checked calendar checked) or the calendar is gone, Outlook's
+   checkbox wins.
+
+`IsSelected` is never set in any other state: outside the Calendar module it means "select and
+display" and could move Outlook away from what the employee is looking at. The island still never
+switches module or view and never activates Outlook. The page holds a switch it just turned until a
+report reflects it, at most 15 s, and turns it back with a message if the request could not be sent.
 
 ## Live updates
 

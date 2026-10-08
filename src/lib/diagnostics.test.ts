@@ -173,10 +173,10 @@ describe("calendar sources in diagnostics", () => {
       listener: true,
       discoveredUnixMs: Date.UTC(2026, 9, 6, 10, 40, 3),
       sources: [
-        { id: "a", name: "My Calendar", group: "my", kind: "primary", selected: true, active: true, state: "ok", errorCode: null, eventCount: 3, lastReadUnixMs: 1 },
-        { id: "b", name: "Support — Dana Levi", group: "shared", kind: "shared", selected: true, active: true, state: "ok", errorCode: null, eventCount: 2, lastReadUnixMs: 1 },
-        { id: "c", name: "Management (CEO)", group: "shared", kind: "shared", selected: false, active: false, state: "notSelected", errorCode: null, eventCount: 0, lastReadUnixMs: null },
-        { id: "d", name: "Old Dept", group: "other", kind: "other", selected: true, active: true, state: "unavailable", errorCode: "CAL-SHARED-101", eventCount: 0, lastReadUnixMs: null },
+        { id: "a", name: "My Calendar", group: "my", kind: "primary", selected: true, active: true, pendingInOutlook: false, state: "ok", errorCode: null, eventCount: 3, lastReadUnixMs: 1 },
+        { id: "b", name: "Support — Dana Levi", group: "shared", kind: "shared", selected: true, active: true, pendingInOutlook: false, state: "ok", errorCode: null, eventCount: 2, lastReadUnixMs: 1 },
+        { id: "c", name: "Management (CEO)", group: "shared", kind: "shared", selected: false, active: false, pendingInOutlook: false, state: "notSelected", errorCode: null, eventCount: 0, lastReadUnixMs: null },
+        { id: "d", name: "Old Dept", group: "other", kind: "other", selected: true, active: true, pendingInOutlook: false, state: "unavailable", errorCode: "CAL-SHARED-101", eventCount: 0, lastReadUnixMs: null },
       ],
     },
   };

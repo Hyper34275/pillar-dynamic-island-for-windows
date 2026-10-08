@@ -166,6 +166,7 @@ describe("normalizeSources", () => {
     kind: "shared",
     selected: true,
     active: true,
+    pendingInOutlook: false,
     state: "ok",
     errorCode: null,
     eventCount: 4,
@@ -186,7 +187,7 @@ describe("normalizeSources", () => {
   it("drops sources without an id and reads unknown values the safe way", () => {
     const report = normalizeSources({ sources: [null, { name: "no id" }, { id: "x", kind: "boss", state: "??", active: "yes" }], selection: "x" });
     expect(report?.sources).toEqual([
-      { id: "x", name: "", group: "unknown", kind: "shared", selected: false, active: false, state: "unavailable", errorCode: null, eventCount: 0, lastReadUnixMs: null },
+      { id: "x", name: "", group: "unknown", kind: "shared", selected: false, active: false, pendingInOutlook: false, state: "unavailable", errorCode: null, eventCount: 0, lastReadUnixMs: null },
     ]);
     expect(report?.selection).toBe("primaryOnly");
     expect(report?.listener).toBe(false);

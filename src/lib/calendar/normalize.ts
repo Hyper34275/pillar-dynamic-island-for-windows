@@ -100,6 +100,7 @@ export function normalizeSource(raw: unknown): CalendarSourceDto | null {
     kind,
     selected: raw.selected === true,
     active: raw.active === true,
+    pendingInOutlook: raw.pendingInOutlook === true,
     state: oneOf(raw.state, STATES, "unavailable"),
     errorCode: nonEmptyString(raw.errorCode),
     eventCount: Math.max(0, Math.round(finiteNumber(raw.eventCount) ?? 0)),

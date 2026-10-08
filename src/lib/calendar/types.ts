@@ -26,6 +26,7 @@ export type CalendarSourceDto = {
   kind: CalendarSourceKind;
   selected: boolean; // checked in Outlook (as last known)
   active: boolean; // contributes events (selected, or the primary calendar)
+  pendingInOutlook: boolean; // switched in the island; Outlook's checkbox follows once Outlook shows its calendar
   state: CalendarSourceState;
   errorCode: string | null; // e.g. "CAL-SHARED-101"
   eventCount: number;

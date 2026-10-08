@@ -143,6 +143,8 @@ pub struct CalendarSourceDto {
     pub selected: bool,
     /// Contributes events: selected, or the primary calendar (always on).
     pub active: bool,
+    /// Switched in the island; Outlook's own checkbox follows once Outlook shows its calendar.
+    pub pending_in_outlook: bool,
     pub state: SourceState,
     /// e.g. "CAL-SHARED-101"
     pub error_code: Option<String>,
@@ -1374,6 +1376,7 @@ mod tests {
                     kind: if i == 0 { SourceKind::Primary } else { SourceKind::Shared },
                     selected: true,
                     active: true,
+                    pending_in_outlook: false,
                     state: SourceState::Ok,
                     error_code: None,
                     event_count: 0,

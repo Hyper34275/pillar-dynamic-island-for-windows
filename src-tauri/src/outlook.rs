@@ -846,6 +846,28 @@ const READ_BUDGET_MS: u128 = 6_000;
 /// A calendar whose read hung the worker is left out this long.
 const QUARANTINE_SECS: u64 = 900;
 
+/// Switches turned in the island (calendar id, checked), for the worker's next sync.
+static SELECTION_REQUESTS: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
+
+fn take_selection_requests() -> Vec<(String, bool)> {
+    std::mem::take(&mut *SELECTION_REQUESTS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Switch a calendar on or off from the island: it counts in the island at the next sync (asked
+/// for at once) and is checked or unchecked in Outlook as soon as Outlook shows its calendar.
+#[tauri::command]
+pub fn outlook_set_calendar_selected(id: String, selected: bool) -> Result<(), String> {
+    if !outlook_nav::is_calendar_id(&id) {
+        return Err("OUTLOOK-108: unknown calendar".into());
+    }
+    dlog!("INFO", "outlook", "calendar {} switched {} in the island", hash_id(&id), if selected { "on" } else { "off" });
+    let mut requests = SELECTION_REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    requests.retain(|(i, _)| *i != id);
+    requests.push((id, selected));
+    drop(requests);
+    crate::calendar::calendar_refresh()
+}
+
 /// The secondary calendar being read right now (its id), for the watchdog to blame.
 static READING: Mutex<Option<String>> = Mutex::new(None);
 /// Calendar id -> until when it is left out.
@@ -1056,7 +1078,7 @@ impl OutlookSource {
     /// Scan the Calendar navigation pane of the active explorer, and keep (or re-arm) the
     /// notifications on it. `None` when Outlook shows no main window. Never changes what
     /// Outlook shows.
-    fn discover(&mut self, app: &mut Dispatch, own_store: &str) -> Result<Option<NavScan>, SourceError> {
+    fn discover(&mut self, app: &mut Dispatch, own_store: &str, apply: &HashMap<String, bool>) -> Result<Option<NavScan>, SourceError> {
         // A watcher from an Outlook that has since gone (or restarted) is let go here.
         if self.watcher.as_mut().is_some_and(|w| !w.alive()) {
             self.watcher = None;
@@ -1076,7 +1098,7 @@ impl OutlookSource {
             self.watcher = None;
             return Ok(None);
         };
-        let scan = match outlook_nav::scan(&mut explorer, own_store, &mut self.folders) {
+        let scan = match outlook_nav::scan(&mut explorer, own_store, &mut self.folders, apply) {
             Ok(scan) => scan,
             Err(e) if e.is_disconnected() || e.is_busy() => return Err(map_com("OUTLOOK-107", e)),
             Err(e) => {
@@ -1220,7 +1242,14 @@ impl OutlookSource {
 
         // Discovery: the regular sync only. A range read uses what the last one found.
         if !window.range {
-            let mut scan = self.discover(&mut app, &primary.1)?;
+            // Switches turned in the island since the last sync. The default calendar is always on.
+            for (id, checked) in take_selection_requests() {
+                if id != primary.2 && self.known.iter().any(|c| c.id == id) {
+                    self.selection.request(&id, checked);
+                }
+            }
+            let apply = self.selection.pending().clone();
+            let mut scan = self.discover(&mut app, &primary.1, &apply)?;
             if let Some(scan) = scan.as_mut() {
                 Self::mark_primary(&mut session, scan, &primary);
                 self.known = scan.calendars.clone();
@@ -1264,6 +1293,7 @@ impl OutlookSource {
             kind: SourceKind::Primary,
             selected: self.checked.get(&primary.2).copied().unwrap_or(true),
             active: true,
+            pending_in_outlook: false,
             state: SourceState::Ok,
             error_code: None,
             event_count: events.len(),
@@ -1279,6 +1309,7 @@ impl OutlookSource {
                 kind,
                 selected,
                 active: selected,
+                pending_in_outlook: self.selection.pending().contains_key(&cal.id),
                 state: SourceState::NotSelected,
                 error_code: None,
                 event_count: 0,

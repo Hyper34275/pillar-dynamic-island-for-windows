@@ -28,11 +28,38 @@ export function eventSourceLabel(event: Pick<CalendarEventDto, "sourceKind" | "c
 /** The secondary line of one source in the sources list: what it is, and why it gives nothing when it does not. */
 export function sourceStatusKeys(source: CalendarSourceDto): MessageKey[] {
   const keys: MessageKey[] = [KIND_LABEL[source.kind]];
-  if (source.kind === "primary") keys.push("calendar.sourceAlwaysOn");
-  else if (!source.active) keys.push("calendar.sourceNotSelected");
+  if (source.kind === "primary") return [...keys, "calendar.sourceAlwaysOn"];
+  if (!source.active) keys.push(source.pendingInOutlook ? "calendar.sourceOff" : "calendar.sourceNotSelected");
   else if (source.state === "unavailable") keys.push("calendar.sourceUnavailable");
   else if (source.state === "pending") keys.push("calendar.sourcePending");
+  if (source.pendingInOutlook) keys.push("calendar.sourcePendingOutlook");
   return keys;
+}
+
+/** Whether the island offers a switch for this calendar: every one but the user's default calendar, which is always on. */
+export function canSwitchSource(source: CalendarSourceDto): boolean {
+  return source.kind !== "primary";
+}
+
+/** A switch the user just turned, until a report from Outlook catches up with it (or 15 s go by). */
+export type SwitchRequest = { on: boolean; atMs: number };
+
+const REQUEST_HOLD_MS = 15_000;
+
+/** The calendar as the list should show it: the user's latest request wins until the backend reports it. */
+export function withRequest(source: CalendarSourceDto, request: SwitchRequest | undefined): CalendarSourceDto {
+  if (!request || request.on === source.active) return source;
+  return { ...source, active: request.on, selected: request.on, pendingInOutlook: true, state: request.on ? "pending" : "notSelected" };
+}
+
+/** Requests still worth holding against `report`: not yet reflected, and recent. */
+export function openRequests(report: CalendarSourcesReport, requests: Record<string, SwitchRequest>, nowMs: number): Record<string, SwitchRequest> {
+  const open: Record<string, SwitchRequest> = {};
+  for (const [id, request] of Object.entries(requests)) {
+    const source = report.sources.find((s) => s.id === id);
+    if (source && source.active !== request.on && nowMs - request.atMs < REQUEST_HOLD_MS) open[id] = request;
+  }
+  return open;
 }
 
 /** Discovered vs active counts. */
