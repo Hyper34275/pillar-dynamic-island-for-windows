@@ -28,7 +28,8 @@ pub struct FileHit {
     pub modified: Option<DateTime<Utc>>,
     pub size: Option<u64>,
     pub is_dir: bool,
-    /// Executable/script type: [`open_file`] only reveals it in Explorer.
+    /// Not on the allowlist of document/media/archive types (executables, scripts, shortcuts,
+    /// macro-enabled Office files, no extension, ...): [`open_file`] only reveals it in Explorer.
     pub risky: bool,
 }
 

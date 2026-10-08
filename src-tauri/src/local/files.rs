@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 const INDEX_DEADLINE_MS: u64 = 1_500;
 const INDEX_TOP: usize = 50;
 const INDEX_RETRY_AFTER: Duration = Duration::from_secs(60);
+/// A request unanswered this long means the worker hangs: it is abandoned and replaced.
+const INDEX_STALE: Duration = Duration::from_secs(10);
+/// The worker (and its connection to the search service) exits after this long without a request.
+const WORKER_IDLE: Duration = Duration::from_secs(300);
 
 const MAX_GROUPS: usize = 6;
 const MAX_ALTS: usize = 4;
@@ -31,7 +35,17 @@ const WALK_DEPTH: usize = 4;
 const WALK_BUDGET_MS: u64 = 700;
 const WALK_MAX_ENTRIES: usize = 20_000;
 
-const KEY_CAP: usize = 300;
+/// Keys kept for opening results: the assistant store keeps 20 queries (see `assistant::store`),
+/// each with at most `INDEX_TOP` file hits, so every card still shown can open its file.
+const STORE_QUERIES: usize = 20;
+const KEY_CAP: usize = INDEX_TOP * STORE_QUERIES;
+
+/// A whole file search (roots, index, walk, metadata) is abandoned after its budget plus this slack.
+const SEARCH_SLACK_MS: u64 = 300;
+/// A search thread older than this is treated as stuck (a dead share) and no longer blocks new ones.
+const SEARCH_STALE: Duration = Duration::from_secs(20);
+/// The folders are fixed, so the list (and the `is_dir` probes behind it) is cached.
+const ROOTS_TTL: Duration = Duration::from_secs(60);
 
 const ATTR_HIDDEN: u32 = 0x2;
 const ATTR_SYSTEM: u32 = 0x4;
@@ -39,8 +53,15 @@ const ATTR_REPARSE: u32 = 0x400;
 
 const SKIP_DIRS: [&str; 3] = ["node_modules", ".git", "appdata"];
 
-const RISKY_EXT: [&str; 17] = [
-    "exe", "bat", "cmd", "ps1", "vbs", "js", "jse", "wsf", "msi", "lnk", "scf", "hta", "com", "cpl", "reg", "vbe", "scr",
+/// Allowlist: only these types are opened with their default app on a click. Everything else
+/// (executables, scripts, shortcuts, installers, `.url`, `.jar`, `.chm`, `.rdp`, ... and files
+/// without an extension) is only revealed in Explorer. Macro-enabled Office files (`docm`, `xlsm`,
+/// `pptm`, `dotm`, `xlam`, ...) are deliberately NOT listed: they run code on open. `html`/`htm`/
+/// `svg` are listed because they open in the browser sandbox, not as a local program.
+const OPEN_EXT: &[&str] = &[
+    "docx", "xlsx", "pptx", "doc", "xls", "ppt", "dotx", "xltx", "potx", "pdf", "txt", "rtf", "csv", "tsv", "odt", "ods", "odp", "png", "jpg",
+    "jpeg", "gif", "bmp", "tif", "tiff", "svg", "webp", "heic", "mp3", "mp4", "wav", "m4a", "flac", "ogg", "mov", "avi", "wmv", "mkv", "zip",
+    "7z", "rar", "vsd", "vsdx", "msg", "eml", "one", "md", "json", "xml", "html", "htm", "log",
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -153,11 +174,13 @@ pub(super) fn build_sql(roots: &[PathBuf], groups: &[Group], ext: Option<&str>, 
 // Pure: classification and matching
 // ---------------------------------------------------------------------------------------------
 
+/// True unless the extension is on the [`OPEN_EXT`] allowlist (fails closed: no extension, a
+/// trailing dot or space, or an unknown type is only revealed).
 pub(super) fn is_risky_name(name: &str) -> bool {
-    Path::new(name)
+    !Path::new(name)
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| RISKY_EXT.contains(&e.to_ascii_lowercase().as_str()))
+        .map(|e| OPEN_EXT.contains(&e.to_ascii_lowercase().as_str()))
         .unwrap_or(false)
 }
 
@@ -300,44 +323,167 @@ fn lookup(key: &str) -> Option<PathBuf> {
 // ADO worker
 // ---------------------------------------------------------------------------------------------
 
+type IndexResult = Result<Vec<Vec<String>>, String>;
+
 struct IndexRequest {
     sqls: Vec<String>,
     /// Stop after the first query when it already filled this many rows.
     need: usize,
-    reply: Sender<Result<Vec<Vec<String>>, String>>,
+    reply: Sender<IndexResult>,
+    /// Identifies this request in [`Slot::busy`]; only the matching release clears it.
+    token: u64,
 }
 
-static WORKER: OnceLock<Mutex<Option<Sender<IndexRequest>>>> = OnceLock::new();
-/// A request is being served (possibly abandoned by its caller): nothing else is queued behind it.
-static BUSY: AtomicBool = AtomicBool::new(false);
-
-fn start_worker() -> Option<Sender<IndexRequest>> {
-    let (tx, rx) = mpsc::channel::<IndexRequest>();
-    std::thread::Builder::new().name("local-index".into()).spawn(move || worker_main(rx)).ok()?;
-    Some(tx)
+/// The worker and the request it is serving, behind ONE lock so they can never disagree: a
+/// request is queued only while `busy` is set (under the lock), a worker retires only while it is
+/// not (under the lock), and a worker that died, panicked, retired or hung is replaced.
+struct Slot {
+    /// (worker id, sender). `None` = no worker running.
+    worker: Option<(u64, Sender<IndexRequest>)>,
+    /// (request token, started). `None` = idle.
+    busy: Option<(u64, Instant)>,
+    next: u64,
 }
 
-fn worker_main(rx: Receiver<IndexRequest>) {
+struct Index {
+    slot: Mutex<Slot>,
+}
+
+static INDEX: Index = Index { slot: Mutex::new(Slot { worker: None, busy: None, next: 1 }) };
+
+impl Index {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Slot> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queue a request. A request older than `stale_after` is presumed hung: its worker is
+    /// abandoned (it may finish or stay stuck, nobody waits for it) and a new one is started.
+    /// `spawn` starts the worker thread for (id, receiver) and says whether it did.
+    fn submit(
+        &self,
+        sqls: Vec<String>,
+        need: usize,
+        stale_after: Duration,
+        spawn: &dyn Fn(u64, Receiver<IndexRequest>) -> bool,
+    ) -> Result<Receiver<IndexResult>, String> {
+        let mut s = self.lock();
+        if let Some((_, since)) = s.busy {
+            if since.elapsed() < stale_after {
+                return Err("index busy".into());
+            }
+            dlog!("WARN", "local", "FILES-101 index worker presumed hung, starting a new one");
+            s.worker = None;
+            s.busy = None;
+        }
+        if s.worker.is_none() {
+            let id = s.next;
+            s.next += 1;
+            let (tx, rx) = mpsc::channel();
+            if !spawn(id, rx) {
+                return Err("worker did not start".into());
+            }
+            s.worker = Some((id, tx));
+        }
+        let token = s.next;
+        s.next += 1;
+        let (reply, reply_rx) = mpsc::channel();
+        let sent = s.worker.as_ref().map(|(_, tx)| tx.send(IndexRequest { sqls, need, reply, token }).is_ok()).unwrap_or(false);
+        if !sent {
+            // The worker is gone: forget it so the next call starts a new one.
+            s.worker = None;
+            return Err("worker gone".into());
+        }
+        s.busy = Some((token, Instant::now()));
+        Ok(reply_rx)
+    }
+
+    /// The worker finished request `token`. A late finish of an abandoned request is a no-op.
+    fn release(&self, token: u64) {
+        let mut s = self.lock();
+        if s.busy.is_some_and(|(t, _)| t == token) {
+            s.busy = None;
+        }
+    }
+
+    /// Worker `id` has been idle: retire it when nothing is queued (a request is queued only
+    /// together with `busy`, under this lock). True = the worker must exit now.
+    fn retire_if_idle(&self, id: u64) -> bool {
+        let mut s = self.lock();
+        match &s.worker {
+            Some((w, _)) if *w == id => {
+                if s.busy.is_some() {
+                    return false;
+                }
+                s.worker = None;
+                true
+            }
+            _ => true, // replaced while idle: nobody sends to it any more
+        }
+    }
+
+    /// Worker `id` is exiting (also after a panic): forget it and any request it held.
+    fn worker_exit(&self, id: u64) {
+        let mut s = self.lock();
+        if s.worker.as_ref().is_some_and(|(w, _)| *w == id) {
+            s.worker = None;
+            s.busy = None;
+        }
+    }
+}
+
+struct ExitGuard {
+    index: &'static Index,
+    id: u64,
+}
+
+impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        self.index.worker_exit(self.id);
+    }
+}
+
+/// The worker's request loop: serve, reply, release; exit when the sender is gone or after
+/// `idle` without a request (the open connection goes with the thread).
+fn worker_loop(index: &'static Index, id: u64, rx: Receiver<IndexRequest>, idle: Duration, mut serve: impl FnMut(&IndexRequest) -> IndexResult) {
+    let _exit = ExitGuard { index, id };
+    loop {
+        match rx.recv_timeout(idle) {
+            Ok(req) => {
+                let result = serve(&req);
+                let _ = req.reply.send(result);
+                index.release(req.token);
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if index.retire_if_idle(id) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+}
+
+fn spawn_worker(id: u64, rx: Receiver<IndexRequest>) -> bool {
+    std::thread::Builder::new().name("local-index".into()).spawn(move || worker_main(&INDEX, id, rx)).is_ok()
+}
+
+fn worker_main(index: &'static Index, id: u64, rx: Receiver<IndexRequest>) {
     crate::debug_log::catch("local-index", || {
         let Ok(_apartment) = ComApartment::init_sta() else {
             dlog!("WARN", "local", "FILES-101 index worker: COM init failed");
-            // Drain so callers get "unavailable" instead of waiting for the deadline.
-            for req in rx {
-                let _ = req.reply.send(Err("com".into()));
-                BUSY.store(false, Ordering::SeqCst);
-            }
+            // Answer "unavailable" at once instead of making callers wait for the deadline.
+            worker_loop(index, id, rx, WORKER_IDLE, |_| Err("com".into()));
             return;
         };
         let mut conn: Option<Dispatch> = None;
         let mut failed_at: Option<Instant> = None;
-        for req in rx {
-            let result = serve(&mut conn, &mut failed_at, &req);
+        worker_loop(index, id, rx, WORKER_IDLE, |req| {
+            let result = serve(&mut conn, &mut failed_at, req);
             if result.is_err() {
                 conn = None; // reopen on the next request
             }
-            let _ = req.reply.send(result);
-            BUSY.store(false, Ordering::SeqCst);
-        }
+            result
+        });
     });
 }
 
@@ -411,33 +557,15 @@ fn run_query(conn: &mut Dispatch, sql: &str) -> Result<Vec<String>, com::ComErro
 }
 
 /// Ask the index. `Err` = unavailable (open failed, timed out, previous request still running).
-fn query_index(sqls: Vec<String>, need: usize, deadline: Duration) -> Result<Vec<Vec<String>>, String> {
-    if BUSY.swap(true, Ordering::SeqCst) {
-        return Err("index busy".into());
-    }
-    let tx = {
-        let mut w = WORKER.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner());
-        if w.is_none() {
-            *w = start_worker();
-        }
-        w.clone()
-    };
-    let Some(tx) = tx else {
-        BUSY.store(false, Ordering::SeqCst);
-        return Err("worker did not start".into());
-    };
-    let (reply, rx) = mpsc::channel();
-    if tx.send(IndexRequest { sqls, need, reply }).is_err() {
-        // The worker died: forget it so the next call starts a new one.
-        *WORKER.get_or_init(|| Mutex::new(None)).lock().unwrap_or_else(|e| e.into_inner()) = None;
-        BUSY.store(false, Ordering::SeqCst);
-        return Err("worker gone".into());
-    }
+fn query_index(sqls: Vec<String>, need: usize, deadline: Duration) -> IndexResult {
+    let rx = INDEX.submit(sqls, need, INDEX_STALE, &spawn_worker)?;
     match rx.recv_timeout(deadline) {
         Ok(r) => r,
-        Err(_) => Err("index timed out".into()), // the worker clears BUSY when it finishes
+        // Released when the worker finishes; presumed hung (and replaced) after INDEX_STALE.
+        Err(_) => Err("index timed out".into()),
     }
 }
+
 
 // ---------------------------------------------------------------------------------------------
 // Search
@@ -459,7 +587,101 @@ fn to_hit(path: &Path, roots: &[(String, PathBuf)]) -> Option<FileHit> {
     })
 }
 
+/// At most one bounded job runs at a time; a job older than the stale limit is presumed stuck
+/// (a dead network share) and no longer blocks the next one.
+struct Gate {
+    running: Mutex<Option<(u64, Instant)>>,
+}
+
+static SEARCH_GATE: Gate = Gate { running: Mutex::new(None) };
+static GATE_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+impl Gate {
+    fn enter(&self, stale: Duration) -> Option<u64> {
+        let mut r = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        if r.is_some_and(|(_, since)| since.elapsed() < stale) {
+            return None;
+        }
+        let id = GATE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        *r = Some((id, Instant::now()));
+        Some(id)
+    }
+
+    fn leave(&self, id: u64) {
+        let mut r = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        if r.is_some_and(|(i, _)| i == id) {
+            *r = None;
+        }
+    }
+}
+
+struct GateGuard {
+    gate: &'static Gate,
+    id: u64,
+}
+
+impl Drop for GateGuard {
+    fn drop(&mut self) {
+        self.gate.leave(self.id);
+    }
+}
+
+/// Run `f` on a helper thread and wait at most `wait` for it. `None` = it did not finish in time
+/// (the thread is abandoned, it may be stuck on a share) or a previous job is still running.
+fn run_bounded<T: Send + 'static>(gate: &'static Gate, stale: Duration, wait: Duration, f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let id = gate.enter(stale)?;
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new().name("local-files".into()).spawn(move || {
+        let _guard = GateGuard { gate, id };
+        let _ = tx.send(f());
+    });
+    if spawned.is_err() {
+        gate.leave(id);
+        return None;
+    }
+    rx.recv_timeout(wait).ok()
+}
+
+/// The search roots, cached: `search_roots()` probes every folder with `is_dir`, which can block
+/// for the SMB timeout on a redirected folder. Only called on the helper thread.
+fn cached_roots() -> Vec<(String, PathBuf)> {
+    static ROOTS: Mutex<Option<(Instant, Vec<(String, PathBuf)>)>> = Mutex::new(None);
+    if let Some((at, r)) = ROOTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < ROOTS_TTL {
+            return r.clone();
+        }
+    }
+    let fresh = search_roots();
+    if !fresh.is_empty() {
+        *ROOTS.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), fresh.clone()));
+    }
+    fresh
+}
+
+/// Network (UNC) roots are answered by the index only: walking one can stall far past the budget.
+fn is_unc(p: &Path) -> bool {
+    p.to_string_lossy().starts_with(r"\\")
+}
+
+/// The whole search, with a hard wall-clock limit of `budget_ms` plus a small slack: the work
+/// (folder probes, index, walk, metadata of every hit) runs on a helper thread that is abandoned
+/// when the limit passes, because any of those calls can block on a stalled share.
 pub(super) fn search(terms: &[Vec<String>], ext: Option<&str>, limit: usize, budget_ms: u64) -> Result<FileSearch, String> {
+    if sanitize_terms(terms).is_empty() && ext.and_then(sanitize_ext).is_none() {
+        return Ok(FileSearch::default());
+    }
+    let (terms, ext) = (terms.to_vec(), ext.map(str::to_string));
+    let wait = Duration::from_millis(budget_ms.max(100) + SEARCH_SLACK_MS);
+    match run_bounded(&SEARCH_GATE, SEARCH_STALE, wait, move || search_inner(&terms, ext.as_deref(), limit, budget_ms)) {
+        Some(r) => r,
+        None => {
+            dlog!("WARN", "local", "FILES-102 file search did not finish in time (stalled folder?)");
+            Ok(FileSearch { hits: Vec::new(), partial: true, index_used: false })
+        }
+    }
+}
+
+fn search_inner(terms: &[Vec<String>], ext: Option<&str>, limit: usize, budget_ms: u64) -> Result<FileSearch, String> {
     let started = Instant::now();
     let limit = limit.clamp(1, INDEX_TOP);
     let groups = sanitize_terms(terms);
@@ -467,7 +689,7 @@ pub(super) fn search(terms: &[Vec<String>], ext: Option<&str>, limit: usize, bud
     if groups.is_empty() && ext.is_none() {
         return Ok(FileSearch::default());
     }
-    let roots = search_roots();
+    let roots = cached_roots();
     if roots.is_empty() {
         return Err("FILES-101: no searchable folders".into());
     }
@@ -521,7 +743,8 @@ pub(super) fn search(terms: &[Vec<String>], ext: Option<&str>, limit: usize, bud
             let ext_ok = ext_f.as_ref().map(|e| folded.ends_with(e.as_str())).unwrap_or(true);
             ext_ok && name_matches(folded, &fg)
         };
-        let out = walk(&root_paths, &matcher, &lim, limit);
+        let local_roots: Vec<PathBuf> = root_paths.iter().filter(|p| !is_unc(p)).cloned().collect();
+        let out = walk(&local_roots, &matcher, &lim, limit);
         partial = out.partial;
         let mut found = out.found;
         found.sort_by(|a, b| b.modified.cmp(&a.modified));
@@ -632,11 +855,29 @@ mod tests {
 
     #[test]
     fn risky_extensions() {
+        // The old deny list.
         for n in ["a.exe", "A.BAT", "x.ps1", "m.msi", "l.LNK", "s.js", "r.reg", "h.hta"] {
             assert!(is_risky_name(n), "{n}");
         }
-        for n in ["a.pdf", "notes.txt", "exe", "archive.zip", "תקציב.xlsx"] {
+        // Executable-equivalent types the old list missed, macro-enabled Office files, and
+        // names that only look harmless (no extension, trailing dot or space, double extension).
+        for n in [
+            "i.url", "t.jar", "h.chm", "x.rdp", "a.appinstaller", "p.pif", "s.msc", "i.inf", "w.wsh", "w.ws", "c.wsc", "p.msp", "a.appx", "a.msix",
+            "j.jnlp", "x.xll", "d.diagcab", "l.library-ms", "s.settingcontent-ms", "g.gadget", "a.application", "a.mht", "m.mde", "r.docm", "r.XLSM",
+            "r.pptm", "r.dotm", "r.xlam", "exe", "README", "a.pdf.exe", "a.exe.", "a.exe ", "a.pdf ", ".hidden", "תקציב.xyz",
+        ] {
+            assert!(is_risky_name(n), "{n}");
+        }
+        for n in ["a.pdf", "notes.txt", "archive.zip", "תקציב.xlsx", "R.DOCX", "p.JPG", "v.mp4", "m.msg", "n.one", "d.vsdx", "x.md", "a.json", "i.html"] {
             assert!(!is_risky_name(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn allowlist_has_no_executable_or_macro_types() {
+        for e in OPEN_EXT {
+            assert_eq!(*e, e.to_ascii_lowercase());
+            assert!(!["exe", "bat", "cmd", "ps1", "vbs", "js", "lnk", "url", "jar", "docm", "xlsm", "pptm", "dotm", "xlam", "hta", "msi", "chm", "rdp"].contains(e), "{e}");
         }
     }
 
@@ -765,6 +1006,140 @@ mod tests {
             remember(Path::new(&format!(r"C:\a\{i}.txt")));
         }
         assert_eq!(lookup(&k), None);
+    }
+
+    #[test]
+    fn key_map_holds_every_hit_of_every_stored_query() {
+        // 20 stored queries x 50 hits (the assistant store and INDEX_TOP): none may age out early.
+        assert!(KEY_CAP >= 20 * INDEX_TOP);
+    }
+
+    fn leak_index() -> &'static Index {
+        Box::leak(Box::new(Index { slot: Mutex::new(Slot { worker: None, busy: None, next: 1 }) }))
+    }
+
+    /// A test worker thread; `handler` decides what a request does (answer, hang, panic).
+    fn fake_spawn(index: &'static Index, idle: Duration, handler: fn(&IndexRequest) -> IndexResult) -> impl Fn(u64, Receiver<IndexRequest>) -> bool {
+        move |id, rx| {
+            std::thread::spawn(move || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_loop(index, id, rx, idle, handler)));
+            });
+            true
+        }
+    }
+
+    fn ok_handler(_: &IndexRequest) -> IndexResult {
+        Ok(vec![vec!["C:\\x\\a.txt".to_string()]])
+    }
+
+    fn hang_handler(_: &IndexRequest) -> IndexResult {
+        std::thread::sleep(Duration::from_secs(30));
+        Ok(Vec::new())
+    }
+
+    fn panic_handler(_: &IndexRequest) -> IndexResult {
+        panic!("boom");
+    }
+
+    const LONG: Duration = Duration::from_secs(3600);
+
+    #[test]
+    fn index_recovers_after_a_hung_request() {
+        let idx = leak_index();
+        let hang = fake_spawn(idx, LONG, hang_handler);
+        let rx = idx.submit(vec!["q".into()], 1, Duration::from_millis(150), &hang).unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+        // Still within the stale limit: busy, nothing is queued behind the hung one.
+        assert_eq!(idx.submit(vec!["q".into()], 1, Duration::from_millis(150), &hang).unwrap_err(), "index busy");
+        std::thread::sleep(Duration::from_millis(200));
+        // Past it: the hung worker is abandoned and a new one answers.
+        let ok = fake_spawn(idx, LONG, ok_handler);
+        let rx = idx.submit(vec!["q".into()], 1, Duration::from_millis(150), &ok).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap().unwrap()[0][0], "C:\\x\\a.txt");
+    }
+
+    #[test]
+    fn index_recovers_after_a_worker_panic() {
+        let idx = leak_index();
+        let bad = fake_spawn(idx, LONG, panic_handler);
+        let rx = idx.submit(vec!["q".into()], 1, LONG, &bad).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(2)).is_err()); // reply sender dropped by the unwind
+        // No wait for a stale limit (LONG): the dead worker released the slot by itself.
+        let ok = fake_spawn(idx, LONG, ok_handler);
+        let mut answered = false;
+        for _ in 0..50 {
+            match idx.submit(vec!["q".into()], 1, LONG, &ok) {
+                Ok(rx) => {
+                    assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+                    answered = true;
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+        assert!(answered, "slot stayed busy after the worker panicked");
+    }
+
+    #[test]
+    fn idle_worker_retires_and_the_next_request_starts_a_new_one() {
+        let idx = leak_index();
+        let idle = Duration::from_millis(60);
+        let ok = fake_spawn(idx, idle, ok_handler);
+        let rx = idx.submit(vec!["q".into()], 1, LONG, &ok).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(idx.lock().worker.is_none(), "idle worker still registered");
+        let rx = idx.submit(vec!["q".into()], 1, LONG, &ok).unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(2)).unwrap().is_ok());
+    }
+
+    #[test]
+    fn late_finish_of_an_abandoned_request_does_not_free_the_new_one() {
+        let idx = leak_index();
+        idx.lock().busy = Some((7, Instant::now()));
+        idx.release(8); // someone else's token
+        assert!(idx.lock().busy.is_some());
+        idx.release(7);
+        assert!(idx.lock().busy.is_none());
+    }
+
+    #[test]
+    fn bounded_job_returns_in_time_and_does_not_pile_up() {
+        static GATE: Gate = Gate { running: Mutex::new(None) };
+        let t = Instant::now();
+        let r = run_bounded(&GATE, Duration::from_secs(60), Duration::from_millis(100), || {
+            std::thread::sleep(Duration::from_secs(5));
+            1
+        });
+        assert!(r.is_none() && t.elapsed() < Duration::from_secs(2));
+        // The stuck job still holds the gate: the next one is refused at once, no second thread.
+        let t = Instant::now();
+        assert!(run_bounded(&GATE, Duration::from_secs(60), Duration::from_millis(100), || 2).is_none());
+        assert!(t.elapsed() < Duration::from_millis(50));
+        // A job that outlives the stale limit no longer blocks.
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(run_bounded(&GATE, Duration::from_millis(10), Duration::from_secs(2), || 3), Some(3));
+    }
+
+    #[test]
+    fn bounded_job_frees_the_gate_when_it_finishes() {
+        static GATE: Gate = Gate { running: Mutex::new(None) };
+        assert_eq!(run_bounded(&GATE, Duration::from_secs(60), Duration::from_secs(2), || 1), Some(1));
+        let mut again = None;
+        for _ in 0..50 {
+            again = run_bounded(&GATE, Duration::from_secs(60), Duration::from_secs(2), || 2);
+            if again.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(again, Some(2));
+    }
+
+    #[test]
+    fn unc_roots_are_not_walked() {
+        assert!(is_unc(Path::new(r"\\server\share\Documents")));
+        assert!(!is_unc(Path::new(r"C:\Users\u\Documents")));
     }
 
     #[test]

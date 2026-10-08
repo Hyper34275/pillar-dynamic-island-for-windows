@@ -4,6 +4,9 @@
 use super::{clip, NoteHit};
 use crate::intent::fold;
 use crate::notes::{self, Note};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 const TITLE_MAX: usize = 80;
 const SNIPPET_MAX: usize = 120;
@@ -15,7 +18,47 @@ pub(super) fn search(terms: &[Vec<String>], latest: bool, limit: usize) -> Resul
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    Ok(rank_notes(&all, terms, latest, limit, now))
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    Ok(rank_with(&all, terms, latest, limit, now, &mut cache))
+}
+
+/// Folding is the cost of a notes search (500 notes x 10,000 chars is about 5 million characters
+/// to fold, 200 ms), so the folded lines are kept per note, keyed by its last edit, and dropped
+/// after `CACHE_IDLE` without a search so a idle app holds nothing.
+const CACHE_IDLE: Duration = Duration::from_secs(120);
+
+struct FoldCache {
+    /// note id -> (updated_at, text length, folded non-empty lines)
+    map: HashMap<String, (i64, usize, Arc<Vec<String>>)>,
+    last_used: Option<Instant>,
+}
+
+static CACHE: LazyLock<Mutex<FoldCache>> = LazyLock::new(|| Mutex::new(FoldCache { map: HashMap::new(), last_used: None }));
+
+impl FoldCache {
+    fn begin(&mut self, live: &[Note]) {
+        if self.last_used.is_some_and(|t| t.elapsed() > CACHE_IDLE) || self.map.len() > live.len() {
+            // Idle for long, or notes were deleted: rebuild from what is there.
+            let ids: HashSet<&str> = live.iter().map(|n| n.id.as_str()).collect();
+            if self.last_used.is_some_and(|t| t.elapsed() > CACHE_IDLE) {
+                self.map.clear();
+            } else {
+                self.map.retain(|k, _| ids.contains(k.as_str()));
+            }
+        }
+        self.last_used = Some(Instant::now());
+    }
+
+    fn lines(&mut self, n: &Note, lines: &[&str]) -> Arc<Vec<String>> {
+        if let Some((u, len, f)) = self.map.get(&n.id) {
+            if *u == n.updated_at && *len == n.text.len() {
+                return f.clone();
+            }
+        }
+        let f = Arc::new(lines.iter().map(|l| fold(l)).collect::<Vec<_>>());
+        self.map.insert(n.id.clone(), (n.updated_at, n.text.len(), f.clone()));
+        f
+    }
 }
 
 /// Folded, non-empty alternatives per group; empty groups are dropped.
@@ -32,18 +75,26 @@ fn title_of(text: &str) -> &str {
     text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("")
 }
 
+#[cfg(test)]
 pub(super) fn rank_notes(all: &[Note], terms: &[Vec<String>], latest: bool, limit: usize, now_ms: i64) -> Vec<NoteHit> {
+    let mut cache = FoldCache { map: HashMap::new(), last_used: None };
+    rank_with(all, terms, latest, limit, now_ms, &mut cache)
+}
+
+fn rank_with(all: &[Note], terms: &[Vec<String>], latest: bool, limit: usize, now_ms: i64, cache: &mut FoldCache) -> Vec<NoteHit> {
     let groups = fold_terms(terms);
     if groups.is_empty() && !latest {
         return Vec::new();
     }
+    cache.begin(all);
     let mut scored: Vec<(f64, &Note, NoteHit)> = Vec::new();
     for n in all {
         if n.text.trim().is_empty() {
             continue;
         }
         let lines: Vec<&str> = n.text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
-        let folded_lines: Vec<String> = lines.iter().map(|l| fold(l)).collect();
+        // Nothing to match without terms ("latest"): no need to fold.
+        let folded_lines: Arc<Vec<String>> = if groups.is_empty() { Arc::new(Vec::new()) } else { cache.lines(n, &lines) };
         // Every group needs at least one alternative somewhere in the note.
         let mut hits = 0usize;
         let mut title_hit = false;
@@ -179,6 +230,76 @@ mod tests {
         let n = vec![note("t", "budget\nsecond\nthird", 1, false)];
         let r = rank_notes(&n, &terms(&[&["budget"]]), false, 5, NOW);
         assert_eq!(r[0].snippet, "second");
+    }
+
+    /// Load: the maximum store (500 notes x 10,000 chars, Hebrew and English, 100 searches).
+    /// Prints the timing; the bound is generous (debug build, shared CI machine).
+    #[test]
+    fn load_500_notes_of_10k_chars_100_searches() {
+        let words = ["תקציב", "ישיבה", "לקוח", "budget", "meeting", "client", "פרויקט", "דוח", "invoice", "חשבונית"];
+        let all: Vec<Note> = (0..500)
+            .map(|i| {
+                let mut text = format!("{} {}\n", words[i % words.len()], i);
+                let mut w = i;
+                while text.chars().count() < 10_000 {
+                    w = w.wrapping_mul(31).wrapping_add(7);
+                    text.push_str(words[w % words.len()]);
+                    text.push(if w % 9 == 0 { '\n' } else { ' ' });
+                }
+                note(&format!("n{i}"), &text, (i % 90) as i64, i % 50 == 0)
+            })
+            .collect();
+        assert!(all.iter().all(|n| n.text.chars().count() >= 10_000));
+        let queries = [terms(&[&["תקציב", "budget"]]), terms(&[&["לקוח"], &["חשבונית", "invoice"]]), terms(&[&["zzzznotthere"]])];
+        // Cold: every search folds all the text (no cache), as before the fold cache.
+        let start = std::time::Instant::now();
+        for i in 0..5 {
+            rank_notes(&all, &queries[i % queries.len()], false, 5, NOW);
+        }
+        let cold = start.elapsed();
+        // Warm: the folded lines are kept between searches.
+        let mut cache = FoldCache { map: HashMap::new(), last_used: None };
+        let start = std::time::Instant::now();
+        let mut hits = 0;
+        for i in 0..100 {
+            hits += rank_with(&all, &queries[i % queries.len()], false, 5, NOW, &mut cache).len();
+        }
+        let total = start.elapsed();
+        println!(
+            "notes load: 500 x 10k chars, 100 searches: {} ms total, {:.1} ms per search warm; cold (no cache) {:.1} ms per search; {} hits",
+            total.as_millis(),
+            total.as_secs_f64() * 10.0,
+            cold.as_secs_f64() * 200.0,
+            hits
+        );
+        assert!(hits > 0);
+        // Same answers with and without the cache.
+        for q in &queries {
+            let a: Vec<String> = rank_notes(&all, q, false, 5, NOW).into_iter().map(|h| h.id).collect();
+            let b: Vec<String> = rank_with(&all, q, false, 5, NOW, &mut cache).into_iter().map(|h| h.id).collect();
+            assert_eq!(a, b);
+        }
+        assert!(total < Duration::from_secs(30), "{total:?}");
+    }
+
+    #[test]
+    fn fold_cache_follows_edits_and_deletes() {
+        let mut cache = FoldCache { map: HashMap::new(), last_used: None };
+        let mut v = vec![note("a", "כותרת\nתקציב", 1, false), note("b", "other\nline", 1, false)];
+        assert_eq!(rank_with(&v, &terms(&[&["תקציב"]]), false, 5, NOW, &mut cache).len(), 1);
+        assert_eq!(cache.map.len(), 2);
+        // An edit (new text, new updated_at) must not be answered from the old folded lines.
+        v[1].text = "other\nתקציב חדש".into();
+        v[1].updated_at += 5;
+        assert_eq!(rank_with(&v, &terms(&[&["תקציב"]]), false, 5, NOW, &mut cache).len(), 2);
+        // A deleted note leaves the cache.
+        v.remove(0);
+        rank_with(&v, &terms(&[&["תקציב"]]), false, 5, NOW, &mut cache);
+        assert_eq!(cache.map.len(), 1);
+        // Idle for long: dropped.
+        cache.last_used = Some(Instant::now() - CACHE_IDLE - Duration::from_secs(1));
+        rank_with(&v, &terms(&[&["תקציב"]]), false, 5, NOW, &mut cache);
+        assert_eq!(cache.map.len(), 1);
     }
 
     #[test]
