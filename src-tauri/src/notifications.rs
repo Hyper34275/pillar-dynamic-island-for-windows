@@ -627,7 +627,7 @@ fn poll_notifications_list(listener: &UserNotificationListener) -> Result<Vec<Us
 
 /// AUMIDs are package-family names, reverse-DNS ids or `{KnownFolderGuid}\path\app.exe`
 /// style ids. Anything that could change how the shell parses the argument is refused.
-fn is_valid_aumid(aumid: &str) -> bool {
+pub(crate) fn is_valid_aumid(aumid: &str) -> bool {
     !aumid.is_empty()
         && aumid.chars().count() <= 256
         && !aumid.contains("..")
@@ -637,7 +637,7 @@ fn is_valid_aumid(aumid: &str) -> bool {
 }
 
 /// Launch an app through `shell:AppsFolder\<AUMID>`, the same way Action Center does.
-fn launch_aumid(aumid: &str) -> Result<(), String> {
+pub(crate) fn launch_aumid(aumid: &str) -> Result<(), String> {
     if !is_valid_aumid(aumid) {
         return Err("NOTIF-204: invalid application id".to_string());
     }

@@ -17,8 +17,8 @@ use windows::core::{implement, Interface, BSTR, GUID, HRESULT, PCWSTR, VARIANT};
 use windows::Win32::Media::Audio::{IMessageFilter, IMessageFilter_Impl};
 use windows::Win32::Media::HTASK;
 use windows::Win32::System::Com::{
-    CLSIDFromProgID, CoInitializeEx, CoUninitialize, IConnectionPoint, IConnectionPointContainer, IDispatch, IDispatch_Vtbl,
-    COINIT_APARTMENTTHREADED,
+    CLSIDFromProgID, CoCreateInstance, CoInitializeEx, CoUninitialize, IConnectionPoint, IConnectionPointContainer, IDispatch, IDispatch_Vtbl,
+    CLSCTX_INPROC_SERVER, CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED,
     DISPATCH_FLAGS, DISPATCH_METHOD, DISPATCH_PROPERTYGET, DISPATCH_PROPERTYPUT, DISPATCH_PROPERTYPUTREF, DISPPARAMS, EXCEPINFO,
     INTERFACEINFO,
 };
@@ -230,6 +230,18 @@ impl Dispatch {
         unsafe { GetActiveObject(&clsid, None, &mut unknown) }.map_err(|e| ComError::from_windows("GetActiveObject", &e))?;
         let unknown = unknown.ok_or_else(|| ComError::new("GetActiveObject", MK_E_UNAVAILABLE))?;
         let ptr: IDispatch = unknown.cast().map_err(|e| ComError::from_windows("QueryInterface(IDispatch)", &e))?;
+        Ok(Dispatch::new(ptr))
+    }
+
+    /// Create a new automation object from its ProgID (in-process servers first, then local
+    /// ones). Used for system components that are always installed (ADODB, Shell.Application);
+    /// the calling thread must already own a [`ComApartment`].
+    pub fn create(prog_id: &str) -> ComResult<Self> {
+        let wide: Vec<u16> = prog_id.encode_utf16().chain(std::iter::once(0)).collect();
+        let clsid = unsafe { CLSIDFromProgID(PCWSTR(wide.as_ptr())) }
+            .map_err(|e| ComError::from_windows("CLSIDFromProgID", &e))?;
+        let ptr: IDispatch = unsafe { CoCreateInstance(&clsid, None, CLSCTX_INPROC_SERVER | CLSCTX_LOCAL_SERVER) }
+            .map_err(|e| ComError::from_windows("CoCreateInstance", &e))?;
         Ok(Dispatch::new(ptr))
     }
 
