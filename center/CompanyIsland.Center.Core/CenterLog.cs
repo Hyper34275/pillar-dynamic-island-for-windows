@@ -33,17 +33,48 @@ public sealed class FileLog
             byte[] bytes = new UTF8Encoding(false).GetBytes(line);
             lock (_gate)
             {
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
-                Rotate(bytes.Length);
-                // Shared: several Center processes (a redirected second launch) append to the same file.
-                using var stream = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
-                stream.Write(bytes, 0, bytes.Length);
+                // Several writers (a redirected second launch, or two FileLogs on one path) append to the
+                // same file. Each FileStream seeks to the end only when it opens, so two writers in
+                // between would write at the same offset and one line would be lost: a named mutex
+                // (session-local, per file) serialises open+write across processes.
+                using var mutex = new Mutex(false, MutexName(_path));
+                bool owned = false;
+                try
+                {
+                    try { owned = mutex.WaitOne(500); } catch (AbandonedMutexException) { owned = true; }
+                    Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+                    Rotate(bytes.Length);
+                    for (int attempt = 0; ; attempt++)
+                    {
+                        try
+                        {
+                            using var stream = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                            stream.Write(bytes, 0, bytes.Length);
+                            break;
+                        }
+                        catch (IOException) when (attempt < 3)
+                        {
+                            Thread.Sleep(15);
+                        }
+                    }
+                }
+                finally
+                {
+                    if (owned) mutex.ReleaseMutex();
+                }
             }
         }
         catch
         {
             // Logging must never take the app down.
         }
+    }
+
+    /// <summary>Local (this session) mutex name for a log file; the path is hashed (no user name in object names).</summary>
+    private static string MutexName(string path)
+    {
+        byte[] hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(path.ToUpperInvariant()));
+        return @"LocalCompanyIsland.CenterLog." + Convert.ToHexString(hash, 0, 8);
     }
 
     private void Rotate(int incoming)
