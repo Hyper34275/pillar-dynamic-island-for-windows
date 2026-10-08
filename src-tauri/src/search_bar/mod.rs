@@ -168,5 +168,5 @@ pub(crate) fn note_glass_query(query_id: &str) {
 
 /// Where the `assistant-update` card of this query goes (see `glass::route_for`).
 pub(crate) fn card_route(query_id: &str) -> CardRoute {
-    glass::route_for(glass::is_glass_query(query_id), window::glass_open())
+    glass::route_of(query_id, window::glass_open())
 }

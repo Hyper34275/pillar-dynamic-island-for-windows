@@ -378,7 +378,7 @@ fn begin_glass(layout: &Layout, high_contrast: bool) -> Option<GlassBackdrop> {
     if layout.variant != Variant::Spotlight {
         return None;
     }
-    glass::reset_queries();
+    glass::new_session();
     glass::reset_sheet();
     Some(snapshot::capture(layout.window, high_contrast))
 }

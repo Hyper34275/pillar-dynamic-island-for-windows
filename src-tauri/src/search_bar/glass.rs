@@ -2,8 +2,9 @@
 //! page asked for, the height of the sheet (for the click-through region), and which questions were
 //! asked from the open glass (their answers live in the sheet, not in the island).
 //!
-//! Everything here is memory only. The picture and the question ids are dropped when the bar closes
-//! or the next one opens; nothing is logged or written to disk.
+//! Everything here is memory only. The picture is dropped when the bar closes; the question ids (a
+//! bounded list, ids only, no text) are tied to the session that asked them and only decide where an
+//! answer goes. Nothing is logged or written to disk.
 
 use super::layout::SPOT_FIELD_DIP;
 use super::snapshot::GlassBackdrop;
@@ -49,24 +50,41 @@ pub fn route_for(asked_here: bool, glass_open: bool) -> CardRoute {
     }
 }
 
-static QUERIES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The questions asked from a glass bar, each with the session (one open of the bar) that asked it.
+static QUERIES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+static SESSION: Mutex<u64> = Mutex::new(0);
 
 /// A question was just asked from the open glass bar (or answered there).
 pub fn note_query(query_id: &str) {
+    let session = *lock(&SESSION);
     let mut ids = lock(&QUERIES);
-    ids.retain(|id| id != query_id);
-    ids.push(query_id.to_string());
+    ids.retain(|(id, _)| id != query_id);
+    ids.push((query_id.to_string(), session));
     let extra = ids.len().saturating_sub(MAX_QUERIES);
     ids.drain(..extra);
 }
 
-pub fn is_glass_query(query_id: &str) -> bool {
-    lock(&QUERIES).iter().any(|id| id == query_id)
+/// `(asked from some glass bar, asked from the bar that is open now)` for a question.
+pub fn query_standing(query_id: &str) -> (bool, bool) {
+    let session = *lock(&SESSION);
+    match lock(&QUERIES).iter().find(|(id, _)| id == query_id) {
+        Some((_, asked_in)) => (true, *asked_in == session),
+        None => (false, false),
+    }
 }
 
-/// A new glass session: answers of earlier sessions are the island's again.
-pub fn reset_queries() {
-    lock(&QUERIES).clear();
+/// Where the card of one question goes. `glass_open`: a glass bar is open right now. A question
+/// asked from an earlier bar than the open one counts as asked with no bar open.
+pub fn route_of(query_id: &str, glass_open: bool) -> CardRoute {
+    let (asked_from_glass, asked_here) = query_standing(query_id);
+    route_for(asked_from_glass, glass_open && asked_here)
+}
+
+/// A new glass session: the sheet of the last one is gone, so an answer that is still on its way
+/// from it is the island's (the ids stay noted: forgetting them would leave that answer unshown).
+pub fn new_session() {
+    let mut session = lock(&SESSION);
+    *session = session.wrapping_add(1);
 }
 
 // =============================================================================
@@ -154,23 +172,39 @@ mod tests {
     }
 
     #[test]
-    fn noted_questions_are_remembered_bounded_and_reset() {
-        // one test for the shared list: tests run in parallel and the list is process wide
-        reset_queries();
-        assert!(!is_glass_query("a"));
+    fn noted_questions_are_remembered_bounded_and_tied_to_their_session() {
+        // one test for the shared list and session: tests run in parallel and both are process wide
+        new_session();
+        assert_eq!(query_standing("a"), (false, false));
         note_query("a");
         note_query("b");
         note_query("a"); // asked again: moves to the end, not twice
-        assert!(is_glass_query("a") && is_glass_query("b") && !is_glass_query("c"));
+        assert_eq!(query_standing("a"), (true, true));
+        assert_eq!(query_standing("b"), (true, true));
+        assert_eq!(query_standing("c"), (false, false));
         for i in 0..40 {
             note_query(&format!("q{i}"));
         }
-        assert!(!is_glass_query("a"), "the oldest fall out");
-        assert!(is_glass_query("q39") && is_glass_query("q24"));
-        assert!(!is_glass_query("q23"));
+        assert_eq!(query_standing("a"), (false, false), "the oldest fall out");
+        assert_eq!(query_standing("q39"), (true, true));
+        assert_eq!(query_standing("q24"), (true, true));
+        assert_eq!(query_standing("q23"), (false, false));
         assert_eq!(lock(&QUERIES).len(), MAX_QUERIES);
-        reset_queries();
-        assert!(!is_glass_query("q39"), "a new glass session starts clean");
+
+        // The sheet closed and a new one opened before an answer arrived: the new sheet does not know
+        // that question, so the island must show its answer (the id stays noted across sessions).
+        note_query("slow");
+        assert_eq!(route_of("slow", true), CardRoute::GlassOnly);
+        assert_eq!(route_of("slow", false), CardRoute::IslandAfterGlass, "closed meanwhile");
+        new_session();
+        assert_eq!(query_standing("slow"), (true, false));
+        assert_eq!(route_of("slow", true), CardRoute::IslandAfterGlass, "a newer sheet is open");
+        // asked again from the new sheet: it is that sheet's answer
+        note_query("slow");
+        assert_eq!(route_of("slow", true), CardRoute::GlassOnly);
+        // a question that never came from a glass is the island's, whatever is open
+        assert_eq!(route_of("from-island", true), CardRoute::Everyone);
+        assert_eq!(route_of("from-island", false), CardRoute::Everyone);
     }
 
     #[test]
