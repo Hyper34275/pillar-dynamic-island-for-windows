@@ -33,7 +33,7 @@ use crate::outlook::{bool_prop, hash16, i32_prop, optional, run_on_outlook, str_
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDateTime, TimeZone, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
@@ -197,6 +197,11 @@ const MAX_BUDGET_MS: u64 = 60_000;
 const DISCOVERY_BUDGET_MS: u64 = 8_000;
 /// Extra time the caller waits beyond the worker's own budget before giving the thread up.
 const GRACE_SECS: u64 = 5;
+/// The caller of a search returns this long after its budget at the latest, even when a COM call
+/// is still blocked (the unit goes back into the cursor).
+const CALLER_GRACE_MS: u64 = 500;
+/// How long a new search waits for the previous worker to finish before it is refused.
+const BUSY_WAIT_MS: u64 = 3_000;
 const DISCOVERY_CACHE_SECS: u64 = 600;
 const QUARANTINE_SECS: u64 = 900;
 /// assistant::store keeps 20 queries and a mail search returns up to 100 hits: every card still
@@ -544,9 +549,12 @@ impl WorkUnit {
 /// is kept: the one the user chose first is searched first.
 pub(crate) fn plan_units(mailboxes: &[String]) -> VecDeque<WorkUnit> {
     let mut units = VecDeque::new();
-    for m in mailboxes {
-        units.push_back(WorkUnit::Special { mailbox: m.clone(), folder: FOLDER_INBOX });
-        units.push_back(WorkUnit::Special { mailbox: m.clone(), folder: FOLDER_SENT });
+    // Round-robin: every mailbox gets its Inbox looked at before any gets its Sent Items, so one
+    // slow online mailbox cannot use the whole budget before the others had a first look.
+    for folder in [FOLDER_INBOX, FOLDER_SENT] {
+        for m in mailboxes {
+            units.push_back(WorkUnit::Special { mailbox: m.clone(), folder });
+        }
     }
     for m in mailboxes {
         units.push_back(WorkUnit::Expand { mailbox: m.clone() });
@@ -596,11 +604,39 @@ pub(crate) struct Progress {
     pub current: Option<String>,
     /// Tier of the last unit that ran.
     pub last_tier: Option<u8>,
+    /// The unit that is running right now (already taken out of `pending`). If the caller gives
+    /// up at the deadline while a COM call is still blocked, it goes back into the cursor.
+    pub inflight: Option<WorkUnit>,
+    /// Mailbox id -> moving average of its unit times (ms).
+    pub est: HashMap<String, u64>,
+    /// Moving average over every unit (ms): the guess for a mailbox not seen yet.
+    pub est_all: Option<u64>,
 }
 
 impl Progress {
     pub fn new(scope: Vec<String>, pending: VecDeque<WorkUnit>) -> Self {
-        Progress { hits: Vec::new(), pending, errors: Vec::new(), scope, current: None, last_tier: None }
+        Progress { hits: Vec::new(), pending, errors: Vec::new(), scope, current: None, last_tier: None, inflight: None, est: HashMap::new(), est_all: None }
+    }
+
+    /// Expected duration of `unit` (ms): its mailbox's average, else the all-units average, else 0.
+    fn estimate(&self, unit: &WorkUnit) -> u64 {
+        self.est.get(unit.mailbox()).copied().or(self.est_all).unwrap_or(0)
+    }
+
+    fn note_time(&mut self, mailbox: &str, took_ms: u64) {
+        let avg = |old: Option<u64>| old.map_or(took_ms, |o| (o + took_ms) / 2);
+        let m = avg(self.est.get(mailbox).copied());
+        self.est.insert(mailbox.to_string(), m);
+        self.est_all = Some(avg(self.est_all));
+    }
+
+    /// The caller left while a unit was still running: queue it again behind the other units of
+    /// its tier (a unit stuck on a slow mailbox does not block the others on the next round).
+    pub fn requeue_inflight(&mut self) {
+        if let Some(u) = self.inflight.take() {
+            let at = self.pending.iter().position(|p| p.tier() > u.tier()).unwrap_or(self.pending.len());
+            self.pending.insert(at, u);
+        }
     }
 
     pub fn fail_mailbox(&mut self, mailbox: &str, code: &'static str) {
@@ -633,11 +669,18 @@ pub(crate) fn drive(
     limit: usize,
     on_unit_done: &mut dyn FnMut(&Progress),
 ) -> Result<(), &'static str> {
-    while let Some(unit) = progress.pending.front().cloned() {
+    while let Some(front) = progress.pending.front().cloned() {
         let now = clock.now_ms();
         if now >= budget_ms {
             break;
         }
+        let remaining = budget_ms - now;
+        // Do not start a unit that is expected to outlast the budget (a mailbox's own average, else
+        // the average of all units): take the first unit of the same tier that still fits.
+        let Some(idx) = progress.pending.iter().position(|u| u.tier() == front.tier() && progress.estimate(u) <= remaining) else {
+            break;
+        };
+        let unit = progress.pending[idx].clone();
         // A tier that is complete and already enough: stop before starting the next one.
         if progress.hits.len() >= limit {
             // The rest of a folder is only read when the first pass left room for more.
@@ -650,9 +693,13 @@ pub(crate) fn drive(
                 }
             }
         }
-        progress.pending.pop_front();
+        progress.pending.remove(idx);
         progress.current = Some(unit.mailbox().to_string());
-        let result = runner.run(&unit, budget_ms - now);
+        progress.inflight = Some(unit.clone());
+        on_unit_done(progress);
+        let result = runner.run(&unit, remaining);
+        progress.inflight = None;
+        progress.note_time(unit.mailbox(), clock.now_ms().saturating_sub(now));
         if let Some(code) = result.fatal {
             progress.pending.push_front(unit);
             return Err(code);
@@ -823,6 +870,20 @@ static BUSY: AtomicBool = AtomicBool::new(false);
 struct BusyGuard;
 
 impl BusyGuard {
+    /// Like `acquire`, but waits up to `max_ms` for a previous worker that is still finishing
+    /// (a search the caller already left at its deadline), so "search 10 more seconds" right after
+    /// a partial result is not refused.
+    fn acquire_wait(max_ms: u64) -> Result<BusyGuard, String> {
+        let t = Instant::now();
+        loop {
+            match BusyGuard::acquire() {
+                Ok(g) => return Ok(g),
+                Err(e) if t.elapsed() >= Duration::from_millis(max_ms) => return Err(e),
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+
     fn acquire() -> Result<BusyGuard, String> {
         if BUSY.swap(true, Ordering::AcqRel) {
             Err("OUTLOOK-105: another mail operation is running".into())
@@ -1415,7 +1476,7 @@ pub(crate) fn scope_of(asked: &[String], known: &[MailboxInfo]) -> Vec<String> {
 /// Search mail, tiered: Inbox and Sent Items of every mailbox first, then their subfolders, until
 /// the budget is spent. Blocking. `cursor` = continue a previous partial search of the same query.
 pub fn search_mail(query: &MailQuery, cursor: Option<MailCursor>) -> Result<MailSearchResult, String> {
-    let _busy = BusyGuard::acquire()?;
+    let busy = BusyGuard::acquire_wait(BUSY_WAIT_MS)?;
     let started = Instant::now();
     let budget_ms = clamp_budget(query.budget_ms);
     let limit = if query.limit == 0 { DEFAULT_LIMIT } else { query.limit };
@@ -1431,7 +1492,12 @@ pub fn search_mail(query: &MailQuery, cursor: Option<MailCursor>) -> Result<Mail
     let shared: Arc<Mutex<Progress>> = Arc::new(Mutex::new(Progress::default()));
     let sh = shared.clone();
     let spec2 = spec.clone();
-    let result = run_on_outlook("companyisland-mail-search", wait_secs(budget_ms), move |_pid| {
+    // The COM work runs under a supervisor thread that owns the busy guard, so the guard is only
+    // released when the worker really finished; this thread waits only until budget + 500 ms.
+    let (tx, rx) = mpsc::channel::<Result<(), String>>();
+    let spawned = std::thread::Builder::new().name("companyisland-mail-supervisor".into()).spawn(move || {
+        let _busy = busy;
+        let r = run_on_outlook("companyisland-mail-search", wait_secs(budget_ms), move |_pid| {
         let mut app = Dispatch::get_active("Outlook.Application")?;
         let mut session = app.get_object("Session")?;
         let clock = RealClock(started);
@@ -1482,16 +1548,26 @@ pub fn search_mail(query: &MailQuery, cursor: Option<MailCursor>) -> Result<Mail
         publish(&progress);
         // Re-raise a fatal code as the COM error class `run_on_outlook` maps back to it.
         r.map_err(|code| ComError::new(code, if code == "OUTLOOK-105" { 0x8001_0001_u32 as i32 } else { 0x8001_0108_u32 as i32 }))
+        });
+        let _ = tx.send(r);
     });
+    if let Err(e) = spawned {
+        return Err(format!("OUTLOOK-102: cannot start the Outlook thread: {e}"));
+    }
+    let wait = Duration::from_millis(budget_ms + CALLER_GRACE_MS).saturating_sub(started.elapsed());
+    let result = match rx.recv_timeout(wait) {
+        Ok(r) => r,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err("OUTLOOK-109: Outlook did not answer".to_string()),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err("OUTLOOK-108: internal error".to_string()),
+    };
     let mut progress = lock(&shared).clone();
     let out = match result {
         Ok(()) => Ok(result_from(&progress, limit)),
         Err(e) if e.starts_with("OUTLOOK-109") => {
-            // A call into Outlook never returned: quarantine that mailbox, keep what was found.
-            if let Some(m) = progress.current.clone() {
-                state().quarantine.add(&m, Instant::now());
-                progress.fail_mailbox(&m, "MAIL-105");
-            }
+            // A call into Outlook is still running at the deadline: hand back what was found, the
+            // running unit stays in the cursor. The worker keeps the busy guard until it returns.
+            progress.requeue_inflight();
+            crate::dlog!("WARN", "outlook_mail", "MAIL-105 search left at the deadline with a unit still running");
             Ok(result_from(&progress, limit))
         }
         Err(e) => Err(e),
@@ -1784,7 +1860,7 @@ mod tests {
     fn planning_puts_tier_one_first_in_mailbox_order() {
         let units = plan_units(&["a".into(), "b".into()]);
         let enc: Vec<String> = units.iter().map(WorkUnit::encode).collect();
-        assert_eq!(enc, vec!["S|a|6", "S|a|5", "S|b|6", "S|b|5", "X|a", "X|b"]);
+        assert_eq!(enc, vec!["S|a|6", "S|b|6", "S|a|5", "S|b|5", "X|a", "X|b"]);
         assert!(plan_units(&[]).is_empty());
     }
 
@@ -1890,9 +1966,10 @@ mod tests {
     fn driver_stops_on_budget_and_leaves_a_cursor() {
         let units = plan_units(&["a".into(), "b".into()]);
         let (p, ran, _) = run_drive(units, &["a", "b"], 25, 100, 10, |_| UnitResult::default());
-        // 10 ms per unit, 25 ms budget: units start at 0, 10, 20; the one at 30 does not.
-        assert_eq!(ran.len(), 3);
-        assert_eq!(p.pending.len(), 3);
+        // 10 ms per unit, 25 ms budget: units start at 0 and 10; at 20 only 5 ms are left, less
+        // than a unit takes, so it is not started.
+        assert_eq!(ran.len(), 2);
+        assert_eq!(p.pending.len(), 4);
         let o = p.outcomes();
         assert!(!o[0].complete && !o[1].complete);
     }
@@ -1900,13 +1977,65 @@ mod tests {
     #[test]
     fn driver_continuation_picks_up_where_it_stopped() {
         let units = plan_units(&["a".into()]);
-        let (p1, ran1, _) = run_drive(units, &["a"], 15, 100, 10, |_| UnitResult::default());
+        let (p1, ran1, _) = run_drive(units, &["a"], 25, 100, 10, |_| UnitResult::default());
         assert_eq!(ran1, vec!["S|a|6", "S|a|5"]);
         let encoded: Vec<String> = p1.pending.iter().map(WorkUnit::encode).collect();
         let resumed: VecDeque<WorkUnit> = encoded.iter().filter_map(|s| WorkUnit::decode(s)).collect();
         let (p2, ran2, _) = run_drive(resumed, &["a"], 15, 100, 10, |_| UnitResult::default());
         assert_eq!(ran2, vec!["X|a"]);
         assert!(p2.pending.is_empty());
+    }
+
+    #[test]
+    fn thirteen_slow_mailboxes_return_by_the_budget_with_a_cursor() {
+        let names: Vec<String> = (0..13).map(|i| format!("m{i}")).collect();
+        let (p, ran, r) = run_drive(plan_units(&names), &names.iter().map(String::as_str).collect::<Vec<_>>(), 10_000, 100, 1_200, |_| UnitResult::default());
+        assert_eq!(r, Ok(()));
+        // Units start at 0, 1.2 s, ... 8.4 s; the one at 9.6 s would end at 10.8 s: not started.
+        assert_eq!(ran.len(), 8);
+        // Round-robin: eight different mailboxes got their Inbox looked at.
+        let inboxes: HashSet<&String> = ran.iter().collect();
+        assert_eq!(inboxes.len(), 8);
+        assert!(ran.iter().all(|u| u.ends_with("|6")));
+        assert!(!p.pending.is_empty());
+    }
+
+    #[test]
+    fn a_unit_that_does_not_fit_is_skipped_for_one_that_does() {
+        let units: VecDeque<WorkUnit> = vec![
+            WorkUnit::Special { mailbox: "slow".into(), folder: 6 },
+            WorkUnit::Special { mailbox: "fast".into(), folder: 6 },
+            WorkUnit::Special { mailbox: "slow".into(), folder: 5 },
+            WorkUnit::Special { mailbox: "fast".into(), folder: 5 },
+        ]
+        .into();
+        let clock = FakeClock(std::cell::Cell::new(0));
+        let mut p = Progress::new(vec!["slow".into(), "fast".into()], units);
+        p.note_time("slow", 5_000);
+        p.note_time("fast", 100);
+        let mut fake = Fake { clock: &clock, cost: 100, ran: Vec::new(), script: Box::new(|_| UnitResult::default()) };
+        drive(&mut p, &mut fake, &clock, 1_000, 100, &mut |_| {}).unwrap();
+        assert_eq!(fake.ran, vec!["S|fast|6", "S|fast|5"]);
+        assert_eq!(p.pending.len(), 2);
+    }
+
+    #[test]
+    fn the_running_unit_is_published_and_requeued_when_the_caller_leaves() {
+        let units = plan_units(&["a".into(), "b".into()]);
+        let clock = FakeClock(std::cell::Cell::new(0));
+        let mut p = Progress::new(vec!["a".into(), "b".into()], units);
+        let mut fake = Fake { clock: &clock, cost: 1, ran: Vec::new(), script: Box::new(|_| UnitResult::default()) };
+        let mut snaps: Vec<Progress> = Vec::new();
+        drive(&mut p, &mut fake, &clock, 10_000, 100, &mut |s| snaps.push(s.clone())).unwrap();
+        // The first publish happens before the first unit ends: it shows that unit in flight.
+        let mut first = snaps[0].clone();
+        assert_eq!(first.inflight.as_ref().map(WorkUnit::encode).as_deref(), Some("S|a|6"));
+        assert_eq!(first.pending.len(), 5);
+        first.requeue_inflight();
+        // Back behind the other tier-1 units, ahead of tier 2.
+        let enc: Vec<String> = first.pending.iter().map(WorkUnit::encode).collect();
+        assert_eq!(enc, vec!["S|b|6", "S|a|5", "S|b|5", "S|a|6", "X|a", "X|b"]);
+        assert!(first.inflight.is_none());
     }
 
     #[test]
