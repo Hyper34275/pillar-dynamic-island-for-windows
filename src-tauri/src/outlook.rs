@@ -445,6 +445,7 @@ fn build_event(raw: RawItem, ctx: &CalendarCtx) -> CalendarEventDto {
         busy_status: busy_status(raw.busy),
         response_status: response_status(raw.response),
         color: raw.color,
+        calendar_color: None,
     }
 }
 
@@ -936,6 +937,9 @@ pub struct OutlookSource {
     pub last_restrict_mode: Option<RestrictMode>,
     category_colors: CategoryColors,
     categories_read_at: Option<Instant>,
+    /// Folder EntryID (upper-case hex) -> the color the user gave that calendar in Outlook.
+    calendar_colors: HashMap<String, i32>,
+    calendar_colors_read_at: Option<Instant>,
     /// Hash of the Outlook profile of the last read; a different one starts discovery afresh.
     profile: Option<String>,
     selection: SelectionMemory,
@@ -967,6 +971,26 @@ impl OutlookSource {
             Err(e) => dlog!("WARN", "outlook", "category colors not read: {}", e),
         }
         self.categories_read_at = Some(Instant::now());
+        Ok(())
+    }
+
+    /// Re-read the calendars' colors from Outlook's pane, like the category colors. A failure
+    /// keeps the last good colors (automatic ones meanwhile); only a lost or busy Outlook fails.
+    fn refresh_calendar_colors(&mut self, session: &mut Dispatch) -> Result<(), SourceError> {
+        if self.calendar_colors_read_at.is_some_and(|at| at.elapsed().as_secs() < CATEGORY_REFRESH_SECS) {
+            return Ok(());
+        }
+        match outlook_nav::read_calendar_colors(session) {
+            Ok(colors) => {
+                if colors.len() != self.calendar_colors.len() {
+                    dlog!("INFO", "outlook", "calendar colors: {} set in Outlook", colors.len());
+                }
+                self.calendar_colors = colors;
+            }
+            Err(e) if e.is_disconnected() || e.is_busy() => return Err(map_com("OUTLOOK-107", e)),
+            Err(e) => dlog!("WARN", "outlook", "calendar colors not read (automatic colors used): {}", e),
+        }
+        self.calendar_colors_read_at = Some(Instant::now());
         Ok(())
     }
 
@@ -1239,6 +1263,7 @@ impl OutlookSource {
             (entry, store, id)
         };
         self.refresh_category_colors(&mut session)?;
+        self.refresh_calendar_colors(&mut session)?;
 
         // Discovery: the regular sync only. A range read uses what the last one found.
         if !window.range {
@@ -1286,6 +1311,18 @@ impl OutlookSource {
         let mut events = self.read_calendar(&mut default_calendar, window, &primary_ctx, map_com)?;
         drop(default_calendar);
         let now_ms = Utc::now().timestamp_millis();
+        // Each calendar's color in Outlook's pane; "automatic" ones by their place among the
+        // calendars shown, the default calendar first, as Outlook hands them out.
+        let calendar_colors = &self.calendar_colors;
+        let mut shown = 0;
+        let mut color_for = |entry_id: &str, active: bool| -> Option<String> {
+            let own = calendar_colors.get(&entry_id.to_ascii_uppercase()).and_then(|c| outlook_nav::calendar_color(*c));
+            let color = if active { Some(own.unwrap_or_else(|| outlook_nav::automatic_color(shown))) } else { own };
+            shown += usize::from(active);
+            color.map(str::to_string)
+        };
+        let primary_color = color_for(&primary.0, true);
+        let secondary_colors: Vec<Option<String>> = secondaries.iter().zip(&active).map(|(c, a)| color_for(&c.entry_id, *a)).collect();
         let mut sources = vec![CalendarSourceDto {
             id: primary.2.clone(),
             name: primary_name,
@@ -1294,13 +1331,14 @@ impl OutlookSource {
             selected: self.checked.get(&primary.2).copied().unwrap_or(true),
             active: true,
             pending_in_outlook: false,
+            color: primary_color,
             state: SourceState::Ok,
             error_code: None,
             event_count: events.len(),
             last_read_unix_ms: Some(now_ms),
         }];
 
-        for (cal, selected) in secondaries.iter().zip(active) {
+        for ((cal, selected), color) in secondaries.iter().zip(active).zip(secondary_colors) {
             let kind = outlook_nav::kind_of(cal.group, false, cal.own_store);
             let mut dto = CalendarSourceDto {
                 id: cal.id.clone(),
@@ -1310,6 +1348,7 @@ impl OutlookSource {
                 selected,
                 active: selected,
                 pending_in_outlook: self.selection.pending().contains_key(&cal.id),
+                color,
                 state: SourceState::NotSelected,
                 error_code: None,
                 event_count: 0,
@@ -1325,6 +1364,13 @@ impl OutlookSource {
                 events.extend(read);
             }
             sources.push(dto);
+        }
+        // With several calendars shown, every event carries its calendar's color (cached events
+        // too, so a color changed in Outlook shows on the next sync).
+        if sources.iter().filter(|s| s.active).count() > 1 {
+            for e in events.iter_mut() {
+                e.calendar_color = sources.iter().find(|s| s.id == e.calendar_id).and_then(|s| s.color.clone());
+            }
         }
         let events = crate::calendar::normalize_events(crate::calendar::dedup_meetings(events));
 
@@ -2356,6 +2402,10 @@ mod tests {
         {
             let mut app = Dispatch::get_active(PROG_ID).expect("attach");
             let mut session = app.get_object("Session").expect("session");
+            println!(
+                "live: calendar colors={:?}",
+                outlook_nav::read_calendar_colors(&mut session).map(|c| c.into_values().collect::<Vec<_>>()).map_err(|e| e.to_string())
+            );
             println!(
                 "live: colored categories={:?} unread meeting requests={:?}",
                 read_category_colors(&mut session).map(|c| c.len()).map_err(|e| e.to_string()),

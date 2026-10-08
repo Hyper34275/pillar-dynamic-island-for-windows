@@ -103,6 +103,41 @@ display" and could move Outlook away from what the employee is looking at. The i
 switches module or view and never activates Outlook. The page holds a switch it just turned until a
 report reflects it, at most 15 s, and turns it back with a message if the request could not be sent.
 
+## Calendar colours
+
+Since 1.0.10 the island shows each calendar in the colour Outlook gives it in the Calendar pane.
+The object model has no property for that colour. Outlook keeps it on the pane's shortcut for the
+calendar: an `IPM.Microsoft.WunderBar.Link` associated item in the default store's Common Views
+folder (`PR_COMMON_VIEWS_ENTRYID` 0x35E6 on the store), property `PidTagWlinkCalendarColor`
+(0x6853, MS-OXOCFG), matched to the calendar by `PidTagWlinkEntryId` (0x684C) = the folder's
+EntryID. Read with `Folder.GetTable(filter, olHiddenItems)`, at most every 5 minutes like the
+category colours. A failure keeps the last colours and logs `calendar colors not read`.
+
+| Value | Colour | Value | Colour |
+|---|---|---|---|
+| 0 | Blue | 7 | Red |
+| 1 | Green | 8 | Orange |
+| 2 | Peach | 9 | Purple |
+| 3 | Gray | 10 | Tan |
+| 4 | Teal | 11 | Light green |
+| 5 | Pink | 12 | Yellow |
+| 6 | Olive | 13 | Light teal |
+
+-1 is "automatic". An active calendar on automatic gets the colour for its place among the
+calendars shown (the default calendar first: blue, then green, peach, ...), the way Outlook hands
+them out. The shades are the island's, close to Outlook's on a dark surface.
+
+Checked on the dev profile: the table reads, and the default calendar's shortcut matches its
+EntryID exactly (colour -1 there). Explicit colours and shared calendars' shortcuts are not
+verified against Exchange yet.
+
+What the page shows, only while more than one calendar is active (every event then carries
+`calendarColor`): list rows and the next-meeting card show the calendar's stripe first, then the
+category's stripe when the event has one. Day timeline blocks are filled with the calendar's
+colour, with the category colour as an edge at the start. With one calendar nothing changes: the
+category colour (or the default blue) as before. Each source's mark in the sources list has its
+calendar's colour (`color`).
+
 ## Live updates
 
 `NavWatcher` advises `NavigationGroupsEvents_12` on the active explorer's calendar groups and

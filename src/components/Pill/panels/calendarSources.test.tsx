@@ -6,6 +6,8 @@ import { MeetingAlert, meetingAlertAnnouncement } from "../MeetingAlert";
 import { eventSourceLabel, openRequests, sourceCounts, sourceStatusKeys, withRequest } from "../../../lib/calendar/sources";
 import type { CalendarEventDto, CalendarSnapshot, CalendarSourceDto, CalendarSourcesReport } from "../../../lib/calendar/types";
 import type { ReminderAlert } from "../../../lib/reminders/types";
+import { colorOf, stripesOf } from "../ui/eventColor";
+import { normalizeEvent, normalizeSource } from "../../../lib/calendar/normalize";
 
 const NOW = Date.UTC(2026, 9, 6, 10, 0, 0);
 const iso = (offsetMin: number) => new Date(NOW + offsetMin * 60_000).toISOString();
@@ -178,5 +180,45 @@ describe("meeting reminder from a shared calendar", () => {
   it("adds nothing for the user's own calendar", () => {
     const own = { ...alert, sourceKind: "primary" as const, calendarName: "Calendar" };
     expect(renderToStaticMarkup(<MeetingAlert alert={own} nowMs={NOW} />)).not.toContain(" · ");
+  });
+});
+
+describe("calendar colours", () => {
+  const GREEN = "#8CC06A";
+  const PEACH = "#E8967E";
+  const CATEGORY = "#3267B8";
+
+  it("puts the calendar's colour first and the category's after it, only while several calendars are shown", () => {
+    expect(stripesOf(event("a", 30, { color: CATEGORY }))).toEqual([CATEGORY]);
+    expect(stripesOf(event("a", 30))).toEqual([colorOf(event("a", 30))]);
+    expect(stripesOf(event("a", 30, { calendarColor: GREEN }))).toEqual([GREEN]);
+    expect(stripesOf(event("a", 30, { calendarColor: GREEN, color: CATEGORY }))).toEqual([GREEN, CATEGORY]);
+    // Where there is room for one colour, the category still wins and the calendar fills in for none.
+    expect(colorOf(event("a", 30, { calendarColor: GREEN, color: CATEGORY }))).toBe(CATEGORY);
+    expect(colorOf(event("a", 30, { calendarColor: GREEN }))).toBe(GREEN);
+  });
+
+  it("draws both stripes in the list and the calendar colour in the sources list", () => {
+    const html = renderToStaticMarkup(
+      <CalendarView
+        nowMs={NOW}
+        snapshot={snapshot([
+          event("mine", 30, { calendarColor: "#6CA0DC" }),
+          event("handover", 60, { calendarId: "support", calendarName: "Support", sourceKind: "shared", calendarColor: PEACH, color: CATEGORY }),
+        ])}
+      />
+    );
+    expect(html).toContain(`background:${PEACH}`);
+    expect(html).toContain(`background:${CATEGORY}`);
+    const sources = renderToStaticMarkup(<CalendarSources report={report([source("team", { color: GREEN })])} defaultOpen />);
+    expect(sources).toContain(`background:${GREEN}`);
+  });
+
+  it("keeps only well-formed colours from the backend", () => {
+    const raw = { id: "e", startUtc: iso(0), endUtc: iso(30) };
+    expect(normalizeEvent({ ...raw, calendarColor: PEACH })?.calendarColor).toBe(PEACH);
+    expect(normalizeEvent({ ...raw, calendarColor: "red" })?.calendarColor).toBeUndefined();
+    expect(normalizeSource({ id: "s", color: GREEN })?.color).toBe(GREEN);
+    expect(normalizeSource({ id: "s", color: "url(x)" })?.color).toBeUndefined();
   });
 });

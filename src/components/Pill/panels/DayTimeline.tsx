@@ -13,6 +13,8 @@ const MAX_LANES = 3;
 const TRACK_HEIGHT = 24;
 const TRACK_RADIUS = 8;
 const LANE_GAP = 2;
+/** The category colour at the start of a block that is coloured by its calendar. */
+const CATEGORY_EDGE = 3;
 
 export interface TimelineBlock {
   event: CalendarEventDto;
@@ -103,17 +105,22 @@ export function DayTimeline({ events, dayStartMs, nowMs, colorOf }: DayTimelineP
         {blocks.map(({ event, left, width, lane }) => (
           <span
             key={`${event.calendarId}:${event.id}`}
-            className="ci-mark absolute rounded"
+            className="ci-mark absolute rounded overflow-hidden"
             title={`${formatTime(new Date(event.startUtc))} ${event.subject}${event.sourceKind && event.sourceKind !== "primary" && event.calendarName ? ` · ${event.calendarName}` : ""}`}
             style={{
               insetInlineStart: `${left * 100}%`,
               width: `max(3px, calc(${width * 100}% - 1px))`,
               top: lane * (laneHeight + LANE_GAP),
               height: laneHeight,
-              background: colorOf(event),
+              // Several calendars shown: the block is its calendar's colour, its category an edge at the start.
+              background: event.calendarColor ?? colorOf(event),
               opacity: Date.parse(event.endUtc) <= nowMs ? 0.45 : 0.9,
             }}
-          />
+          >
+            {event.calendarColor && event.color && (
+              <span className="absolute top-0 bottom-0" style={{ insetInlineStart: 0, width: CATEGORY_EDGE, background: event.color }} />
+            )}
+          </span>
         ))}
         {showNow && (
           <span

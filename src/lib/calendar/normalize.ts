@@ -84,6 +84,7 @@ export function normalizeEvent(raw: unknown): CalendarEventDto | null {
     busyStatus: oneOf(raw.busyStatus, BUSY, "busy"),
     responseStatus: oneOf(raw.responseStatus, RESPONSE, "none"),
     color: hexColor(raw.color),
+    calendarColor: hexColor(raw.calendarColor) ?? undefined,
   };
 }
 
@@ -101,6 +102,7 @@ export function normalizeSource(raw: unknown): CalendarSourceDto | null {
     selected: raw.selected === true,
     active: raw.active === true,
     pendingInOutlook: raw.pendingInOutlook === true,
+    color: hexColor(raw.color) ?? undefined,
     state: oneOf(raw.state, STATES, "unavailable"),
     errorCode: nonEmptyString(raw.errorCode),
     eventCount: Math.max(0, Math.round(finiteNumber(raw.eventCount) ?? 0)),

@@ -1,4 +1,4 @@
-//! Outlook's Calendar navigation pane: which calendars the user has (My Calendars, Shared
+//! Outlook's Calendar navigation pane: whilet full = row.call("BinaryToString", vec![com::variant_from_i32(2)]).ok().as_ref().and_then(com::variant_string).map(|s| s.to_ascii_uppercase()); println!("probe: matches default calendar={} entry={entry:?} color={color:?}", full.as_deref() == Some(cal_entry.as_str()));h calendars the user has (My Calendars, Shared
 //! Calendars, Other Calendars, groups of their own) and which of them are checked.
 //!
 //! Read-only, with one exception: a calendar switched on or off in the island is checked or
@@ -11,6 +11,9 @@
 //! Object path (Outlook 2007+): `Explorer.NavigationPane.Modules.GetNavigationModule(olModuleCalendar)`
 //! -> `NavigationGroups` -> `NavigationGroup` (`GroupType`) -> `NavigationFolders` -> `NavigationFolder`
 //! (`DisplayName`, `IsSelected`, `Folder`). Getting the module does not switch the pane to it.
+//!
+//! Each calendar's colour is read from the pane's shortcuts in the default store's Common Views
+//! folder ([`read_calendar_colors`]): the object model has no property for it.
 //!
 //! Groups are told apart by `NavigationGroup.GroupType` (`OlGroupType`), a language-neutral enum,
 //! never by their localized names. A calendar's kind also looks at its folder's store, because
@@ -355,6 +358,82 @@ pub fn scan(explorer: &mut Dispatch, own_store_id: &str, cache: &mut FolderCache
 }
 
 // =============================================================================
+// Calendar colors
+// =============================================================================
+
+/// The default store's Common Views folder, where the navigation pane's shortcuts live.
+const PR_COMMON_VIEWS_ENTRYID: &str = "http://schemas.microsoft.com/mapi/proptag/0x35E60102";
+/// A shortcut's folder (PidTagWlinkEntryId) and its calendar color (PidTagWlinkCalendarColor).
+const PR_WLINK_ENTRYID: &str = "http://schemas.microsoft.com/mapi/proptag/0x684C0102";
+const PR_WLINK_CALENDAR_COLOR: &str = "http://schemas.microsoft.com/mapi/proptag/0x68530003";
+const WLINK_FILTER: &str = "[MessageClass] = 'IPM.Microsoft.WunderBar.Link'";
+/// `OlTableContents.olHiddenItems`: the folder's associated (hidden) items.
+const OL_HIDDEN_ITEMS: i32 = 1;
+/// Far above any real pane.
+const MAX_WLINKS: usize = 600;
+
+/// PidTagWlinkCalendarColor (MS-OXOCFG): 0 Blue, 1 Green, 2 Peach, 3 Gray, 4 Teal, 5 Pink,
+/// 6 Olive, 7 Red, 8 Orange, 9 Purple, 10 Tan, 11 Light green, 12 Yellow, 13 Light teal;
+/// -1 is "automatic". The shades are the island's, close to Outlook's on a dark surface.
+const CALENDAR_COLORS: [&str; 14] = [
+    "#6CA0DC", "#8CC06A", "#E8967E", "#A6A6A6", "#4DB6AC", "#E88BB8", "#B5B35C", "#E06C6C", "#F0A35E", "#A68BD8", "#C9AD86",
+    "#A8DC8C", "#E8D36A", "#86D3D3",
+];
+
+/// The color of a PidTagWlinkCalendarColor value, `None` for "automatic" (or anything unknown).
+pub fn calendar_color(index: i32) -> Option<&'static str> {
+    usize::try_from(index).ok().and_then(|i| CALENDAR_COLORS.get(i)).copied()
+}
+
+/// The color Outlook picks for the `n`th calendar it shows without a color of its own: the
+/// default calendar gets the first (blue), the next ones go on through the list.
+pub fn automatic_color(n: usize) -> &'static str {
+    CALENDAR_COLORS[n % CALENDAR_COLORS.len()]
+}
+
+/// The color the user gave each calendar in Outlook's pane: folder EntryID (upper-case hex) ->
+/// PidTagWlinkCalendarColor. Read from the shortcuts in the default store's Common Views
+/// folder, the only place Outlook keeps it; the object model has no property for it. Calendars
+/// left on "automatic" are not in the map.
+pub fn read_calendar_colors(session: &mut Dispatch) -> ComResult<HashMap<String, i32>> {
+    let mut colors = HashMap::new();
+    let mut store = session.get_object("DefaultStore")?;
+    let store_id = str_prop(&mut store, "StoreID")?.unwrap_or_default();
+    let mut accessor = store.get_object("PropertyAccessor")?;
+    let raw = accessor.call("GetProperty", vec![com::variant_from_str(PR_COMMON_VIEWS_ENTRYID)])?;
+    let entry_id = com::variant_string(&accessor.call("BinaryToString", vec![raw])?).unwrap_or_default();
+    if entry_id.is_empty() {
+        return Ok(colors);
+    }
+    let Some(mut views) = session.call_object("GetFolderFromID", vec![com::variant_from_str(&entry_id), com::variant_from_str(&store_id)])? else {
+        return Ok(colors);
+    };
+    let Some(mut table) = views.call_object("GetTable", vec![com::variant_from_str(WLINK_FILTER), com::variant_from_i32(OL_HIDDEN_ITEMS)])? else {
+        return Ok(colors);
+    };
+    let mut columns = table.get_object("Columns")?;
+    columns.call("RemoveAll", Vec::new())?;
+    columns.call("Add", vec![com::variant_from_str(PR_WLINK_ENTRYID)])?;
+    columns.call("Add", vec![com::variant_from_str(PR_WLINK_CALENDAR_COLOR)])?;
+    drop(columns);
+    for _ in 0..MAX_WLINKS {
+        if bool_prop(&mut table, "EndOfTable")? {
+            break;
+        }
+        let Some(mut row) = table.call_object("GetNextRow", Vec::new())? else { break };
+        // A shortcut without a folder or a color (mail, contacts, a group header) is skipped.
+        let Some(color) = optional(row.call("Item", vec![com::variant_from_i32(2)]))?.as_ref().and_then(com::variant_i32) else {
+            continue;
+        };
+        let folder = optional(row.call("BinaryToString", vec![com::variant_from_i32(1)]))?.as_ref().and_then(com::variant_string);
+        if let (Some(folder), Some(_)) = (folder, calendar_color(color)) {
+            colors.insert(folder.to_ascii_uppercase(), color);
+        }
+    }
+    Ok(colors)
+}
+
+// =============================================================================
 // Which calendars are checked
 // =============================================================================
 
@@ -643,6 +722,19 @@ mod tests {
         assert_eq!(again.pending().get("cccccccccccccccc"), Some(&true));
         assert_eq!(again.resolve(None).0["cccccccccccccccc"], true);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn calendar_colors_follow_pid_tag_wlink_calendar_color() {
+        assert_eq!(calendar_color(0), Some("#6CA0DC")); // blue
+        assert_eq!(calendar_color(1), Some("#8CC06A")); // green
+        assert_eq!(calendar_color(2), Some("#E8967E")); // peach
+        assert_eq!(calendar_color(13), Some("#86D3D3")); // light teal
+        assert_eq!(calendar_color(-1), None); // automatic
+        assert_eq!(calendar_color(14), None);
+        // Automatic: the default calendar blue, then green, peach, ... and round again.
+        assert_eq!([automatic_color(0), automatic_color(1), automatic_color(2)], ["#6CA0DC", "#8CC06A", "#E8967E"]);
+        assert_eq!(automatic_color(14), automatic_color(0));
     }
 
     #[test]

@@ -27,6 +27,7 @@ export type CalendarSourceDto = {
   selected: boolean; // checked in Outlook (as last known)
   active: boolean; // contributes events (selected, or the primary calendar)
   pendingInOutlook: boolean; // switched in the island; Outlook's checkbox follows once Outlook shows its calendar
+  color?: string; // "#RRGGBB" the calendar has in Outlook's pane (an active one always has one)
   state: CalendarSourceState;
   errorCode: string | null; // e.g. "CAL-SHARED-101"
   eventCount: number;
@@ -62,6 +63,8 @@ export type CalendarEventDto = {
   busyStatus: CalendarBusyStatus;
   responseStatus: CalendarResponseStatus;
   color: string | null; // "#RRGGBB" of the event's first colored Outlook category
+  /** "#RRGGBB" of its calendar in Outlook's pane; only while several calendars are shown. */
+  calendarColor?: string;
 };
 
 /** An unread Outlook meeting request in the Inbox. In memory only, like events. */

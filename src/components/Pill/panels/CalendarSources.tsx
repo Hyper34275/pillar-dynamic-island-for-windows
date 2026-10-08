@@ -9,7 +9,7 @@ import { GROUP_CLASS, Switch } from "../ui/primitives";
 
 type SetSelected = (id: string, selected: boolean) => Promise<boolean>;
 
-/** One calendar: a mark (filled = contributes events), its name, what it is / why it is quiet, and its switch. */
+/** One calendar: a mark in its Outlook colour (filled = contributes events), its name, what it is / why it is quiet, and its switch. */
 function SourceRow({ source, onSwitch }: { source: CalendarSourceDto; onSwitch: (source: CalendarSourceDto) => void }) {
   const name = source.name || t(sourceStatusKeys(source)[0]);
   const detail = sourceStatusKeys(source).map((key) => t(key));
@@ -21,8 +21,9 @@ function SourceRow({ source, onSwitch }: { source: CalendarSourceDto; onSwitch: 
         style={{
           width: compact.statusDot,
           height: compact.statusDot,
-          background: source.active ? (source.state === "unavailable" ? color.warning : color.positive) : "transparent",
-          boxShadow: source.active ? undefined : `inset 0 0 0 1.5px ${color.fgTertiary}`,
+          // Its colour in Outlook, the one its meetings carry; amber while it cannot be read.
+          background: source.active ? (source.state === "unavailable" ? color.warning : (source.color ?? color.positive)) : "transparent",
+          boxShadow: source.active ? undefined : `inset 0 0 0 1.5px ${source.color ?? color.fgTertiary}`,
         }}
         aria-hidden="true"
       />

@@ -145,6 +145,8 @@ pub struct CalendarSourceDto {
     pub active: bool,
     /// Switched in the island; Outlook's own checkbox follows once Outlook shows its calendar.
     pub pending_in_outlook: bool,
+    /// `#RRGGBB` the calendar has in Outlook's pane (for an active one, also an automatic color).
+    pub color: Option<String>,
     pub state: SourceState,
     /// e.g. "CAL-SHARED-101"
     pub error_code: Option<String>,
@@ -203,6 +205,8 @@ pub struct CalendarEventDto {
     pub response_status: ResponseStatus,
     /// `#RRGGBB` of the first of the item's Outlook categories that has a color.
     pub color: Option<String>,
+    /// `#RRGGBB` of its calendar in Outlook's pane, only while several calendars are active.
+    pub calendar_color: Option<String>,
 }
 
 /// An unread meeting request in the default Inbox. Memory only, like events.
@@ -1159,6 +1163,7 @@ mod tests {
             busy_status: BusyStatus::Busy,
             response_status: ResponseStatus::Accepted,
             color: None,
+            calendar_color: None,
         }
     }
 
@@ -1282,6 +1287,7 @@ mod tests {
                 busy_status: BusyStatus::WorkingElsewhere,
                 response_status: ResponseStatus::NotResponded,
                 color: Some("#3267B8".into()),
+                calendar_color: None,
                 ..ev("a", 0, 30)
             }],
             invites: vec![MeetingInviteDto {
@@ -1377,6 +1383,7 @@ mod tests {
                     selected: true,
                     active: true,
                     pending_in_outlook: false,
+                    color: None,
                     state: SourceState::Ok,
                     error_code: None,
                     event_count: 0,

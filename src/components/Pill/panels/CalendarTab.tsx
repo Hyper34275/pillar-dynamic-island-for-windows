@@ -20,7 +20,7 @@ import { ActionButton, ActionRow, RoundButton } from "../ui/controls";
 import { BellFilledIcon, BellSlashIcon, CalendarIcon, VideoIcon } from "../ui/icons";
 import { InviteActions, JoinButton } from "../ui/meetingActions";
 import { ipc } from "../../../lib/ipc";
-import { colorOf } from "../ui/eventColor";
+import { colorOf, stripesOf } from "../ui/eventColor";
 import { DayTimeline } from "./DayTimeline";
 import { addDays, WeekStrip } from "./WeekStrip";
 
@@ -64,9 +64,11 @@ const MAX_LISTED = 50;
 /** The regular sync reads now .. +48 h; a day inside that is never read again on demand. */
 const SYNC_HORIZON_MS = 48 * 3_600_000;
 
-/** Row geometry: 44 high (the hit minimum), a 4-wide colour bar inset 8 top and bottom, a fixed lead column. */
+/** Row geometry: 44 high (the hit minimum), 4-wide colour bars inset 8 top and bottom, a fixed lead column. */
 const ROW_HEIGHT = control.hit;
 const ROW_BAR_WIDTH = 4;
+/** Between the calendar stripe and the category stripe when an event shows both. */
+const ROW_BAR_GAP = 2;
 const ROW_BAR_HEIGHT = ROW_HEIGHT - 16;
 const LEAD_WIDTH = 48;
 
@@ -97,9 +99,19 @@ function withDay(event: CalendarEventDto, nowMs: number, text: string): ReactNod
   return day ? <>{day}, {range}</> : range;
 }
 
-/** The event's Outlook category colour as a rounded bar (radius = half its width), at the row's leading edge. */
-function ColorBar({ event, height }: { event: CalendarEventDto; height: number }) {
-  return <span className="ci-mark flex-shrink-0 rounded-full" style={{ width: ROW_BAR_WIDTH, height, background: colorOf(event) }} aria-hidden="true" />;
+/**
+ * The event's colours as rounded bars (radius = half their width) at the leading edge: its Outlook
+ * category colour, or, with several calendars shown, its calendar's colour and then the category's.
+ * Without a height the bars stretch to the row.
+ */
+function ColorBar({ event, height }: { event: CalendarEventDto; height?: number }) {
+  return (
+    <span className={`flex flex-shrink-0 ${height === undefined ? "self-stretch" : ""}`} style={{ gap: ROW_BAR_GAP }} aria-hidden="true">
+      {stripesOf(event).map((stripe, i) => (
+        <span key={i} className="ci-mark rounded-full" style={{ width: ROW_BAR_WIDTH, height, background: stripe }} />
+      ))}
+    </span>
+  );
 }
 
 /** A small round "join" button for rows. */
@@ -164,7 +176,7 @@ function NextMeetingCard({ event, nowMs, silenceUntil }: { event: CalendarEventD
   return (
     <section className="ci-surface rounded-surface p-card-pad flex flex-col gap-3" aria-label={caption}>
       <div className="flex gap-3">
-        <span className="ci-mark flex-shrink-0 self-stretch rounded-full" style={{ width: ROW_BAR_WIDTH, background: colorOf(event) }} aria-hidden="true" />
+        <ColorBar event={event} />
         <div className="min-w-0 flex-1 flex flex-col">
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-meta text-fg-tertiary truncate" title={source ?? undefined}>
