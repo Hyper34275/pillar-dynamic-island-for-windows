@@ -357,8 +357,8 @@ export const glow = {
 } as const;
 
 /**
- * The spotlight variant of the smart search bar (centre of the screen, "Aurora capsule").
- * The capsule is always dark ink: it floats over any wallpaper or window.
+ * The spotlight variant of the smart search bar (centre of the screen).
+ * The capsule is black and white (it floats over any wallpaper or window); colour lives only in the halo.
  */
 export const spotlight = {
   /** Capsule size (DIPs); the window is the capsule plus `margin` on every side. */
@@ -366,10 +366,10 @@ export const spotlight = {
   height: 60,
   margin: 28,
   radius: 30,
-  inkTop: "#161833",
-  inkBottom: "#0E0F1A",
+  inkTop: "#17171A",
+  inkBottom: "#0B0B0D",
   /** Rim thickness (DIPs). */
-  rim: 1.25,
+  rim: 1,
 } as const;
 
 /** The conic stops in order; cyan repeats at the end so the loop closes without a seam. */
