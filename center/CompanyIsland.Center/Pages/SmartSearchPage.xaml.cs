@@ -26,8 +26,8 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
     private IReadOnlyList<SearchResults> _history = [];
     private bool _connected;
     private bool _busy;
-    private string? _pendingText;
-    private long _pendingSince;
+    private SearchPending? _pending;
+    private bool _renderedInteractive;
     private string? _focusQuery;
     private int _reloadVersion;
 
@@ -36,7 +36,7 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
         _model = model;
         InitializeComponent();
         _model.SearchReady += OnSearchReady;
-        _model.SettingsChanged += UpdateInputState;
+        _model.SettingsChanged += OnSettingsChanged;
         BuildExamples();
         Render();
         UpdateInputState();
@@ -58,19 +58,51 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
     {
         _connected = connected;
         UpdateInputState();
+        RefreshButtons();
         if (connected)
         {
             ErrorBar.IsOpen = false;
-            _ = ReloadAsync(scrollToFocus: false);
+            // A cold start on search:<id> asked for that turn before the pipe was up.
+            _ = ReloadAsync(scrollToFocus: _focusQuery is not null);
         }
+    }
+
+    private void OnSettingsChanged()
+    {
+        UpdateInputState();
+        RefreshButtons();
     }
 
     private bool SearchEnabled => _model.Settings?.AiSearchEnabled ?? true;
 
+    /// <summary>
+    /// The choice, extend and remember controls are drawn enabled or not; redraw them (keeping the scroll position) when
+    /// whether the page can talk to the island changes, so a dead button never looks alive.
+    /// </summary>
+    private void RefreshButtons()
+    {
+        if (_renderedInteractive == (_connected && SearchEnabled))
+        {
+            return;
+        }
+
+        double offset = Scroller.VerticalOffset;
+        Render();
+        Conversation.UpdateLayout();
+        Scroller.ChangeView(null, offset, null, disableAnimation: true);
+    }
+
     private void UpdateInputState()
     {
         bool enabled = _connected && SearchEnabled;
+        bool wasEnabled = Input.IsEnabled;
         Input.IsEnabled = enabled && !_busy;
+        if (!wasEnabled && Input.IsEnabled && IsLoaded)
+        {
+            // A disabled box cannot take focus, so it comes back when the box does (first connect, end of a search).
+            Input.Focus(FocusState.Programmatic);
+        }
+
         SendButton.IsEnabled = enabled && !_busy && !string.IsNullOrWhiteSpace(Input.Text);
         OffBar.IsOpen = _connected && !SearchEnabled;
         ExamplesPanel.IsHitTestVisible = enabled && !_busy;
@@ -115,9 +147,15 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
         }
 
         Render();
-        if (scrollToFocus && SearchFormat.IndexOfQuery(_history, _focusQuery) >= 0)
+        string? focus = scrollToFocus ? _focusQuery : null;
+        if (scrollToFocus)
         {
-            ScrollToQuery(_focusQuery!);
+            _focusQuery = null; // once: a later reload or reconnect must not jump back to it
+        }
+
+        if (SearchFormat.IndexOfQuery(_history, focus) >= 0)
+        {
+            ScrollToQuery(focus!);
         }
         else
         {
@@ -140,16 +178,26 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
 
     // ----- actions -----
 
-    private async Task AskAsync(string text, Func<Task> run, string op)
+    private async Task AskAsync(SearchPendingKind kind, string text, string? queryId, Func<Task> run, string op)
     {
-        if (_busy || !_connected)
+        if (_busy)
         {
             return;
         }
 
+        if (!_connected)
+        {
+            ShowError(Strings.SearchFailed);
+            return;
+        }
+
         _busy = true;
-        _pendingText = text;
-        _pendingSince = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _pending = new SearchPending(kind, text, queryId, SearchFormat.LastQueryId(_history));
+        if (kind == SearchPendingKind.Submit)
+        {
+            _focusQuery = null; // the user moves on; the conversation goes to the end
+        }
+
         ErrorBar.IsOpen = false;
         UpdateInputState();
         Render();
@@ -166,7 +214,7 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
         finally
         {
             _busy = false;
-            _pendingText = null;
+            _pending = null;
             UpdateInputState();
         }
 
@@ -182,14 +230,15 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
         }
 
         Input.Text = "";
-        return AskAsync(text, () => _model.Client.SearchSubmitAsync(text), "searchSubmit");
+        return AskAsync(SearchPendingKind.Submit, text, null, () => _model.Client.SearchSubmitAsync(text), "searchSubmit");
     }
 
     private Task ChooseAsync(AssistantCard card, Choice choice, bool remember) =>
-        AskAsync(card.Query, () => _model.Client.SearchChooseAsync(card.QueryId, choice.Id, remember), "searchChoose");
+        AskAsync(SearchPendingKind.Choose, card.Query, card.QueryId,
+            () => _model.Client.SearchChooseAsync(card.QueryId, choice.Id, remember), "searchChoose");
 
     private Task ExtendAsync(AssistantCard card) =>
-        AskAsync(card.Query, () => _model.Client.SearchExtendAsync(card.QueryId), "searchExtend");
+        AskAsync(SearchPendingKind.Extend, card.Query, card.QueryId, () => _model.Client.SearchExtendAsync(card.QueryId), "searchExtend");
 
     private async Task OpenAsync(AssistantCard card, AssistantItem item)
     {
@@ -242,13 +291,22 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
         _anchors.Clear();
         Conversation.Children.Clear();
         long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        _renderedInteractive = _connected && SearchEnabled;
+        SearchPending? pending = _busy ? _pending : null;
+        int pendingTurn = pending?.TurnIndex(_history) ?? -1;
         for (int i = 0; i < _history.Count; i++)
         {
             SearchResults results = _history[i];
             bool last = i == _history.Count - 1;
             var turn = new StackPanel { Spacing = 8 };
             turn.Children.Add(UserBubble(results.Card.Query));
-            turn.Children.Add(AnswerCard(results, interactive: last && !_busy && _connected && SearchEnabled, now));
+            turn.Children.Add(AnswerCard(results, interactive: last && !_busy && _renderedInteractive, now));
+            if (i == pendingTurn)
+            {
+                // Choosing or searching longer works on this turn: the spinner goes under it, no second bubble.
+                turn.Children.Add(ProcessingCard());
+            }
+
             Conversation.Children.Add(turn);
             if (results.Card.QueryId.Length > 0)
             {
@@ -257,17 +315,14 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
         }
 
         // The question that is still being worked on (unless the history already has it).
-        if (_busy && _pendingText is not null && !HistoryHasPending())
+        if (pending is not null && pending.NeedsOwnTurn(_history))
         {
-            Conversation.Children.Add(UserBubble(_pendingText));
+            Conversation.Children.Add(UserBubble(pending.Text));
             Conversation.Children.Add(ProcessingCard());
         }
 
         EmptyState.Visibility = _history.Count == 0 && !_busy ? Visibility.Visible : Visibility.Collapsed;
     }
-
-    private bool HistoryHasPending() =>
-        _history.Count > 0 && _history[^1].Card.Query == _pendingText && _history[^1].Card.CreatedAt >= _pendingSince - 5000;
 
     private Border UserBubble(string query)
     {

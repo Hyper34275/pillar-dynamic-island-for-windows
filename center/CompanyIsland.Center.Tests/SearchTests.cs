@@ -393,6 +393,66 @@ public class SearchClientTests
         }
     }
 
+    [Theory]
+    [InlineData("mb:0123456789abcdef")]
+    [InlineData("cal:fedcba9876543210")]
+    [InlineData("all")]
+    public async Task Choose_sends_the_choice_ids_the_island_mints_unchanged(string optionId)
+    {
+        var (island, client) = await ConnectedAsync((s, cmd, a) => cmd == "searchChoose" ? Card : FakeIsland.DefaultHandler(s, cmd, a));
+        await using (island)
+        await using (client)
+        {
+            await client.SearchChooseAsync("q1", optionId, false);
+            JsonElement args = JsonDocument.Parse(island.Requests.Single(r => r.Cmd == "searchChoose").Args).RootElement;
+            Assert.Equal(optionId, args.GetProperty("optionId").GetString());
+            // The shape the island's validator accepts: "all", or mb:/cal: plus [A-Za-z0-9_-]{1,64}.
+            Assert.Matches("^(all|(mb|cal):[A-Za-z0-9_-]{1,64})$", args.GetProperty("optionId").GetString());
+        }
+    }
+
+    private static SearchResults Turn(string id, string query) => new() { Card = new AssistantCard { QueryId = id, Query = query } };
+
+    [Fact]
+    public void Choosing_or_searching_longer_adds_no_second_bubble_to_the_turn_it_works_on()
+    {
+        // An old card (created long ago): no clock decides anything.
+        var history = new List<SearchResults> { Turn("a", "mail from dana"), Turn("b", "files about tax") };
+        foreach (SearchPendingKind kind in new[] { SearchPendingKind.Choose, SearchPendingKind.Extend })
+        {
+            var pending = new SearchPending(kind, "files about tax", "b", "b");
+            Assert.Equal(1, pending.TurnIndex(history));
+            Assert.False(pending.NeedsOwnTurn(history), kind.ToString());
+        }
+
+        // The turn is gone from the history (it expired): the question gets a turn of its own.
+        var lost = new SearchPending(SearchPendingKind.Choose, "x", "zz", "b");
+        Assert.Equal(-1, lost.TurnIndex(history));
+        Assert.True(lost.NeedsOwnTurn(history));
+    }
+
+    [Fact]
+    public void A_new_question_shows_until_a_new_turn_with_its_text_appears()
+    {
+        var before = new List<SearchResults> { Turn("a", "same question") };
+        string? last = SearchFormat.LastQueryId(before);
+        var pending = new SearchPending(SearchPendingKind.Submit, "same question", null, last);
+
+        // Asked again right away: the old identical turn must not hide the new question.
+        Assert.True(pending.NeedsOwnTurn(before));
+        Assert.Equal(-1, pending.TurnIndex(before));
+
+        // The island recorded it as a new turn.
+        var after = new List<SearchResults> { Turn("a", "same question"), Turn("b", "same question") };
+        Assert.False(pending.NeedsOwnTurn(after));
+
+        // First question ever.
+        var first = new SearchPending(SearchPendingKind.Submit, "hello", null, SearchFormat.LastQueryId(new List<SearchResults>()));
+        Assert.Null(SearchFormat.LastQueryId(new List<SearchResults>()));
+        Assert.True(first.NeedsOwnTurn(new List<SearchResults>()));
+        Assert.False(first.NeedsOwnTurn(new List<SearchResults> { Turn("a", "hello") }));
+    }
+
     [Fact]
     public async Task An_island_error_surfaces_with_its_code()
     {

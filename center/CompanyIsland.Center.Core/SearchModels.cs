@@ -294,4 +294,41 @@ public static class SearchFormat
 
         return -1;
     }
+
+    /// <summary>The query id of the newest turn, or null when there is none (taken before a question is sent).</summary>
+    public static string? LastQueryId(IReadOnlyList<SearchResults> history) =>
+        history.Count == 0 ? null : history[^1].Card.QueryId;
+
+    /// <summary>
+    /// Whether a question sent from this page already shows in the history: the newest turn carries that text and is not the
+    /// turn that was newest before sending. No clocks: a repeat of an old question is a new turn with a new id.
+    /// </summary>
+    public static bool SubmitInHistory(IReadOnlyList<SearchResults> history, string text, string? lastIdBefore) =>
+        history.Count > 0 && history[^1].Card.Query == text && history[^1].Card.QueryId != lastIdBefore;
+}
+
+/// <summary>What the Smart Search page is waiting for: a new question, or an action on a turn that is already shown.</summary>
+public enum SearchPendingKind
+{
+    Submit,
+    Choose,
+    Extend,
+}
+
+/// <summary>
+/// One running search command. A new question needs a bubble and a spinner of its own; choosing or searching longer works on
+/// an existing turn, so the spinner goes under that turn and nothing is added to the conversation.
+/// </summary>
+public sealed record SearchPending(SearchPendingKind Kind, string Text, string? QueryId, string? LastQueryIdBefore)
+{
+    /// <summary>The turn the spinner belongs to (Choose and Extend), when the history has it.</summary>
+    public int TurnIndex(IReadOnlyList<SearchResults> history) =>
+        Kind == SearchPendingKind.Submit ? -1 : SearchFormat.IndexOfQuery(history, QueryId);
+
+    /// <summary>True when the conversation must get an extra bubble and spinner after the last turn.</summary>
+    public bool NeedsOwnTurn(IReadOnlyList<SearchResults> history) => Kind switch
+    {
+        SearchPendingKind.Submit => !SearchFormat.SubmitInHistory(history, Text, LastQueryIdBefore),
+        _ => TurnIndex(history) < 0,
+    };
 }

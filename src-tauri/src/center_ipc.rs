@@ -248,6 +248,17 @@ impl Cmd {
     }
 }
 
+impl Cmd {
+    /// Commands that can run for seconds (they search Outlook, files or apps). The connection
+    /// runs these on their own task so the requests behind them are not held up.
+    pub fn is_slow(&self) -> bool {
+        matches!(
+            self,
+            Cmd::SearchSubmit { .. } | Cmd::SearchChoose { .. } | Cmd::SearchExtend { .. } | Cmd::SearchOpen { .. }
+        )
+    }
+}
+
 /// Clip to `max` characters.
 fn clip(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
@@ -262,6 +273,19 @@ const MAX_QUERY_CHARS: usize = 500;
 fn id_arg(args: &Value, name: &str) -> Result<String, String> {
     match args.get(name) {
         Some(Value::String(id)) if notes::valid_id(id) => Ok(id.clone()),
+        _ => Err(invalid_args()),
+    }
+}
+
+/// A clarification choice: `all`, or `mb:<id>` / `cal:<id>` as `assistant::exec` mints them
+/// (the part after the prefix follows the same rule as every other id).
+fn valid_option_id(id: &str) -> bool {
+    id == "all" || id.strip_prefix("mb:").or_else(|| id.strip_prefix("cal:")).is_some_and(notes::valid_id)
+}
+
+fn option_id_arg(args: &Value, name: &str) -> Result<String, String> {
+    match args.get(name) {
+        Some(Value::String(id)) if valid_option_id(id) => Ok(id.clone()),
         _ => Err(invalid_args()),
     }
 }
@@ -307,7 +331,7 @@ pub fn parse_command(cmd: &str, args: &Value) -> Result<Cmd, String> {
         }
         "searchChoose" => Cmd::SearchChoose {
             query_id: id_arg(args, "queryId")?,
-            option_id: id_arg(args, "optionId")?,
+            option_id: option_id_arg(args, "optionId")?,
             remember: match args.get("remember") {
                 None | Some(Value::Null) => false,
                 Some(Value::Bool(b)) => *b,
@@ -616,35 +640,60 @@ impl Session {
         Ok(json!({ "protocol": PROTOCOL, "appVersion": env!("CARGO_PKG_VERSION") }))
     }
 
-    async fn request(&mut self, req: Request) -> Value {
+    /// Answer a request now, or hand back a slow search command to be run on its own task. `hello`
+    /// and every fast command stay inline, so their replies keep the order of the requests.
+    async fn dispatch(&mut self, req: Request) -> Dispatch {
         let Request { id, cmd, args } = req;
         if cmd == "hello" {
-            return response(id, self.hello(&args));
+            return Dispatch::Reply(response(id, self.hello(&args)));
         }
         if !self.ready {
-            return response(id, Err("APP-031: hello required".to_string()));
+            return Dispatch::Reply(response(id, Err("APP-031: hello required".to_string())));
         }
         match parse_command(&cmd, &args) {
-            Ok(command) => {
-                dlog!("DEBUG", "center", "command {}", command.name());
-                response(id, self.backend.run(command).await)
-            }
-            Err(error) => response(id, Err(error)),
+            Ok(command) if command.is_slow() => Dispatch::Slow { id, command },
+            Ok(command) => Dispatch::Reply(run_command(&self.backend, id, command).await),
+            Err(error) => Dispatch::Reply(response(id, Err(error))),
         }
     }
 
-    /// One line in, one line (with its `\n`) out.
+    async fn dispatch_line(&mut self, line: &[u8]) -> Dispatch {
+        match parse_request(line) {
+            Ok(req) => self.dispatch(req).await,
+            Err((Some(id), error)) => Dispatch::Reply(response(id, Err(error))),
+            Err((None, error)) => Dispatch::Reply(id_less_error(error)),
+        }
+    }
+
+    /// One line in, one line (with its `\n`) out; slow commands are awaited here.
+    #[cfg(test)]
     async fn handle_line(&mut self, line: &[u8]) -> Arc<str> {
-        let value = match parse_request(line) {
-            Ok(req) => self.request(req).await,
-            Err((Some(id), error)) => response(id, Err(error)),
-            Err((None, error)) => id_less_error(error),
+        let value = match self.dispatch_line(line).await {
+            Dispatch::Reply(value) => value,
+            Dispatch::Slow { id, command } => run_command(&self.backend, id, command).await,
         };
-        let mut text = value.to_string();
-        text.push('\n');
-        Arc::from(text)
+        reply_line(value)
     }
 }
+
+enum Dispatch {
+    Reply(Value),
+    Slow { id: u64, command: Cmd },
+}
+
+async fn run_command(backend: &Arc<dyn CenterBackend>, id: u64, command: Cmd) -> Value {
+    dlog!("DEBUG", "center", "command {}", command.name());
+    response(id, backend.run(command).await)
+}
+
+fn reply_line(value: Value) -> Arc<str> {
+    let mut text = value.to_string();
+    text.push('\n');
+    Arc::from(text)
+}
+
+/// Searches a connection may have running at once; more are refused rather than queued.
+const MAX_SLOW_IN_FLIGHT: usize = 2;
 
 async fn write_loop<W: AsyncWrite + Unpin>(mut writer: W, mut lines: mpsc::Receiver<Arc<str>>) {
     while let Some(line) = lines.recv().await {
@@ -666,7 +715,9 @@ where
     dlog!("INFO", "center", "client connected, pid {}", pid);
     let writer = tokio::spawn(write_loop(write_half, rx));
 
-    let mut session = Session { hub: hub.clone(), backend, client_id, ready: false };
+    let mut session = Session { hub: hub.clone(), backend: backend.clone(), client_id, ready: false };
+    // Slow search commands run here, off the read loop; aborted when the connection ends.
+    let mut slow: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     let mut reader = BufReader::new(read_half);
     let mut line = Vec::new();
     loop {
@@ -689,11 +740,26 @@ where
         if line.is_empty() {
             continue;
         }
-        let reply = session.handle_line(&line).await;
+        while slow.try_join_next().is_some() {}
+        let reply = match session.dispatch_line(&line).await {
+            Dispatch::Reply(value) => reply_line(value),
+            Dispatch::Slow { id, .. } if slow.len() >= MAX_SLOW_IN_FLIGHT => {
+                reply_line(response(id, Err("APP-031: too many searches at once".to_string())))
+            }
+            Dispatch::Slow { id, command } => {
+                let (backend, hub, tx, kill) = (backend.clone(), hub.clone(), tx.clone(), kill.clone());
+                slow.spawn(async move {
+                    let reply = reply_line(run_command(&backend, id, command).await);
+                    hub.push(client_id, &tx, &kill, reply);
+                });
+                continue;
+            }
+        };
         if !hub.push(client_id, &tx, &kill, reply) {
             break;
         }
     }
+    slow.abort_all();
     hub.unregister(client_id);
     drop(tx);
     // Dropping the write half (with the read half, at the end of this function) closes the pipe.
@@ -968,6 +1034,25 @@ mod tests {
     }
 
     #[test]
+    fn choice_ids_have_the_shapes_the_assistant_mints() {
+        // exec.rs: "mb:" + hash16 (16 hex), "cal:" + a calendar id (hash16), and "all".
+        for good in ["mb:0123456789abcdef", "cal:fedcba9876543210", "all", "mb:a_b-c"] {
+            match parse_command("searchChoose", &json!({"queryId": "q-1", "optionId": good})) {
+                Ok(Cmd::SearchChoose { option_id, .. }) => assert_eq!(option_id, good),
+                other => panic!("{good}: {other:?}"),
+            }
+        }
+        for bad in ["", "mb:", "cal:", "mb", "x:0123", "mb:a:b", "mb:a/b", "mb:a b", "MB:abc", "all ", "mb:%s", &"mb:".repeat(40)] {
+            assert!(parse_command("searchChoose", &json!({"queryId": "q-1", "optionId": bad})).is_err(), "{bad}");
+        }
+        let long = format!("cal:{}", "a".repeat(65));
+        assert!(parse_command("searchChoose", &json!({"queryId": "q-1", "optionId": long})).is_err());
+        // The ids used for queries and items keep the plain rule.
+        assert!(parse_command("searchOpen", &json!({"queryId": "q1", "itemId": "mb:0123"})).is_err());
+        assert!(parse_command("searchExtend", &json!({"queryId": "cal:1"})).is_err());
+    }
+
+    #[test]
     fn search_commands_are_validated() {
         match parse_command("searchSubmit", &json!({"text": "מה יש לאיציק ביומן מחר?"})).unwrap() {
             Cmd::SearchSubmit { text } => assert_eq!(text, "מה יש לאיציק ביומן מחר?"),
@@ -978,9 +1063,9 @@ mod tests {
             assert_eq!(parse_command("searchSubmit", &bad).unwrap_err(), "APP-031: invalid arguments", "{bad}");
         }
 
-        match parse_command("searchChoose", &json!({"queryId": "q-1", "optionId": "mb_2", "remember": true})).unwrap() {
+        match parse_command("searchChoose", &json!({"queryId": "q-1", "optionId": "mb:0123456789abcdef", "remember": true})).unwrap() {
             Cmd::SearchChoose { query_id, option_id, remember } => {
-                assert_eq!((query_id.as_str(), option_id.as_str(), remember), ("q-1", "mb_2", true));
+                assert_eq!((query_id.as_str(), option_id.as_str(), remember), ("q-1", "mb:0123456789abcdef", true));
             }
             other => panic!("{other:?}"),
         }
@@ -990,11 +1075,11 @@ mod tests {
         }
         for bad in [
             json!({"queryId": "q1"}),
-            json!({"optionId": "a"}),
-            json!({"queryId": "q 1", "optionId": "a"}),
+            json!({"optionId": "all"}),
+            json!({"queryId": "q 1", "optionId": "all"}),
             json!({"queryId": "q1", "optionId": "a/b"}),
-            json!({"queryId": "q1", "optionId": "a", "remember": "yes"}),
-            json!({"queryId": 7, "optionId": "a"}),
+            json!({"queryId": "q1", "optionId": "all", "remember": "yes"}),
+            json!({"queryId": 7, "optionId": "all"}),
         ] {
             assert!(parse_command("searchChoose", &bad).is_err(), "{bad}");
         }
@@ -1232,7 +1317,124 @@ mod tests {
         }
     }
 
-    fn start_server(name: &str, backend: Arc<Fake>) -> Arc<Hub> {
+    /// Searches wait on `gate` (one permit lets one finish); everything else answers at once.
+    /// `running` counts searches that have started and not yet finished or been dropped.
+    struct Gated {
+        gate: Arc<tokio::sync::Semaphore>,
+        running: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct Running(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for Running {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl CenterBackend for Gated {
+        fn run(&self, cmd: Cmd) -> BoxFuture<Result<Value, String>> {
+            if !cmd.is_slow() {
+                return Box::pin(async { Ok(json!("fast")) });
+            }
+            let (gate, running) = (self.gate.clone(), self.running.clone());
+            Box::pin(async move {
+                running.fetch_add(1, Ordering::SeqCst);
+                let _running = Running(running);
+                gate.acquire().await.unwrap().forget();
+                Ok(json!("slow"))
+            })
+        }
+    }
+
+    fn gated() -> (Arc<Gated>, Arc<tokio::sync::Semaphore>, Arc<std::sync::atomic::AtomicUsize>) {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let running = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (Arc::new(Gated { gate: gate.clone(), running: running.clone() }), gate, running)
+    }
+
+    async fn hello(wire: &mut Wire) {
+        wire.send(r#"{"id": 1, "cmd": "hello", "args": {"client": "center", "protocol": 1}}"#).await;
+        assert_eq!(wire.next().await["ok"], true);
+    }
+
+    #[test]
+    fn real_pipe_a_slow_search_does_not_hold_up_other_requests() {
+        block_on(async {
+            let name = test_pipe_name("slow");
+            let (backend, gate, _running) = gated();
+            let _hub = start_server(&name, backend);
+            let mut wire = Wire::connect(&name);
+            hello(&mut wire).await;
+
+            wire.send(r#"{"id": 2, "cmd": "searchSubmit", "args": {"text": "mail from dana"}}"#).await;
+            wire.send(r#"{"id": 3, "cmd": "getSettings"}"#).await;
+            wire.send(r#"{"id": 4, "cmd": "searchHistory"}"#).await;
+            let (a, b) = (wire.next().await, wire.next().await);
+            assert_eq!((a["id"].clone(), a["result"].clone()), (json!(3), json!("fast")), "settings is answered while the search runs");
+            assert_eq!((b["id"].clone(), b["result"].clone()), (json!(4), json!("fast")), "fast replies keep their order");
+
+            gate.add_permits(1);
+            let done = wire.next().await;
+            assert_eq!((done["id"].clone(), done["result"].clone()), (json!(2), json!("slow")));
+        });
+    }
+
+    #[test]
+    fn real_pipe_caps_the_searches_in_flight_per_connection() {
+        block_on(async {
+            let name = test_pipe_name("cap");
+            let (backend, gate, _running) = gated();
+            let _hub = start_server(&name, backend);
+            let mut wire = Wire::connect(&name);
+            hello(&mut wire).await;
+
+            for id in 2..=(1 + MAX_SLOW_IN_FLIGHT + 1) {
+                wire.send(&format!(r#"{{"id": {id}, "cmd": "searchExtend", "args": {{"queryId": "q1"}}}}"#)).await;
+            }
+            let refused = wire.next().await;
+            assert_eq!(refused["id"], 1 + MAX_SLOW_IN_FLIGHT as u64 + 1);
+            assert_eq!(refused["error"], "APP-031: too many searches at once");
+
+            gate.add_permits(MAX_SLOW_IN_FLIGHT);
+            let mut ids = vec![wire.next().await["id"].as_u64().unwrap(), wire.next().await["id"].as_u64().unwrap()];
+            ids.sort();
+            assert_eq!(ids, [2, 3]);
+
+            // Room again once they finished.
+            wire.send(r#"{"id": 9, "cmd": "searchExtend", "args": {"queryId": "q1"}}"#).await;
+            gate.add_permits(1);
+            assert_eq!(wire.next().await["id"], 9);
+        });
+    }
+
+    #[test]
+    fn real_pipe_aborts_running_searches_when_the_client_leaves() {
+        block_on(async {
+            let name = test_pipe_name("abort");
+            let (backend, _gate, running) = gated();
+            let hub = start_server(&name, backend);
+            let mut wire = Wire::connect(&name);
+            hello(&mut wire).await;
+            wire.send(r#"{"id": 2, "cmd": "searchSubmit", "args": {"text": "x"}}"#).await;
+            let mut waited = 0;
+            while running.load(Ordering::SeqCst) == 0 && waited < 100 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                waited += 1;
+            }
+            assert_eq!(running.load(Ordering::SeqCst), 1, "the search started");
+
+            drop(wire);
+            let mut waited = 0;
+            while (running.load(Ordering::SeqCst) > 0 || hub.client_count() > 0) && waited < 150 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                waited += 1;
+            }
+            assert_eq!(running.load(Ordering::SeqCst), 0, "the search future was dropped with the connection");
+        });
+    }
+
+    fn start_server(name: &str, backend: Arc<dyn CenterBackend>) -> Arc<Hub> {
         let sid = win::current_user_sid().unwrap();
         let session = win::current_session().unwrap();
         let server = Server::bind(name.to_string(), &sddl_for(&sid), session).unwrap();
