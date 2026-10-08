@@ -21,7 +21,7 @@ Licences are as commonly published by each project; check the package itself for
 | sha2 (Rust) | Hashing (mailbox ids) | MIT or Apache-2.0 |
 | React, react-dom (JS) | UI | MIT |
 | motion (JS) | Animation | MIT |
-| Windows App SDK / WinUI 3 | Island Center | MIT |
+| Windows App SDK / WinUI 3 | Yuval Center | MIT |
 | WebView2 runtime | Web content host | Microsoft licence (redistributable terms) |
 
 Exact versions are locked in `Cargo.lock`, `package-lock.json` and the Center `.csproj`. Transitive dependencies
