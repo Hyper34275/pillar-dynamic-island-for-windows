@@ -223,4 +223,20 @@ describe("sanitizeBar", () => {
     const s = sanitizeBar({ anchored: true, width: 372, height: 64, radius: 4, scale: 1.25, highContrast: true, edge: "top" });
     expect(s).toMatchObject({ anchored: true, width: 372, height: 64, highContrast: true, edge: "top" });
   });
+  it("derives the variant of an older backend from anchored", () => {
+    expect(sanitizeBar({ anchored: true, width: 372, height: 64 }).variant).toBe("taskbar");
+    expect(sanitizeBar({ width: 372, height: 64 }).variant).toBe("floating");
+    expect(sanitizeBar({ variant: "bogus" as never, width: 372, height: 64 }).variant).toBe("floating");
+  });
+  it("keeps taskbar and floating as before", () => {
+    expect(sanitizeBar({ variant: "taskbar", anchored: true, width: 372, height: 64, radius: 4 })).toMatchObject({ variant: "taskbar", anchored: true, radius: 4 });
+    expect(sanitizeBar({ variant: "floating", width: 572, height: 60, radius: 4 })).toMatchObject({ variant: "floating", anchored: false });
+  });
+  it("spotlight: fixed capsule radius, never anchored, safe sizes", () => {
+    const s = sanitizeBar({ variant: "spotlight", anchored: true, width: 736, height: 116, radius: 3 });
+    expect(s).toMatchObject({ variant: "spotlight", anchored: false, width: 736, height: 116, radius: 30 });
+    const bad = sanitizeBar({ variant: "spotlight", width: NaN, height: 10 });
+    expect(bad.width).toBe(736);
+    expect(bad.height).toBe(116);
+  });
 });

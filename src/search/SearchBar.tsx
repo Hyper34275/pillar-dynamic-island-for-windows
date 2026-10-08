@@ -4,6 +4,7 @@ import { normalizeAssistantCard, ASSISTANT_UPDATE_EVENT, type AssistantCard, typ
 import { getLocale } from "../lib/i18n";
 import { ipc, onEvent } from "../lib/ipc";
 import { AiSearchGlow } from "./AiSearchGlow";
+import { SpotlightCapsule } from "./SpotlightCapsule";
 import {
   INITIAL_STATE,
   MAX_QUERY_CHARS,
@@ -197,6 +198,46 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
   const margin = bar.anchored ? 0 : glowTokens.margin;
   const barRadius = Math.max(0, Math.min(bar.radius, (bar.height - 2 * margin) / 2));
   const live = glowState !== "idle" && glowState !== "disabled";
+
+  if (bar.variant === "spotlight") {
+    const inputEl = (
+      <input
+        ref={inputRef}
+        className="sp-input"
+        type="text"
+        dir="auto"
+        value={text}
+        maxLength={MAX_QUERY_CHARS}
+        placeholder={showHint ? ss("choicesHint", locale) : ss("spotlightPlaceholder", locale)}
+        aria-label={ss("inputLabel", locale)}
+        autoComplete="off"
+        autoCorrect="off"
+        spellCheck={false}
+        disabled={disabled}
+        onChange={(e) => {
+          dirty.current = true;
+          recallIndex.current = -1;
+          setText(e.target.value);
+          dispatch({ type: "INPUT", empty: e.target.value.length === 0 });
+        }}
+        onKeyDown={onKeyDown}
+      />
+    );
+    return (
+      <SpotlightCapsule
+        bar={bar}
+        glow={glowState}
+        mode={mode}
+        hidden={hidden}
+        rtl={locale === "he"}
+        hasText={text.trim().length > 0}
+        input={inputEl}
+        keysLabel={ss("spotlightKeys", locale)}
+        statusText={glowState === "error" ? ss("failed", locale) : ""}
+        onBackground={() => focusInput()}
+      />
+    );
+  }
 
   return (
     <div className="sb-root" style={{ width: bar.width, height: bar.height }} data-glow={live ? "on" : "off"} data-mode={mode}>

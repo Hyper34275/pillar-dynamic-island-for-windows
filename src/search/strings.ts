@@ -9,6 +9,8 @@ const en = {
   choicesHint: "Pick one in the island or type an answer",
   inputLabel: "Ask CompanyIsland",
   failed: "Something went wrong. Try again.",
+  spotlightPlaceholder: "Ask me anything…",
+  spotlightKeys: "Shortcut: Alt and backtick",
 } as const;
 
 export type SearchStringKey = keyof typeof en;
@@ -19,6 +21,8 @@ const he: Record<SearchStringKey, string> = {
   choicesHint: "אפשר לבחור באי או להקליד תשובה",
   inputLabel: "שאל את CompanyIsland",
   failed: "משהו השתבש. אפשר לנסות שוב.",
+  spotlightPlaceholder: "שאלו אותי כל דבר…",
+  spotlightKeys: "קיצור: Alt ותו הגרש ההפוך",
 };
 
 export const SEARCH_STRINGS: Record<Locale, Record<SearchStringKey, string>> = { en, he };

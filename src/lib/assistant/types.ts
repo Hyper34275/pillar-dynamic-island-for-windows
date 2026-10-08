@@ -117,7 +117,11 @@ export function normalizeAssistantCard(raw: unknown): AssistantCard | null {
 export const ASSISTANT_UPDATE_EVENT = "assistant-update";
 
 /** What the search bar window lays out to (search_bar::SearchBarState). */
+export type SearchBarVariant = "taskbar" | "floating" | "spotlight";
+
 export type SearchBarState = {
+  /** taskbar = on the Win10 search box, floating = above the taskbar, spotlight = screen centre. */
+  variant: SearchBarVariant;
   anchored: boolean;
   width: number;
   height: number;

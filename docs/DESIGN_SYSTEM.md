@@ -237,3 +237,15 @@ installed WebView2 (every rendered frame sampled through the DevTools protocol).
 compact content starts at progress 0.72 (shape ≈ 220×140) while the panel body holds until 0.9; no
 frame shows less than ~29 % content; the shape never leaves [compact, panel], never snaps and never
 plateaus inside a motion.
+
+## Spotlight search bar ("Aurora capsule")
+
+Variant `spotlight` of the smart search bar (`SearchBarState.variant`, Alt + `` ` ``). Source: `src/search/SpotlightCapsule.tsx`, `src/search/spotlight.css`, tokens `spotlight` in `src/design/tokens.ts`.
+
+- Geometry: capsule 680x60 DIP, radius 30; the window adds a 28 DIP transparent margin on every side (736x116) for the under-glow and shadow. Nothing paints outside the window.
+- Always dark ink (`#161833` to `#0E0F1A`), so it floats over any wallpaper; 1.25 px iridescent rim from the glow palette (cyan, violet, indigo, magenta, soft pink) that drifts slowly.
+- Leading AI spark (breathes while submitting/processing, pulses once on completed); 21 px text, `dir="auto"`; a frosted key chip shows `Alt + `` ` ``` when empty and `Enter` once there is text. No suggestion chips (the window is fixed-size).
+- States reuse the eight glow states: processing speeds the rim up (playback rate, never a jump); error turns rim, spark and glow red; completed pulses.
+- Budget: at most three composited layers (rim transform, under-glow opacity, spark transform). Nothing animates when idle, hidden, reduced-motion or plain.
+- `prefers-reduced-motion`: static rim, opacity-only. Forced colours / high contrast: Canvas/CanvasText, 2 px ring, no glow.
+- Dev preview: `search.html?preview=1&variant=spotlight&state=processing&text=...`.

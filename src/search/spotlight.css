@@ -1,0 +1,262 @@
+/* Spotlight variant ("Aurora capsule"). Always dark ink: it floats over any wallpaper. The window is
+   the capsule plus a transparent margin that holds the under-glow and shadow; nothing paints outside it. */
+
+.sp-root {
+  --sp-text: #f2f3ff;
+  --sp-muted: rgba(226, 228, 255, 0.5);
+  --sp-rim: 1.25px;
+  position: relative;
+  overflow: hidden;
+  font-family: "CI Hebrew", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--sp-text);
+}
+
+/* Under-glow: static radial colour pools (no filter, no blur); only its opacity ever animates. */
+.sp-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.55;
+  background:
+    radial-gradient(ellipse 34% 46% at 22% 62%, color-mix(in srgb, var(--sp-cyan) 55%, transparent), transparent 100%),
+    radial-gradient(ellipse 36% 48% at 50% 66%, color-mix(in srgb, var(--sp-violet) 60%, transparent), transparent 100%),
+    radial-gradient(ellipse 34% 46% at 78% 62%, color-mix(in srgb, var(--sp-magenta) 55%, transparent), transparent 100%);
+  transition: opacity 240ms ease-out;
+}
+.sp-root[data-state="idle"] .sp-glow,
+.sp-root[data-state="disabled"] .sp-glow {
+  opacity: 0.25;
+}
+.sp-root[data-state="activated"] .sp-glow,
+.sp-root[data-state="typing"] .sp-glow {
+  opacity: 0.6;
+}
+.sp-root[data-state="submitting"] .sp-glow,
+.sp-root[data-state="processing"] .sp-glow {
+  opacity: 0.85;
+}
+.sp-root[data-state="completed"] .sp-glow {
+  opacity: 0.8;
+}
+.sp-root[data-state="error"] .sp-glow {
+  opacity: 0.7;
+  background: radial-gradient(ellipse 52% 50% at 50% 64%, color-mix(in srgb, var(--sp-error) 65%, transparent), transparent 100%);
+}
+.sp-root[data-moving="on"][data-mode="full"] .sp-glow {
+  animation: sp-breathe 4.8s ease-in-out infinite alternate;
+}
+.sp-root[data-state="processing"][data-moving="on"] .sp-glow {
+  animation-duration: 1.7s;
+}
+@keyframes sp-breathe {
+  from {
+    opacity: 0.5;
+  }
+  to {
+    opacity: 0.85;
+  }
+}
+
+.sp-capsule {
+  position: absolute;
+  inset: var(--sp-margin);
+  border-radius: var(--sp-radius);
+  overflow: hidden;
+  /* Contact shadow stays inside the 28 px margin (blur 20 + offset 8 < 28). */
+  box-shadow: 0 8px 18px rgba(4, 4, 18, 0.55);
+  clip-path: inset(0 round var(--sp-radius));
+}
+.sp-root[data-mode="full"] .sp-capsule {
+  animation: sp-in 170ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes sp-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
+/* The rim: a big conic square turning behind the body; only a hairline of it is uncovered. */
+.sp-rim {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 760px;
+  height: 760px;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    from 0deg,
+    var(--sp-cyan),
+    color-mix(in srgb, var(--sp-violet) 70%, #1a1c3a),
+    var(--sp-indigo),
+    var(--sp-magenta),
+    color-mix(in srgb, var(--sp-pink) 75%, #1a1c3a),
+    var(--sp-cyan) 50%,
+    color-mix(in srgb, var(--sp-indigo) 70%, #1a1c3a),
+    var(--sp-violet),
+    var(--sp-pink),
+    color-mix(in srgb, var(--sp-magenta) 70%, #1a1c3a),
+    var(--sp-cyan)
+  );
+  will-change: transform;
+}
+.sp-root[data-mode="reduced"] .sp-rim {
+  transform: translate(-50%, -50%) rotate(25deg);
+}
+.sp-root[data-state="error"] .sp-rim {
+  background: conic-gradient(from 0deg, var(--sp-error), #ff9a8f, var(--sp-error), #ff9a8f, var(--sp-error));
+}
+.sp-root[data-state="idle"] .sp-rim,
+.sp-root[data-state="disabled"] .sp-rim {
+  opacity: 0.55;
+}
+
+.sp-body {
+  position: absolute;
+  inset: var(--sp-rim);
+  border-radius: calc(var(--sp-radius) - var(--sp-rim));
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-inline: 18px 16px;
+  background: linear-gradient(180deg, var(--sp-ink-top), var(--sp-ink-bottom));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+.sp-spark {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+}
+.sp-root[data-moving="on"][data-state="processing"] .sp-spark,
+.sp-root[data-moving="on"][data-state="submitting"] .sp-spark {
+  animation: sp-spark 1.3s ease-in-out infinite;
+}
+.sp-root[data-state="completed"][data-mode="full"] .sp-spark {
+  animation: sp-pulse 600ms ease-out 1;
+}
+@keyframes sp-spark {
+  0%,
+  100% {
+    transform: scale(0.88) rotate(0deg);
+  }
+  50% {
+    transform: scale(1.14) rotate(12deg);
+  }
+}
+@keyframes sp-pulse {
+  40% {
+    transform: scale(1.22);
+  }
+}
+.sp-root[data-state="error"] .sp-star {
+  fill: var(--sp-error);
+}
+
+.sp-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--sp-text);
+  caret-color: var(--sp-cyan);
+  font: inherit;
+  font-size: 21px;
+  font-weight: 400;
+  letter-spacing: 0.005em;
+  text-align: start;
+  user-select: text;
+}
+.sp-input::placeholder {
+  color: var(--sp-muted);
+  opacity: 1;
+}
+.sp-input::selection {
+  background: rgba(94, 92, 230, 0.55);
+}
+
+/* Frosted key hint. */
+.sp-chip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding-inline: 10px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(226, 228, 255, 0.72);
+  font-size: 12px;
+  line-height: 1;
+  user-select: none;
+}
+.sp-chip kbd {
+  font: inherit;
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.sp-chip i {
+  font-style: normal;
+  opacity: 0.55;
+}
+
+.sp-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Reduced motion: static rim, opacity-only changes. */
+@media (prefers-reduced-motion: reduce) {
+  .sp-root .sp-glow,
+  .sp-root .sp-spark,
+  .sp-root .sp-capsule {
+    animation: none !important;
+  }
+}
+
+/* Plain mode (forced colours / high contrast): system colours, 2 px ring, no glow. */
+.sp-root[data-mode="plain"] .sp-glow {
+  display: none;
+}
+.sp-root[data-mode="plain"] .sp-capsule {
+  box-shadow: none;
+  animation: none;
+}
+.sp-root[data-mode="plain"] .sp-rim {
+  background: CanvasText;
+  opacity: 1;
+}
+.sp-root[data-mode="plain"] {
+  --sp-rim: 2px;
+  --sp-text: CanvasText;
+  --sp-muted: GrayText;
+}
+.sp-root[data-mode="plain"] .sp-body {
+  background: Canvas;
+  box-shadow: none;
+}
+.sp-root[data-mode="plain"] .sp-chip {
+  background: transparent;
+  border-color: CanvasText;
+  color: CanvasText;
+}
+.sp-root[data-mode="plain"] .sp-star {
+  fill: Highlight;
+}
+@media (forced-colors: active) {
+  .sp-input {
+    color: CanvasText;
+  }
+}

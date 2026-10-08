@@ -4,7 +4,7 @@ import ReactDOM from "react-dom/client";
 import type { SearchBarState } from "../lib/assistant/types";
 import { applyDocumentLocale } from "../lib/i18n";
 import { ipc, normalizeSettings, onEvent } from "../lib/ipc";
-import { DEFAULT_BAR, sanitizeBar } from "./bar";
+import { DEFAULT_BAR, SPOTLIGHT_BAR, sanitizeBar } from "./bar";
 import { SearchBar } from "./SearchBar";
 import type { GlowState } from "./searchState";
 
@@ -17,6 +17,13 @@ function readPreview(): Preview | null {
   const q = new URLSearchParams(window.location.search);
   if (q.get("preview") !== "1") return null;
   const state = q.get("state") as GlowState;
+  if (q.get("variant") === "spotlight") {
+    return {
+      glow: GLOW_STATES.includes(state) ? state : "activated",
+      bar: sanitizeBar({ ...SPOTLIGHT_BAR, highContrast: q.get("hc") === "1" }),
+      text: q.get("text") ?? "",
+    };
+  }
   const w = Number(q.get("w")) || 360;
   const h = Number(q.get("h")) || 52;
   return {
