@@ -461,6 +461,31 @@ describe("the glass sheet: rows and keys", () => {
     });
   });
 
+  it("on a window too short for the rows the list scrolls to keep the selected row in view", async () => {
+    const api = makeApi(card({ items: Array.from({ length: 5 }, (_, i) => item(`e${i}`)) }));
+    mount(api, { bar: { ...SPOTLIGHT_BAR, height: 24 + 300 + 64 } });
+    await ask();
+    const list = host.querySelector("#gl-list") as HTMLElement;
+    let scrollTop = 0;
+    Object.defineProperty(list, "scrollTop", { configurable: true, get: () => scrollTop, set: (v: number) => (scrollTop = v) });
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 330 });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 200 });
+    // the list shows y 100..300; rows are 62 px high from y 100 (minus what is scrolled away)
+    list.getBoundingClientRect = () => ({ top: 100, bottom: 300 }) as DOMRect;
+    rows().forEach((row, i) => {
+      (row as HTMLElement).getBoundingClientRect = () => ({ top: 100 + i * 64 - scrollTop, bottom: 162 + i * 64 - scrollTop }) as DOMRect;
+    });
+    press("ArrowDown"); // row 1 (y 164..226): in view
+    expect(scrollTop).toBe(0);
+    press("ArrowDown");
+    press("ArrowDown"); // row 3 (y 292..354): its bottom is below the list
+    expect(scrollTop).toBe(54);
+    press("ArrowUp");
+    press("ArrowUp");
+    press("ArrowUp"); // back to row 0: scrolled up to it
+    expect(scrollTop).toBe(0);
+  });
+
   it("ArrowUp recalls the previous question when there is no list under the field", async () => {
     const api = makeApi();
     mount(api);

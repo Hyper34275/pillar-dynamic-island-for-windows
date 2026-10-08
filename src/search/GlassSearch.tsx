@@ -351,6 +351,20 @@ export function GlassSearch(props: GlassSearchProps) {
     return () => window.clearTimeout(id);
   }, [hidden]);
 
+  // On a short screen the window cannot hold five rows and the list scrolls: the row the arrow keys
+  // landed on (the one Enter acts on) must be in view. Only the list is scrolled, never an ancestor:
+  // the sheet clips its content while it grows, and scrolling it would shift everything up.
+  useEffect(() => {
+    if (props.selected < 0) return;
+    const list = document.getElementById(GLASS_LIST_ID);
+    const option = document.getElementById(glassOptionId(props.selected));
+    if (!list || !option || list.scrollHeight <= list.clientHeight) return;
+    const l = list.getBoundingClientRect();
+    const o = option.getBoundingClientRect();
+    if (o.top < l.top) list.scrollTop += o.top - l.top;
+    else if (o.bottom > l.bottom) list.scrollTop += o.bottom - l.bottom;
+  }, [props.selected, viewKey]);
+
   const flagsClass = glassClasses({ theme, plain, reducedMotion, opaque });
   const processing = view.kind === "processing";
   const line = useFunnyLine(seed, processing && !hidden);
