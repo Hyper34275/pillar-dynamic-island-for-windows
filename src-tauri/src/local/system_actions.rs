@@ -803,7 +803,7 @@ mod tests {
     fn this_module_has_no_code_that_sends_mail() {
         // Only the code above the tests is looked at, and the forbidden names are built at run time.
         let src = include_str!("system_actions.rs");
-        let code = src.split("#[cfg(test)]").next().unwrap();
+        let code = src.split("mod tests {").next().unwrap();
         for forbidden in [format!("\"{}\"", "Send"), format!("{}AndSave", "Send"), format!("\"{}Mail\"", "Send"), format!("\"{}\"", "Submit")] {
             assert!(!code.contains(&forbidden), "{forbidden}");
         }

@@ -866,6 +866,32 @@ fn odd_input_never_panics() {
 }
 
 #[test]
+fn truncated_and_reversed_phrasings_never_panic_and_never_run_anything() {
+    let mut texts: Vec<&str> = Vec::new();
+    texts.extend(SEARCH.iter().map(|c| c.0));
+    texts.extend(TRANSLATE.iter().map(|c| c.0));
+    texts.extend(SITES.iter().map(|c| c.0));
+    texts.extend(SETTINGS.iter().map(|c| c.0));
+    texts.extend(NOTES.iter().map(|c| c.0));
+    texts.extend(COMPOSE.iter().map(|c| c.0));
+    for t in texts {
+        let chars: Vec<char> = t.chars().collect();
+        for cut in 0..=chars.len() {
+            let head: String = chars[..cut].iter().collect();
+            let tail: String = chars[cut..].iter().collect();
+            for s in [head, tail] {
+                let i = run(&s);
+                // whatever it is, it is never an execution of a sensitive capability
+                assert!(!matches!(i.decision, Decision::Execute { cap } if crate::intent::sensitivity(cap) != Sensitivity::Read), "{s:?}");
+            }
+        }
+        let words: Vec<&str> = t.split_whitespace().collect();
+        let reversed = words.iter().rev().copied().collect::<Vec<_>>().join(" ");
+        let _ = run(&reversed);
+    }
+}
+
+#[test]
 fn detection_is_fast() {
     let start = std::time::Instant::now();
     for _ in 0..200 {
@@ -929,6 +955,100 @@ fn fallback_is_not_offered_for_what_a_web_search_cannot_answer() {
     ] {
         assert_eq!(fallback_kind(t), None, "{t:?}");
     }
+}
+
+// ---- the same command in every grammatical form -------------------------------------------------
+
+/// Masculine, feminine, plural, infinitive and imperative verbs, with and without the polite lead-ins,
+/// "לי" and "בבקשה": every combination means the same command.
+#[test]
+fn every_verb_form_and_lead_in_gives_the_same_command() {
+    let leads = ["", "בבקשה ", "תוכל ", "תוכלי ", "תוכלו ", "אפשר ", "אתה יכול ", "את יכולה ", "אני רוצה ", "בבקשה תוכל ", "היי, "];
+    let tails = ["", " בבקשה", " please"];
+    let mut errors = Vec::new();
+    let mut check_same = |verbs: &[&str], rest: &str, cap: CapId, probe: &dyn Fn(&Interpretation) -> String, want: &str| {
+        for verb in verbs {
+            for lead in leads {
+                for tail in tails {
+                    let text = format!("{lead}{verb} {rest}{tail}");
+                    let i = run(&text);
+                    if i.decision != (Decision::Confirm { cap }) || probe(&i) != want {
+                        errors.push(format!("{text:?}: {:?} / {}", i.decision, probe(&i)));
+                    }
+                }
+            }
+        }
+    };
+    let query = |i: &Interpretation| format!("{}|{}", i.slots.engine.clone().unwrap_or_default(), i.slots.query.clone().unwrap_or_default());
+    check_same(&["תחפש", "חפש", "תחפשי", "חפשי", "לחפש", "תחפשו", "חפשו"], "בגוגל חתולים חמודים", caps::WEB_SEARCH, &query, "google|חתולים חמודים");
+    check_same(&["תחפש", "חפש", "תחפשי", "חפשי", "לחפש"], "לי בגוגל חתולים חמודים", caps::WEB_SEARCH, &query, "google|חתולים חמודים");
+    check_same(&["תחפש", "חפש", "תחפשי", "חפשי", "לחפש"], "ביוטיוב חתולים חמודים", caps::WEB_SEARCH, &query, "youtube|חתולים חמודים");
+    check_same(&["תגגל", "גגל", "תגגלי", "גגלי", "לגגל"], "חתולים חמודים", caps::WEB_SEARCH, &query, "google|חתולים חמודים");
+    let site = |i: &Interpretation| i.slots.site.clone().unwrap_or_default();
+    for rest in ["ynet", "את ynet", "לי את ynet", "את האתר של ynet"] {
+        check_same(&["פתח", "תפתח", "פתחי", "תפתחי", "לפתוח", "תפתחו", "פתחו"], rest, caps::WEB_OPEN, &site, "ynet");
+    }
+    let setting = |i: &Interpretation| i.slots.setting.clone().unwrap_or_default();
+    for rest in ["הגדרות wifi", "את הגדרות ה-wifi", "לי את הגדרות הווייפיי"] {
+        check_same(&["פתח", "תפתח", "פתחי", "תפתחי", "לפתוח"], rest, caps::SYSTEM_OPEN_SETTINGS, &setting, "wifi");
+    }
+    let folder = |i: &Interpretation| i.slots.folder.clone().unwrap_or_default();
+    for rest in ["הורדות", "את ההורדות", "לי את תיקיית ההורדות"] {
+        check_same(&["פתח", "תפתח", "פתחי", "תפתחי", "לפתוח", "תפתחו"], rest, caps::FOLDERS_OPEN, &folder, "downloads");
+    }
+    let note = |i: &Interpretation| i.slots.query.clone().unwrap_or_default();
+    for verb_phrase in ["תרשום פתק:", "רשום פתק:", "תרשמי פתק:", "רשמי פתק:", "לרשום פתק:", "תרשום לי פתק:", "תוסיף פתק:", "הוסיפי פתק:", "תיצור פתק:", "צרי פתק חדש:"] {
+        check_same(&[verb_phrase], "לקנות חלב", caps::NOTES_CREATE, &note, "לקנות חלב");
+    }
+    let mail = |i: &Interpretation| format!("{}|{}", i.slots.mail_to.clone().unwrap_or_default(), i.slots.mail_subject.clone().unwrap_or_default());
+    for verb in ["תכתוב", "כתוב", "תכתבי", "כתבי", "לכתוב", "תנסח", "תכין", "הכן", "תיצור"] {
+        check_same(&[verb], "מייל לדני בנושא תקציב", caps::MAIL_COMPOSE, &mail, "דני|תקציב");
+    }
+    let none = |_: &Interpretation| String::new();
+    check_same(&["תנעל", "נעל", "תנעלי", "נעלי", "לנעול"], "את המחשב", caps::SYSTEM_LOCK, &none, "");
+    finish(errors);
+}
+
+#[test]
+fn english_verb_forms_and_lead_ins_give_the_same_command() {
+    let leads = ["", "please ", "can you ", "could you ", "would you please ", "i want to ", "i'd like to ", "hey, ", "just ", "can you please "];
+    let mut errors = Vec::new();
+    let cases: Vec<(&str, CapId, String)> = vec![
+        ("search google for cats", caps::WEB_SEARCH, "google|cats".into()),
+        ("google cats", caps::WEB_SEARCH, "google|cats".into()),
+        ("search youtube for cats", caps::WEB_SEARCH, "youtube|cats".into()),
+        ("look up cats on wikipedia", caps::WEB_SEARCH, "wikipedia|cats".into()),
+        ("navigate to Haifa", caps::WEB_SEARCH, "maps|Haifa".into()),
+        ("open ynet", caps::WEB_OPEN, "ynet".into()),
+        ("go to ynet", caps::WEB_OPEN, "ynet".into()),
+        ("launch ynet", caps::WEB_OPEN, "ynet".into()),
+        ("open wifi settings", caps::SYSTEM_OPEN_SETTINGS, "wifi".into()),
+        ("open the downloads folder", caps::FOLDERS_OPEN, "downloads".into()),
+        ("write a note: buy milk", caps::NOTES_CREATE, "buy milk".into()),
+        ("write an email to Dana about the budget", caps::MAIL_COMPOSE, "Dana|the budget".into()),
+        ("lock the computer", caps::SYSTEM_LOCK, String::new()),
+    ];
+    for (base, cap, want) in &cases {
+        for lead in leads {
+            for tail in ["", " please"] {
+                let text = format!("{lead}{base}{tail}");
+                let i = run(&text);
+                let got = match *cap {
+                    caps::WEB_SEARCH => format!("{}|{}", i.slots.engine.clone().unwrap_or_default(), i.slots.query.clone().unwrap_or_default()),
+                    caps::WEB_OPEN => i.slots.site.clone().unwrap_or_default(),
+                    caps::SYSTEM_OPEN_SETTINGS => i.slots.setting.clone().unwrap_or_default(),
+                    caps::FOLDERS_OPEN => i.slots.folder.clone().unwrap_or_default(),
+                    caps::NOTES_CREATE => i.slots.query.clone().unwrap_or_default(),
+                    caps::MAIL_COMPOSE => format!("{}|{}", i.slots.mail_to.clone().unwrap_or_default(), i.slots.mail_subject.clone().unwrap_or_default()),
+                    _ => String::new(),
+                };
+                if i.decision != (Decision::Confirm { cap: *cap }) || got != *want {
+                    errors.push(format!("{text:?}: {:?} / {got} (wanted {want})", i.decision));
+                }
+            }
+        }
+    }
+    finish(errors);
 }
 
 // ---- apps: the existing launcher must be reached by every launch verb ---------------------------

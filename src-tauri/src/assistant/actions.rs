@@ -729,7 +729,7 @@ mod tests {
     #[test]
     fn nothing_here_sends_mail_or_runs_a_typed_command() {
         let src = include_str!("actions.rs");
-        let code = src.split("#[cfg(test)]").next().unwrap();
+        let code = src.split("mod tests {").next().unwrap();
         for forbidden in [format!("\"{}\"", "Send"), format!("{}AndSave", "Send"), "std::process::Command".to_string(), "cmd.exe".to_string(), "powershell".to_string()] {
             assert!(!code.contains(&forbidden), "{forbidden}");
         }
