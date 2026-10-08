@@ -1196,6 +1196,40 @@ mod tests {
         assert_eq!(read_database(&sb.database(), &sb.location().work_dir), Err(ReadError::Unsupported));
     }
 
+    /// What Sticky Notes leaves on disk in its other states: a WAL database whose journal was checkpointed
+    /// (empty `-wal`), one whose last connection closed (no `-wal` at all), and one held in exclusive
+    /// locking mode. Every one of them must read, from the copy, without a `-shm`.
+    #[test]
+    fn wal_databases_read_whether_the_journal_is_empty_gone_or_held_exclusively() {
+        if !have_sqlite() {
+            return;
+        }
+        // Checkpointed: the rows are in the main file, the `-wal` is empty, the writer is still open.
+        let sb = Sandbox::new();
+        let live = Db::open(&sb.database(), SQLITE_OPEN_READWRITE_CREATE).unwrap();
+        live.exec("PRAGMA journal_mode=WAL;").unwrap();
+        live.exec(CREATE_NOTE).unwrap();
+        insert(&live, "one", "\\id=1 checkpointed", "Green", T0, None);
+        live.exec("PRAGMA wal_checkpoint(TRUNCATE);").unwrap();
+        let notes = read_database(&sb.database(), &sb.location().work_dir).unwrap();
+        assert_eq!(notes.iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["checkpointed"]);
+        // The last connection closes: the `-wal` and `-shm` disappear, the file header still says WAL.
+        drop(live);
+        assert!(!wal_of(&sb.database()).exists(), "closing the last connection removes the -wal");
+        let notes = read_database(&sb.database(), &sb.location().work_dir).unwrap();
+        assert_eq!(notes.len(), 1);
+
+        // Exclusive locking mode: no -shm file at all, the newest row only in the -wal.
+        let sb = Sandbox::new();
+        let live = Db::open(&sb.database(), SQLITE_OPEN_READWRITE_CREATE).unwrap();
+        live.exec("PRAGMA journal_mode=WAL; PRAGMA locking_mode=EXCLUSIVE; PRAGMA wal_autocheckpoint=0;").unwrap();
+        live.exec(CREATE_NOTE).unwrap();
+        insert(&live, "excl", "\\id=1 held exclusively", "Pink", T0, None);
+        let notes = read_database(&sb.database(), &sb.location().work_dir).unwrap();
+        assert_eq!(notes.iter().map(|n| (n.text.as_str(), n.colour.as_str())).collect::<Vec<_>>(), [("held exclusively", "pink")]);
+        drop(live);
+    }
+
     #[test]
     fn many_notes_are_capped_at_the_newest() {
         if !have_sqlite() {
@@ -1333,5 +1367,12 @@ mod tests {
     fn live_machine_gives_a_state() {
         let s = current();
         println!("sticky notes on this machine: {} ({} notes)", s.availability.as_str(), s.notes.len());
+        // Whatever the machine has: a state was reached, only `ok` carries notes, and they obey the caps.
+        assert!(s.revision >= 1, "the first read always produces a revision");
+        if s.availability != Availability::Ok {
+            assert!(s.notes.is_empty(), "{:?} must not carry notes", s.availability);
+        }
+        assert!(s.notes.len() <= MAX_NOTES);
+        assert!(s.notes.iter().all(|n| !n.text.trim().is_empty() && !n.id.is_empty() && n.text.chars().count() <= MAX_TEXT_CHARS));
     }
 }

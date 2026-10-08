@@ -34,6 +34,9 @@ describe("outside Tauri", () => {
     await expect(ipc.notesLoad()).resolves.toBeNull();
     await expect(ipc.notesSave([])).resolves.toBeNull();
     await expect(ipc.openCenter("settings")).resolves.toBe(false);
+    await expect(ipc.stickyNotesList()).resolves.toBeNull();
+    await expect(ipc.stickyNotesList(3)).resolves.toBeNull();
+    await expect(ipc.stickyNotesOpen()).resolves.toBe(false);
   });
 });
 
