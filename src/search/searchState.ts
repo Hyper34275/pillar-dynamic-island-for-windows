@@ -72,8 +72,12 @@ export function searchReducer(state: SearchState, event: SearchEvent): SearchSta
 
     case "SUBMIT": {
       if (state.glow === "idle") return state;
+      // A reply to a question ("אני לא יודע", a mailbox name) continues that same query id, so a
+      // pending question is not superseded: its next cards are the answer to this submit.
       const superseded =
-        state.queryId === null ? state.superseded : [...state.superseded.filter((id) => id !== state.queryId), state.queryId].slice(-MAX_SUPERSEDED);
+        state.queryId === null || state.choices
+          ? state.superseded
+          : [...state.superseded.filter((id) => id !== state.queryId), state.queryId].slice(-MAX_SUPERSEDED);
       return { ...state, glow: "submitting", queryId: null, superseded, choices: false, answered: false };
     }
 

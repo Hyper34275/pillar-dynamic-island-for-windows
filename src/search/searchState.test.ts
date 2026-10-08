@@ -88,6 +88,18 @@ describe("searchReducer", () => {
     expect(s.choices).toBe(false);
   });
 
+  it("a typed reply to a question continues the same query and completes (review #12/#16)", () => {
+    const s = run([{ type: "SHOW" }, { type: "SUBMIT" }, card("q1", "choices"), { type: "SUBMIT" }, card("q1", "processing"), card("q1", "answer")]);
+    expect(s.glow).toBe("completed");
+    expect(s.queryId).toBe("q1");
+  });
+
+  it("a new question after a question card is still adopted", () => {
+    const s = run([{ type: "SHOW" }, { type: "SUBMIT" }, card("q1", "choices"), { type: "SUBMIT" }, card("q2", "answer")]);
+    expect(s.glow).toBe("completed");
+    expect(s.queryId).toBe("q2");
+  });
+
   it("extending the same query shows Processing again", () => {
     const s = run([{ type: "SHOW" }, { type: "SUBMIT" }, card("q1", "answer"), card("q1", "processing")]);
     expect(s.glow).toBe("processing");

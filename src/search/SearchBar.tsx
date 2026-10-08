@@ -70,6 +70,7 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
   const history = useRef<string[]>([]);
   const recallIndex = useRef(-1);
   const dirty = useRef(false); // the user typed since the last submit
+  const request = useRef(0); // id of the newest submit (older answers are ignored)
   const locale = getLocale();
 
   const reducedMotion = useMediaFlag("(prefers-reduced-motion: reduce)");
@@ -144,13 +145,19 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
       recallIndex.current = -1;
       dirty.current = false;
       dispatch({ type: "SUBMIT" });
+      // Only the newest submit may settle the bar: a quick second Enter must not let the older
+      // request's returned card be taken for the current one.
+      const mine = ++request.current;
       api
         .submit(q)
         .then((card) => {
+          if (mine !== request.current) return;
           if (card) dispatch({ type: "CARD", card });
           else dispatch({ type: "SUBMIT_FAILED" });
         })
-        .catch(() => dispatch({ type: "SUBMIT_FAILED" }));
+        .catch(() => {
+          if (mine === request.current) dispatch({ type: "SUBMIT_FAILED" });
+        });
     },
     [api],
   );
