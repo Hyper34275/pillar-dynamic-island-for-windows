@@ -282,6 +282,8 @@ impl CalendarState {
 // =============================================================================
 
 pub const MAX_EVENTS: usize = 50;
+/// Per-read event cap of a smart search read (the island's own range reads keep [`MAX_EVENTS`]).
+pub const SEARCH_MAX_EVENTS: usize = 300;
 pub const MAX_INVITES: usize = 10;
 pub const HORIZON_HOURS: i64 = 48;
 
@@ -294,11 +296,49 @@ pub struct FetchWindow {
     /// A day the user browses to, not the regular sync: every active calendar is read for it
     /// and nothing is cached or rediscovered.
     pub range: bool,
+    /// Smart search only (needs `range`): read exactly these calendar ids, selected in Outlook or
+    /// not, and nothing else. `None` = the active calendars (today's behaviour).
+    pub only: Option<Vec<String>>,
+    /// Smart search read: the larger [`SEARCH_MAX_EVENTS`] cap, and `Fetched::truncated` is reported.
+    pub search: bool,
 }
 
 impl FetchWindow {
     pub fn starting_at(now: DateTime<Utc>) -> Self {
-        FetchWindow { from: now, to: now + ChronoDuration::hours(HORIZON_HOURS), invites: false, range: false }
+        FetchWindow {
+            from: now,
+            to: now + ChronoDuration::hours(HORIZON_HOURS),
+            invites: false,
+            range: false,
+            only: None,
+            search: false,
+        }
+    }
+
+    /// Most events one read of this window may return.
+    pub fn event_cap(&self) -> usize {
+        if self.search {
+            SEARCH_MAX_EVENTS
+        } else {
+            MAX_EVENTS
+        }
+    }
+}
+
+/// Whether a calendar other than the primary one is read for a window: the checked ones, or
+/// (smart search) exactly the ids in `only`, checked or not. Pure.
+pub fn reads_secondary(only: Option<&[String]>, id: &str, selected: bool) -> bool {
+    match only {
+        None => selected,
+        Some(ids) => ids.iter().any(|i| i == id),
+    }
+}
+
+/// Whether the primary calendar is read: always, unless `only` is set and does not list it. Pure.
+pub fn reads_primary(only: Option<&[String]>, primary_id: &str) -> bool {
+    match only {
+        None => true,
+        Some(ids) => ids.iter().any(|i| i == primary_id),
     }
 }
 
@@ -336,11 +376,15 @@ pub struct Fetched {
     pub invites: Vec<MeetingInviteDto>,
     /// The calendars discovered by this read (`None` for range reads and sources without discovery).
     pub sources: Option<SourcesReport>,
+    /// Search reads only: events were cut by the cap, or a calendar's scan cap was reached.
+    pub truncated: bool,
+    /// Search reads only: calendars of `FetchWindow::only` that could not be read, (id, code).
+    pub failed: Vec<(String, String)>,
 }
 
 impl From<Vec<CalendarEventDto>> for Fetched {
     fn from(events: Vec<CalendarEventDto>) -> Self {
-        Fetched { events, invites: Vec::new(), sources: None }
+        Fetched { events, invites: Vec::new(), sources: None, truncated: false, failed: Vec::new() }
     }
 }
 
@@ -359,11 +403,17 @@ pub trait CalendarSource {
 }
 
 /// Sort by start, drop duplicate ids, cap at [`MAX_EVENTS`].
-pub fn normalize_events(mut events: Vec<CalendarEventDto>) -> Vec<CalendarEventDto> {
+pub fn normalize_events(events: Vec<CalendarEventDto>) -> Vec<CalendarEventDto> {
+    normalize_events_capped(events, MAX_EVENTS).0
+}
+
+/// [`normalize_events`] with another cap; also says whether events were cut.
+pub fn normalize_events_capped(mut events: Vec<CalendarEventDto>, cap: usize) -> (Vec<CalendarEventDto>, bool) {
     events.sort_by(|a, b| a.start_utc.cmp(&b.start_utc).then(a.end_utc.cmp(&b.end_utc)).then_with(|| a.id.cmp(&b.id)));
     events.dedup_by(|a, b| a.id == b.id);
-    events.truncate(MAX_EVENTS);
-    events
+    let cut = events.len() > cap;
+    events.truncate(cap);
+    (events, cut)
 }
 
 /// Drop the copies of a meeting that several active calendars show (your own calendar and a
@@ -1105,7 +1155,22 @@ pub fn range_window(from_utc: &str, to_utc: &str) -> Result<FetchWindow, String>
     if to <= from || to - from > ChronoDuration::days(MAX_RANGE_DAYS) {
         return Err("OUTLOOK-108: invalid range".into());
     }
-    Ok(FetchWindow { from, to, invites: false, range: true })
+    Ok(FetchWindow { from, to, invites: false, range: true, only: None, search: false })
+}
+
+/// Queue a range read at the supervisor; the answer arrives on the returned receiver.
+fn send_range(window: FetchWindow) -> Result<Receiver<FetchResult>, String> {
+    let (tx, rx) = mpsc::channel();
+    let control = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    let c = control.as_ref().ok_or_else(|| "OUTLOOK-102: calendar service not running".to_string())?;
+    c.tx.send(Msg::Range { window, reply: tx }).map_err(|_| "OUTLOOK-102: calendar service not running".to_string())?;
+    Ok(rx)
+}
+
+/// Longest a caller waits for one range read: a sync in progress, then this read, each with the
+/// watchdog's 10 s.
+fn range_wait() -> Duration {
+    Duration::from_millis(WATCHDOG_MS * 2 + 5_000)
 }
 
 /// The events of another stretch of the calendar (a day the user browses to), read on demand
@@ -1113,15 +1178,9 @@ pub fn range_window(from_utc: &str, to_utc: &str) -> Result<FetchWindow, String>
 #[tauri::command]
 pub async fn calendar_get_range(from_utc: String, to_utc: String) -> Result<Vec<CalendarEventDto>, String> {
     let window = range_window(&from_utc, &to_utc)?;
-    let (tx, rx) = mpsc::channel();
-    {
-        let control = CONTROL.lock().unwrap_or_else(|e| e.into_inner());
-        let c = control.as_ref().ok_or_else(|| "OUTLOOK-102: calendar service not running".to_string())?;
-        c.tx.send(Msg::Range { window, reply: tx }).map_err(|_| "OUTLOOK-102: calendar service not running".to_string())?;
-    }
+    let rx = send_range(window)?;
     crate::rt::run_blocking("calendar_get_range", move || {
-        // A sync in progress, then this read: each has the watchdog's 10 s.
-        match rx.recv_timeout(Duration::from_millis(WATCHDOG_MS * 2 + 5_000)) {
+        match rx.recv_timeout(range_wait()) {
             Ok(Ok(fetched)) => Ok(fetched.events),
             Ok(Err(e)) => Err(format!("{}: range read failed", e.code)),
             Err(_) => Err("OUTLOOK-109: no answer".into()),
@@ -1134,13 +1193,94 @@ pub async fn calendar_get_range(from_utc: String, to_utc: String) -> Result<Vec<
 // Smart search (CONTRACT, used by `assistant`)
 // =============================================================================
 
+/// Longest stretch smart search may read in one call.
+pub const MAX_QUERY_DAYS: i64 = 31;
+
+/// Split `[from, to)` into consecutive chunks of at most [`MAX_RANGE_DAYS`] (fixed 24 h days in
+/// UTC, so a DST change inside the range never shifts a boundary). Pure.
+pub fn chunk_range(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<(DateTime<Utc>, DateTime<Utc>)>, String> {
+    if to <= from || to - from > ChronoDuration::days(MAX_QUERY_DAYS) {
+        return Err("OUTLOOK-108: invalid range".into());
+    }
+    let step = ChronoDuration::days(MAX_RANGE_DAYS);
+    let mut chunks = Vec::new();
+    let mut start = from;
+    while start < to {
+        let end = (start + step).min(to);
+        chunks.push((start, end));
+        start = end;
+    }
+    Ok(chunks)
+}
+
 /// Events of `[from, to)` for smart search, read through the same worker and watchdog as the
 /// island's own range reads. Longer stretches than [`MAX_RANGE_DAYS`] (up to 31 days) are read in
 /// chunks. `only`: read exactly these calendar ids (ids from [`known_sources`]), also ones not
 /// checked in Outlook; `None` = the active calendars, as the island shows them. Blocking.
+///
+/// A search read changes nothing: no selection, no snapshot, no reminders, no sync cache. The
+/// per-read cap is [`SEARCH_MAX_EVENTS`]; `truncated` is set when it (or a calendar's scan cap)
+/// was reached, or when a later chunk could not be read after earlier ones had been.
 pub fn query_range(from: DateTime<Utc>, to: DateTime<Utc>, only: Option<Vec<String>>) -> Result<RangeRead, String> {
-    let _ = (from, to, only);
-    Err("OUTLOOK-102: calendar service not running".into())
+    let chunks = chunk_range(from, to)?;
+    let mut parts = Vec::with_capacity(chunks.len());
+    let mut incomplete = false;
+    for (i, (start, end)) in chunks.into_iter().enumerate() {
+        let window = FetchWindow { from: start, to: end, invites: false, range: true, only: only.clone(), search: true };
+        let rx = send_range(window)?;
+        match rx.recv_timeout(range_wait()) {
+            Ok(Ok(fetched)) => parts.push(fetched),
+            Ok(Err(e)) if i == 0 => return Err(format!("{}: range read failed", e.code)),
+            Err(_) if i == 0 => return Err("OUTLOOK-109: no answer".into()),
+            // Keep what the earlier chunks found.
+            _ => {
+                incomplete = true;
+                break;
+            }
+        }
+    }
+    let mut read = merge_reads(parts, from, to);
+    read.truncated |= incomplete;
+    Ok(read)
+}
+
+/// Merge the chunk reads of one query: events inside `[from, to)` (a meeting that spans a chunk
+/// boundary is read twice and kept once), sorted, capped at [`SEARCH_MAX_EVENTS`]. Pure.
+pub fn merge_reads(parts: Vec<Fetched>, from: DateTime<Utc>, to: DateTime<Utc>) -> RangeRead {
+    let mut truncated = false;
+    let mut failed: Vec<(String, String)> = Vec::new();
+    let mut events = Vec::new();
+    for part in parts {
+        truncated |= part.truncated;
+        for f in part.failed {
+            if !failed.iter().any(|(id, _)| *id == f.0) {
+                failed.push(f);
+            }
+        }
+        // Inside = starts before `to` and ends after `from` (a zero-length one at `from` counts).
+        events.extend(part.events.into_iter().filter(|e| e.start_utc < to && (e.end_utc > from || e.start_utc >= from)));
+    }
+    let (events, cut) = normalize_events_capped(events, SEARCH_MAX_EVENTS);
+    RangeRead { events, truncated: truncated || cut, failed }
+}
+
+/// Organizer names seen in the island's snapshot (no Outlook call), distinct, in order of
+/// appearance. For the assistant's name matching when a person's name is not a calendar's own
+/// name. The names are only returned to the caller, never logged.
+pub fn organizers_recent(app: &tauri::AppHandle) -> Vec<String> {
+    use tauri::Manager;
+    organizer_names(&app.state::<CalendarState>().get().events)
+}
+
+/// The distinct non-empty organizers of `events`, in order. Pure.
+pub fn organizer_names(events: &[CalendarEventDto]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in events.iter().filter_map(|e| e.organizer.as_deref()).map(str::trim).filter(|n| !n.is_empty()) {
+        if !out.iter().any(|o| o == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
 }
 
 /// Result of [`query_range`].
@@ -1739,5 +1879,132 @@ mod tests {
         assert_eq!(sim.source.calls, 3);
         assert_eq!(sim.machine.snapshot(0).events.len(), 1);
         assert!(sim.machine.snapshot(0).next_retry_unix_ms.is_none());
+    }
+
+    // ---- smart search reads ----
+
+    fn ids(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn only_none_keeps_todays_selection_rules() {
+        assert!(reads_secondary(None, "x", true));
+        assert!(!reads_secondary(None, "x", false));
+        assert!(reads_primary(None, "p"));
+    }
+
+    #[test]
+    fn only_restricts_to_the_listed_ids_selected_or_not() {
+        let only = ids(&["x", "p"]);
+        assert!(reads_secondary(Some(&only), "x", false), "an unchecked calendar is read when asked for");
+        assert!(!reads_secondary(Some(&only), "y", true), "a checked calendar not listed is left out");
+        assert!(reads_primary(Some(&only), "p"));
+        assert!(!reads_primary(Some(&ids(&["x"])), "p"), "the primary is included only when listed");
+        assert!(!reads_primary(Some(&[]), "p"));
+    }
+
+    #[test]
+    fn chunks_cover_the_range_without_gaps() {
+        let from = Utc.with_ymd_and_hms(2027, 3, 20, 22, 0, 0).unwrap(); // spans the March DST change
+        let to = from + ChronoDuration::days(20);
+        let chunks = chunk_range(from, to).unwrap();
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].0, from);
+        assert_eq!(chunks.last().unwrap().1, to);
+        for w in chunks.windows(2) {
+            assert_eq!(w[0].1, w[1].0);
+        }
+        assert!(chunks.iter().all(|(a, b)| *b - *a <= ChronoDuration::days(MAX_RANGE_DAYS) && b > a));
+        assert_eq!(chunks[2].1 - chunks[2].0, ChronoDuration::days(6));
+    }
+
+    #[test]
+    fn exact_multiples_and_limits_of_chunking() {
+        let from = at_utc(0);
+        assert_eq!(chunk_range(from, from + ChronoDuration::days(7)).unwrap().len(), 1);
+        assert_eq!(chunk_range(from, from + ChronoDuration::days(14)).unwrap().len(), 2);
+        assert_eq!(chunk_range(from, from + ChronoDuration::hours(1)).unwrap().len(), 1);
+        assert_eq!(chunk_range(from, from + ChronoDuration::days(31)).unwrap().len(), 5);
+        assert_eq!(chunk_range(from, from + ChronoDuration::days(31) + ChronoDuration::seconds(1)), Err("OUTLOOK-108: invalid range".into()));
+        assert_eq!(chunk_range(from, from), Err("OUTLOOK-108: invalid range".into()));
+        assert_eq!(chunk_range(from, from - ChronoDuration::days(1)), Err("OUTLOOK-108: invalid range".into()));
+    }
+
+    #[test]
+    fn the_islands_range_check_still_stops_at_seven_days() {
+        assert!(range_window("2027-01-15T00:00:00Z", "2027-01-22T00:00:00Z").is_ok());
+        assert!(range_window("2027-01-15T00:00:00Z", "2027-01-22T00:00:01Z").is_err());
+        let w = range_window("2027-01-15T00:00:00Z", "2027-01-16T00:00:00Z").unwrap();
+        assert!(w.range && w.only.is_none() && !w.search);
+        assert_eq!(w.event_cap(), MAX_EVENTS);
+    }
+
+    #[test]
+    fn merge_keeps_one_copy_of_a_meeting_read_in_two_chunks() {
+        let a = Fetched { events: vec![ev("m", 0, 600), ev("a", 10, 30)], ..Fetched::default() };
+        let b = Fetched { events: vec![ev("m", 0, 600), ev("b", 700, 30)], ..Fetched::default() };
+        let read = merge_reads(vec![a, b], at_utc(0), at_utc(2_000));
+        let order: Vec<&str> = read.events.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(order, ["m", "a", "b"]);
+        assert!(!read.truncated);
+    }
+
+    #[test]
+    fn merge_drops_events_outside_the_range() {
+        let before = ev("old", -120, 30);
+        let at_end = ev("late", 100, 30);
+        let inside = ev("in", 50, 30);
+        let read = merge_reads(vec![Fetched { events: vec![before, at_end, inside], ..Fetched::default() }], at_utc(0), at_utc(100));
+        assert_eq!(read.events.len(), 1);
+        assert_eq!(read.events[0].id, "in");
+    }
+
+    #[test]
+    fn merge_reports_truncation_and_failures_once() {
+        let a = Fetched { truncated: true, failed: vec![("c1".into(), "CAL-SHARED-101".into())], ..Fetched::default() };
+        let b = Fetched { failed: vec![("c1".into(), "CAL-SHARED-101".into()), ("c2".into(), "CAL-SHARED-104".into())], ..Fetched::default() };
+        let read = merge_reads(vec![a, b], at_utc(0), at_utc(100));
+        assert!(read.truncated);
+        assert_eq!(read.failed, vec![("c1".to_string(), "CAL-SHARED-101".to_string()), ("c2".to_string(), "CAL-SHARED-104".to_string())]);
+    }
+
+    #[test]
+    fn merge_caps_at_the_search_limit_and_says_so() {
+        let many: Vec<CalendarEventDto> = (0..SEARCH_MAX_EVENTS + 5).map(|i| ev(&format!("e{i}"), i as i64, 1)).collect();
+        let read = merge_reads(vec![Fetched { events: many, ..Fetched::default() }], at_utc(0), at_utc(10_000));
+        assert_eq!(read.events.len(), SEARCH_MAX_EVENTS);
+        assert!(read.truncated);
+    }
+
+    #[test]
+    fn capped_normalizing_reports_a_cut_and_the_old_cap_is_unchanged() {
+        let many: Vec<CalendarEventDto> = (0..120).map(|i| ev(&format!("e{i}"), i as i64, 1)).collect();
+        let (kept, cut) = normalize_events_capped(many.clone(), 100);
+        assert_eq!((kept.len(), cut), (100, true));
+        let (kept, cut) = normalize_events_capped(many.clone(), 120);
+        assert_eq!((kept.len(), cut), (120, false));
+        assert_eq!(normalize_events(many).len(), MAX_EVENTS);
+    }
+
+    #[test]
+    fn organizer_names_are_distinct_and_trimmed() {
+        let mut a = ev("a", 0, 10);
+        a.organizer = Some(" Itzik Levi ".into());
+        let mut b = ev("b", 20, 10);
+        b.organizer = Some("Itzik Levi".into());
+        let mut c = ev("c", 40, 10);
+        c.organizer = Some("  ".into());
+        let d = ev("d", 60, 10);
+        let mut e = ev("e", 80, 10);
+        e.organizer = Some("Dana".into());
+        assert_eq!(organizer_names(&[a, b, c, d, e]), vec!["Itzik Levi".to_string(), "Dana".to_string()]);
+    }
+
+    #[test]
+    fn query_range_without_a_service_or_with_a_bad_range_is_an_error() {
+        let from = at_utc(0);
+        assert!(query_range(from, from, None).unwrap_err().contains("OUTLOOK-108"));
+        assert!(query_range(from, from + ChronoDuration::days(32), None).unwrap_err().contains("OUTLOOK-108"));
     }
 }

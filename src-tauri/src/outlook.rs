@@ -531,6 +531,12 @@ fn fit(start: DateTime<Utc>, end: DateTime<Utc>, window: &FetchWindow) -> Fit {
     }
 }
 
+/// A calendar asked for by a search (`FetchWindow::only`) that did not read cleanly: its id and
+/// the code to report (unavailable, quarantined, pending and errored calendars all count).
+fn failed_entry(id: &str, state: SourceState, code: Option<&str>) -> Option<(String, String)> {
+    (state != SourceState::Ok).then(|| (id.to_string(), code.unwrap_or("CAL-SHARED-109").to_string()))
+}
+
 /// Result of reading one restricted collection.
 struct Scan {
     events: Vec<CalendarEventDto>,
@@ -956,6 +962,8 @@ pub struct OutlookSource {
     summary: DiscoverySummary,
     /// The last logged state of the listener (to log changes only).
     listener_logged: Option<bool>,
+    /// Set by `scan` when a read stopped at its scan or event cap (reported for search reads).
+    capped: std::cell::Cell<bool>,
 }
 
 impl OutlookSource {
@@ -1036,7 +1044,8 @@ impl OutlookSource {
                 }
             }
             drop(item);
-            if scanned >= MAX_SCANNED || scan.events.len() >= crate::calendar::MAX_EVENTS {
+            if scanned >= MAX_SCANNED || scan.events.len() >= window.event_cap() {
+                self.capped.set(true);
                 break;
             }
             next = restricted.call_object("GetNext", Vec::new()).map_err(|e| map("OUTLOOK-108", e))?;
@@ -1245,6 +1254,7 @@ impl OutlookSource {
 
     fn fetch_all(&mut self, window: &FetchWindow) -> FetchResult {
         let started = Instant::now();
+        self.capped.set(false);
         let mut app = Dispatch::get_active(PROG_ID).map_err(attach_error)?;
         let mut session = app.get_object("Session").map_err(|e| map_com("OUTLOOK-106", e))?;
         // The profile name is only ever hashed (for the log, and to keep each profile's calendars apart).
@@ -1305,10 +1315,24 @@ impl OutlookSource {
         let primary_group = primary_entry.map_or(SourceGroup::Unknown, |c| c.group);
         let secondaries: Vec<NavCalendar> = self.known.iter().filter(|c| c.id != primary.2).cloned().collect();
         let active: Vec<bool> = secondaries.iter().map(|c| self.checked.get(&c.id).copied().unwrap_or(false)).collect();
-        let want_meeting_key = active.iter().any(|a| *a);
+        // Which calendars this window reads: the checked ones, or (smart search) exactly `only`.
+        let only = window.only.as_deref();
+        let reads: Vec<bool> = secondaries.iter().zip(&active).map(|(c, a)| crate::calendar::reads_secondary(only, &c.id, *a)).collect();
+        let want_meeting_key = reads.iter().any(|a| *a);
 
         let primary_ctx = CalendarCtx { id: primary.2.clone(), name: primary_name.clone(), kind: SourceKind::Primary, want_meeting_key };
-        let mut events = self.read_calendar(&mut default_calendar, window, &primary_ctx, map_com)?;
+        let mut events = if crate::calendar::reads_primary(only, &primary.2) {
+            self.read_calendar(&mut default_calendar, window, &primary_ctx, map_com)?
+        } else {
+            Vec::new()
+        };
+        let mut failed: Vec<(String, String)> = Vec::new();
+        if let Some(ids) = only {
+            // An id that is no calendar of the last discovery cannot be read at all.
+            for id in ids.iter().filter(|i| **i != primary.2 && !secondaries.iter().any(|c| c.id == **i)) {
+                failed.push((id.clone(), "CAL-SHARED-102".to_string()));
+            }
+        }
         drop(default_calendar);
         let now_ms = Utc::now().timestamp_millis();
         // Each calendar's color in Outlook's pane; "automatic" ones by their place among the
@@ -1338,7 +1362,7 @@ impl OutlookSource {
             last_read_unix_ms: Some(now_ms),
         }];
 
-        for ((cal, selected), color) in secondaries.iter().zip(active).zip(secondary_colors) {
+        for (((cal, selected), read_it), color) in secondaries.iter().zip(active).zip(reads).zip(secondary_colors) {
             let kind = outlook_nav::kind_of(cal.group, false, cal.own_store);
             let mut dto = CalendarSourceDto {
                 id: cal.id.clone(),
@@ -1354,9 +1378,12 @@ impl OutlookSource {
                 event_count: 0,
                 last_read_unix_ms: None,
             };
-            if selected {
+            if read_it {
                 let ctx = CalendarCtx { id: cal.id.clone(), name: cal.name.clone(), kind, want_meeting_key };
                 let (read, state, code, read_ms) = self.read_secondary(&mut session, cal, window, &ctx, started)?;
+                if window.only.is_some() {
+                    failed.extend(failed_entry(&cal.id, state, code.as_deref()));
+                }
                 dto.state = state;
                 dto.error_code = code;
                 dto.event_count = read.len();
@@ -1372,7 +1399,8 @@ impl OutlookSource {
                 e.calendar_color = sources.iter().find(|s| s.id == e.calendar_id).and_then(|s| s.color.clone());
             }
         }
-        let events = crate::calendar::normalize_events(crate::calendar::dedup_meetings(events));
+        let (events, cut) = crate::calendar::normalize_events_capped(crate::calendar::dedup_meetings(events), window.event_cap());
+        let truncated = window.search && (cut || self.capped.get());
 
         let report = (!window.range).then(|| {
             let shared = || sources.iter().filter(|s| s.kind == SourceKind::Shared);
@@ -1402,7 +1430,7 @@ impl OutlookSource {
         } else {
             Vec::new()
         };
-        Ok(Fetched { events, invites, sources: report })
+        Ok(Fetched { events, invites, sources: report, truncated, failed })
     }
 }
 
@@ -2178,7 +2206,23 @@ mod tests {
 
     fn window() -> FetchWindow {
         let from = Utc.with_ymd_and_hms(2026, 10, 6, 9, 0, 30).unwrap();
-        FetchWindow { from, to: from + chrono::Duration::hours(48), invites: false, range: false }
+        FetchWindow { from, to: from + chrono::Duration::hours(48), invites: false, range: false, only: None, search: false }
+    }
+
+    #[test]
+    fn failed_entry_maps_every_unclean_state_to_a_code() {
+        assert_eq!(failed_entry("a", SourceState::Ok, None), None);
+        assert_eq!(failed_entry("a", SourceState::Unavailable, Some("CAL-SHARED-101")), Some(("a".into(), "CAL-SHARED-101".into())));
+        assert_eq!(failed_entry("a", SourceState::Unavailable, Some("CAL-SHARED-104")), Some(("a".into(), "CAL-SHARED-104".into())));
+        assert_eq!(failed_entry("a", SourceState::Pending, Some("CAL-SHARED-105")), Some(("a".into(), "CAL-SHARED-105".into())));
+        assert_eq!(failed_entry("a", SourceState::Unavailable, None), Some(("a".into(), "CAL-SHARED-109".into())));
+    }
+
+    #[test]
+    fn search_windows_use_the_larger_cap_and_range_windows_keep_theirs() {
+        assert_eq!(window().event_cap(), crate::calendar::MAX_EVENTS);
+        assert_eq!(FetchWindow { search: true, ..window() }.event_cap(), crate::calendar::SEARCH_MAX_EVENTS);
+        assert!(window().only.is_none());
     }
 
     #[test]
@@ -2384,7 +2428,7 @@ mod tests {
         let outcome = source.fetch(&window);
         let ms = started.elapsed().as_millis();
         match &outcome {
-            Ok(Fetched { events, invites, sources }) => println!(
+            Ok(Fetched { events, invites, sources, .. }) => println!(
                 "live: status=connected errorCode=- events={} allDay={} recurring={} withMeetingUrl={} colored={} invites={} restrict={:?} ms={} sources={:?}",
                 events.len(),
                 events.iter().filter(|e| e.all_day).count(),
