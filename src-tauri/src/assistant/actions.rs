@@ -12,6 +12,7 @@
 //! "פתח" button because `openable` is set) in a group of kind `"action"`.
 
 use super::exec::{Group, Outcome, Run};
+use super::signals::Signals;
 use super::store::Target;
 use super::wire::{AssistantItem, CardPhase, ItemKind};
 use crate::intent::{caps, commands, AskKind, CapId, Decision, Interpretation, Lang};
@@ -296,8 +297,12 @@ fn kind_title(kind: commands::Fallback, lang: Lang) -> Option<&'static str> {
 /// Applies to a `NoMatch` answer, and to a question the engine asked about a weather / currency / news /
 /// sports text (the engine mistakes "מה שער הדולר" for a search with no subject); every other outcome is
 /// returned unchanged.
-pub fn with_web_offer(mut o: Outcome, interp: &Interpretation, text: &str) -> Outcome {
-    if o.phase != CardPhase::Answer || !o.groups.is_empty() {
+///
+/// Never for a request to change, send, install or switch something off (`Signals::is_action`): the web is no
+/// answer to that. A weather / news / translate answer keeps its own sentence ("אין לי דרך לבדוק את זה בלי
+/// אינטרנט") and gets the Google click next to it.
+pub fn with_web_offer(mut o: Outcome, interp: &Interpretation, text: &str, signals: Signals) -> Outcome {
+    if o.phase != CardPhase::Answer || !o.groups.is_empty() || signals.is_action() {
         return o;
     }
     let lang = interp.lang;
@@ -314,7 +319,8 @@ pub fn with_web_offer(mut o: Outcome, interp: &Interpretation, text: &str) -> Ou
     }
     let Some(query) = sys::clean_query(text) else { return o };
     let Some(url) = sys::search_url("google", &query, None, None) else { return o };
-    if let Some(title) = topic.and_then(|kind| kind_title(kind, lang)) {
+    // (a known reason for the refusal already wrote the title)
+    if let Some(title) = topic.and_then(|kind| kind_title(kind, lang)).filter(|_| signals.unsupported.is_none()) {
         o.title = title.to_string();
         o.summary = String::new();
     }
@@ -631,7 +637,7 @@ mod tests {
     #[test]
     fn an_unknown_folder_or_a_missing_text_is_an_error_card_not_an_action() {
         let src = Probe::default();
-        let run = Run { src: &src, now: Local::now(), lang: Lang::He, prefs: None, inherited: None, allow_ask: true };
+        let run = Run { src: &src, now: Local::now(), lang: Lang::He, prefs: None, inherited: None, allow_ask: true, signals: Signals::default() };
         let mut interp = crate::intent::interpret("פתח הורדות", &crate::intent::Ctx::default(), Local::now(), &crate::intent::Known::default());
         interp.slots.folder = Some("C:\\Windows".into());
         let o = build(&run, &interp, caps::FOLDERS_OPEN);
@@ -738,7 +744,12 @@ mod tests {
         for t in ["תמחק את כל המיילים", "run setup.exe", "OPEN 'C:\\Windows\\system32\\cmd.exe'", "שלח מייל לדנה שאני מאחר", "תבטל את הפגישה של מחר", "???"] {
             let c = ask(&engine, &src, t);
             assert!(c.items.is_empty(), "{t}: {:?}", c.items);
-            assert!(c.title.starts_with("אפשר לשאול") || c.title.starts_with("You can ask"), "{t}: {}", c.title);
+            // a request to change something says what the app does; anything else gets the usual examples
+            let refused = c.title.starts_with("אני יכול רק לחפש ולקרוא") || c.title.starts_with("I can only search and read");
+            assert!(refused || c.title.starts_with("אפשר לשאול") || c.title.starts_with("You can ask"), "{t}: {}", c.title);
+        }
+        for t in ["תמחק את כל המיילים", "שלח מייל לדנה שאני מאחר", "תבטל את הפגישה של מחר"] {
+            assert_eq!(ask(&engine, &src, t).title, "אני יכול רק לחפש ולקרוא, לא לעשות את זה", "{t}");
         }
     }
 
@@ -777,10 +788,10 @@ mod tests {
     #[test]
     fn the_web_offer_only_touches_a_no_match_answer() {
         let src = Probe::default();
-        let run = Run { src: &src, now: Local::now(), lang: Lang::He, prefs: None, inherited: None, allow_ask: true };
+        let run = Run { src: &src, now: Local::now(), lang: Lang::He, prefs: None, inherited: None, allow_ask: true, signals: Signals::default() };
         let interp = crate::intent::interpret("תחפש בגוגל חתולים", &crate::intent::Ctx::default(), Local::now(), &crate::intent::Known::default());
         let built = crate::assistant::exec::execute(&run, &interp);
-        let after = with_web_offer(built.clone(), &interp, "תחפש בגוגל חתולים");
+        let after = with_web_offer(built.clone(), &interp, "תחפש בגוגל חתולים", Signals::default());
         assert_eq!(after.groups.len(), built.groups.len(), "a command already has its one item");
         assert_eq!(after.title, built.title);
     }

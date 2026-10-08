@@ -23,6 +23,7 @@ mod exec;
 mod flow;
 mod policy;
 mod prefs;
+mod signals;
 mod store;
 pub mod wire;
 
@@ -47,6 +48,24 @@ pub fn origin_valid(origin: &str) -> bool {
 fn engine() -> &'static flow::Engine {
     static ENGINE: OnceLock<flow::Engine> = OnceLock::new();
     ENGINE.get_or_init(flow::Engine::new)
+}
+
+/// A question that touches the lexicon, the spelling and name tables, the number words and the date
+/// parser, so one run of it builds every lazily built table of the language engine.
+const WARM_UP_TEXT: &str = "מצא את המייל עם המילה תקציב מדנה מאתמול";
+
+/// Build the language engine's tables on a thread of their own, so the first question of the session
+/// does not pay for them (about 6 ms, on the thread that answers). Nothing is kept except the tables;
+/// the text is a fixed constant, never the user's.
+pub fn warm_up() {
+    let spawned = std::thread::Builder::new().name("companyisland-intent-warmup".into()).spawn(|| {
+        crate::debug_log::catch("intent warm-up", || {
+            let _ = intent::analyze(WARM_UP_TEXT, &intent::Ctx::default(), Local::now(), &intent::Known::default());
+        });
+    });
+    if let Err(e) = spawned {
+        crate::dlog!("WARN", "assistant", "intent warm-up thread not started: {}", e);
+    }
 }
 
 fn now_ms() -> i64 {

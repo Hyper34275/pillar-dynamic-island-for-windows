@@ -8,6 +8,7 @@ use super::answer::{self, BusyKind, Noun};
 use super::avail;
 use super::policy::{self, MailPlan, PlanInput};
 use super::prefs::Prefs;
+use super::signals::{self, Signals};
 use super::store::{MailRun, Pending, Target};
 use super::wire::{AssistantItem, CardPhase, Choice, ChoiceKind, ItemKind, MailboxRef};
 use crate::calendar::{BusyStatus, CalendarEventDto, CalendarSourceDto, RangeRead, ResponseStatus, SourceGroup, SourceKind};
@@ -95,6 +96,8 @@ pub struct Outcome {
     pub searchable: Vec<String>,
     /// Show the first hits of each group in turn (multi-source answers).
     pub interleave: bool,
+    /// The terms of an exact-word mail search: the items the card shows put whole-word hits first.
+    pub exact_terms: Vec<Vec<String>>,
 }
 
 impl Outcome {
@@ -114,6 +117,7 @@ impl Outcome {
             used_plan: None,
             searchable: Vec::new(),
             interleave: false,
+            exact_terms: Vec::new(),
         }
     }
 
@@ -149,6 +153,9 @@ pub struct Run<'a> {
     pub inherited: Option<&'a [String]>,
     /// False inside a multi-source answer: no question may stop it.
     pub allow_ask: bool,
+    /// What the language engine noticed besides the capability: an exact word, the shared mailbox,
+    /// why a request is out of scope.
+    pub signals: Signals,
 }
 
 fn ms(t: DateTime<Utc>) -> i64 {
@@ -202,18 +209,27 @@ pub fn execute(r: &Run, interp: &Interpretation) -> Outcome {
                 o
             }
         },
-        Decision::NoMatch => {
-            let (title, examples) = answer::no_match(r.lang);
-            Outcome::answer(title, examples)
-        }
+        Decision::NoMatch => match answer::unsupported(r.signals.unsupported, r.lang) {
+            // out of scope for a known reason: say that, instead of the generic examples
+            Some((title, hint)) => Outcome::answer(title, hint),
+            None => {
+                let (title, examples) = answer::no_match(r.lang);
+                Outcome::answer(title, examples)
+            }
+        },
     }
 }
 
 /// Continue a pending question with the chosen option id (`mb:<id>`, `all`, `cal:<id>`).
 pub fn resume(r: &Run, pending: &Pending, option_id: &str) -> Result<Outcome, String> {
     match pending {
-        Pending::Mailbox { interp, offered } => {
-            let ids = if option_id == "all" {
+        Pending::Mailbox { interp, offered, signals } => {
+            // the question was asked under these signals (exact word, shared mailbox): the search goes on under them
+            let r = &Run { signals: *signals, ..*r };
+            let ids = if option_id == "all" && signals.shared_mailbox {
+                // "I don't know" to a question about the shared mailboxes means all of them, not every mailbox
+                policy::shared_searchable_ids(&r.src.cached_mailboxes())
+            } else if option_id == "all" {
                 policy::searchable_ids(&r.src.cached_mailboxes())
             } else if let Some(id) = option_id.strip_prefix("mb:") {
                 if !offered.iter().any(|o| o == id) {
@@ -287,6 +303,7 @@ fn multi(r: &Run, interp: &Interpretation, cap_list: &[CapId]) -> Outcome {
     let partial = outs.iter().any(|o| o.partial);
     let used_plan = outs.iter().find_map(|o| o.used_plan.clone());
     let searchable = outs.iter().find(|o| !o.searchable.is_empty()).map(|o| o.searchable.clone()).unwrap_or_default();
+    let exact_terms = outs.iter().find(|o| !o.exact_terms.is_empty()).map(|o| o.exact_terms.clone()).unwrap_or_default();
     let groups: Vec<Group> = outs.into_iter().filter(|o| o.phase == CardPhase::Answer).flat_map(|o| o.groups).collect();
     let total: usize = groups.iter().map(|g| g.items.len()).sum();
     let mut o = Outcome::new(
@@ -300,6 +317,7 @@ fn multi(r: &Run, interp: &Interpretation, cap_list: &[CapId]) -> Outcome {
     o.interleave = true;
     o.used_plan = used_plan;
     o.searchable = searchable;
+    o.exact_terms = exact_terms;
     o
 }
 
@@ -933,6 +951,7 @@ fn mail(r: &Run, interp: &Interpretation, forced: Option<Vec<String>>) -> Outcom
             inherited: if interp.follow_up { r.inherited } else { None },
             prefs: r.prefs,
             allow_ask: r.allow_ask,
+            shared_only: r.signals.shared_mailbox,
         }),
     };
     let searchable = policy::searchable_ids(&boxes);
@@ -942,7 +961,10 @@ fn mail(r: &Run, interp: &Interpretation, forced: Option<Vec<String>>) -> Outcom
             let code = boxes.iter().find(|m| m.id == id).map_or("MAIL-102", policy::unavailable_code);
             Outcome::error(code, lang)
         }
-        MailPlan::Ask => mailbox_choices(r, interp, &boxes),
+        MailPlan::NoShared => Outcome::answer(answer::no_shared_mailbox(lang), ""),
+        MailPlan::SharedUnavailable => Outcome::error(policy::none_searchable_code(&policy::shared_boxes(&boxes)), lang),
+        MailPlan::Ask => mailbox_choices(r, interp, &boxes, None),
+        MailPlan::AskShared(ids) => mailbox_choices(r, interp, &boxes, Some(&ids)),
         MailPlan::Search(ids) => {
             let query = MailQuery {
                 mailboxes: ids.clone(),
@@ -966,6 +988,7 @@ fn mail(r: &Run, interp: &Interpretation, forced: Option<Vec<String>>) -> Outcom
                 outcomes: res.per_mailbox,
                 partial: res.partial,
                 latest: s.latest,
+                exact: r.signals.exact_terms,
             };
             let mut o = mail_outcome(&run, lang);
             o.mail = Some(run);
@@ -976,10 +999,12 @@ fn mail(r: &Run, interp: &Interpretation, forced: Option<Vec<String>>) -> Outcom
     }
 }
 
-fn mailbox_choices(r: &Run, interp: &Interpretation, boxes: &[MailboxInfo]) -> Outcome {
+/// "Which mailbox?". `only` limits the offer to these mailbox ids (the shared mailboxes, for
+/// "בתיבה המשותפת"); "I don't know" then means all of those.
+fn mailbox_choices(r: &Run, interp: &Interpretation, boxes: &[MailboxInfo], only: Option<&[String]>) -> Outcome {
     let lang = r.lang;
     let q = answer::mailbox_question(lang);
-    let searchable: Vec<&MailboxInfo> = boxes.iter().filter(|m| m.searchable()).collect();
+    let searchable: Vec<&MailboxInfo> = boxes.iter().filter(|m| m.searchable() && only.map_or(true, |ids| ids.contains(&m.id))).collect();
     let preferred = |id: &str| r.prefs.is_some_and(|p| p.chosen.iter().any(|c| c == id));
     let mut choices: Vec<Choice> = searchable
         .iter()
@@ -991,12 +1016,14 @@ fn mailbox_choices(r: &Run, interp: &Interpretation, boxes: &[MailboxInfo]) -> O
         })
         .collect();
     choices.sort_by_key(|c| !c.preferred);
-    choices.push(Choice { id: "all".into(), label: answer::all_mailboxes_label(lang).into(), kind: ChoiceKind::AllMailboxes, preferred: false });
+    let all_label = if only.is_some() { answer::all_shared_label(lang) } else { answer::all_mailboxes_label(lang) };
+    choices.push(Choice { id: "all".into(), label: all_label.into(), kind: ChoiceKind::AllMailboxes, preferred: false });
     let mut o = Outcome::new(CardPhase::Choices, q.to_string());
     o.question = Some(q.to_string());
     o.choices = choices;
-    o.pending = Some(Pending::Mailbox { interp: interp.clone(), offered: searchable.iter().map(|m| m.id.clone()).collect() });
-    o.searchable = searchable.iter().map(|m| m.id.clone()).collect();
+    o.pending = Some(Pending::Mailbox { interp: interp.clone(), offered: searchable.iter().map(|m| m.id.clone()).collect(), signals: r.signals });
+    // every mailbox that could be searched, not just the ones offered: a remembered choice is judged against all of them
+    o.searchable = policy::searchable_ids(boxes);
     o
 }
 
@@ -1032,18 +1059,25 @@ pub fn extend_mail(src: &dyn Sources, run: &MailRun) -> Result<MailRun, String> 
         outcomes,
         partial: res.partial,
         latest: run.latest,
+        exact: run.exact,
     })
 }
 
 /// The card for a (possibly merged) mail run.
 pub fn mail_outcome(run: &MailRun, lang: Lang) -> Outcome {
     let n = run.hits.len() as u32;
+    // newest first; for an exact word, the subjects that have it as a whole word come before the
+    // ones that only contain it (still newest first within each rank). No hit is added or dropped.
+    let mut hits: Vec<&MailHit> = run.hits.iter().collect();
+    if run.exact {
+        signals::exact_first(&mut hits, |h| h.subject.as_str(), &run.query.terms);
+    }
     let mut groups = Vec::new();
     for id in &run.query.mailboxes {
         let outcome = run.outcomes.iter().find(|o| &o.mailbox_id == id);
-        let items: Vec<(AssistantItem, Target)> = run
-            .hits
+        let items: Vec<(AssistantItem, Target)> = hits
             .iter()
+            .copied()
             .filter(|h| &h.mailbox_id == id)
             .map(|h| {
                 let mailbox = run.boxes.iter().find(|m| &m.id == id).map(|m| m.name.clone());
@@ -1079,8 +1113,11 @@ pub fn mail_outcome(run: &MailRun, lang: Lang) -> Outcome {
         }
     }
     let mut o = Outcome::answer(if run.partial { answer::found_so_far(n, Noun::Mail, lang) } else { answer::found_text(n, Noun::Mail, lang) }, "");
+    if run.exact {
+        o.exact_terms = run.query.terms.clone();
+    }
     if run.latest {
-        if let Some(h) = run.hits.first() {
+        if let Some(h) = hits.first().copied() {
             let subject = if h.subject.trim().is_empty() { answer::no_title(lang) } else { h.subject.as_str() };
             let line = if h.from.is_empty() { subject.to_string() } else if lang == Lang::He { format!("{subject} · מאת {}", h.from) } else { format!("{subject} · from {}", h.from) };
             o.summary = line;
@@ -1108,10 +1145,13 @@ pub fn mail_outcome(run: &MailRun, lang: Lang) -> Outcome {
 fn notes(r: &Run, interp: &Interpretation) -> Outcome {
     let lang = r.lang;
     let s = &interp.slots;
-    let hits = match r.src.search_notes(&s.terms, s.latest, MAX_LOCAL_HITS) {
+    let mut hits = match r.src.search_notes(&s.terms, s.latest, MAX_LOCAL_HITS) {
         Ok(h) => h,
         Err(e) => return Outcome::error(&answer::code_of(&e, "APP-001"), lang),
     };
+    if r.signals.exact_terms {
+        signals::exact_first(&mut hits, |h| h.title.as_str(), &s.terms);
+    }
     let items: Vec<(AssistantItem, Target)> = hits
         .iter()
         .map(|h| {
@@ -1138,10 +1178,13 @@ fn notes(r: &Run, interp: &Interpretation) -> Outcome {
 fn files(r: &Run, interp: &Interpretation) -> Outcome {
     let lang = r.lang;
     let s = &interp.slots;
-    let found = match r.src.search_files(&s.terms, s.file_ext.as_deref(), MAX_LOCAL_HITS, FILES_BUDGET_MS) {
+    let mut found = match r.src.search_files(&s.terms, s.file_ext.as_deref(), MAX_LOCAL_HITS, FILES_BUDGET_MS) {
         Ok(f) => f,
         Err(e) => return Outcome::error(&answer::code_of(&e, "FILES-101"), lang),
     };
+    if r.signals.exact_terms {
+        signals::exact_first(&mut found.hits, |h| h.name.as_str(), &s.terms);
+    }
     let items: Vec<(AssistantItem, Target)> = found
         .hits
         .iter()

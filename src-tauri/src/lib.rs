@@ -184,6 +184,10 @@ pub fn run() {
                 let h = handle.clone();
                 debug_log::catch("startup search bar", move || search_bar::start(h));
             }
+            // The first smart-search question would build the language tables on its own thread: do it now, aside.
+            if handle.state::<settings::SettingsStore>().get().ai_search_enabled {
+                assistant::warm_up();
+            }
             first_run_welcome(&handle);
 
             // Registry read/write and the hook install handshake stay off the UI thread. Each step

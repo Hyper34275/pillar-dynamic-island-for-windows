@@ -9,6 +9,7 @@ use super::answer;
 use super::exec::{self, Group, Outcome, Run, Sources};
 use super::policy;
 use super::prefs::Prefs;
+use super::signals::{self, Signals};
 use super::store::{Entry, Store, Target};
 use super::wire::{AssistantCard, AssistantItem, CardPhase, ItemKind, ResultGroup, SearchResults};
 use crate::intent::{self, Ctx, Decision, Interpretation, Known, KnownName, Lang};
@@ -109,13 +110,15 @@ fn known_from(src: &dyn Sources) -> Known {
     }
 }
 
-/// The first items of the answer: newest mail first, otherwise the groups' own order (taken in
-/// turn for a multi-source answer).
-fn top_items(groups: &[ResultGroup], interleave: bool) -> Vec<AssistantItem> {
+/// The first items of the answer: newest mail first (for an exact word, the whole-word subjects
+/// first, newest first within each), otherwise the groups' own order (taken in turn for a
+/// multi-source answer).
+fn top_items(groups: &[ResultGroup], interleave: bool, exact_terms: &[Vec<String>]) -> Vec<AssistantItem> {
     let flat: Vec<&AssistantItem> = groups.iter().flat_map(|g| g.items.iter()).collect();
     if !flat.is_empty() && flat.iter().all(|i| i.kind == ItemKind::Mail) {
         let mut mail = flat;
         mail.sort_by(|a, b| b.time.cmp(&a.time));
+        signals::exact_first(&mut mail, |i| i.title.as_str(), exact_terms);
         return mail.into_iter().take(CARD_ITEMS).cloned().collect();
     }
     if interleave {
@@ -168,7 +171,7 @@ fn build_entry(query_id: &str, query: &str, lang: Lang, follow_up: bool, created
         groups.push(ResultGroup { kind: kind.to_string(), title, mailbox, items: out_items, truncated, error_code });
     }
     let total = groups.iter().map(|g| g.items.len()).sum::<usize>() as u32;
-    let items = if o.phase == CardPhase::Answer { top_items(&groups, o.interleave) } else { Vec::new() };
+    let items = if o.phase == CardPhase::Answer { top_items(&groups, o.interleave, &o.exact_terms) } else { Vec::new() };
     let card = AssistantCard {
         query_id: query_id.to_string(),
         query: query.to_string(),
@@ -214,23 +217,32 @@ impl Engine {
     /// Understand and run a new question.
     pub fn submit(&self, src: &dyn Sources, text: &str, query_id: &str, now: DateTime<Local>) -> AssistantCard {
         let known = known_from(src);
-        let interp = {
+        // the analysis says more than the capability: an exact word, the shared mailbox, why a request is refused
+        let (interp, analysis) = {
             let session = lock(&self.session);
-            intent::interpret(text, &session.ctx, now, &known)
+            intent::analyze(text, &session.ctx, now, &known)
         };
-        self.run_interpretation(src, text, query_id, now, &interp)
+        let signals = Signals::of(&interp, &analysis);
+        self.run_with_signals(src, text, query_id, now, &interp, signals)
     }
 
-    /// Run an interpretation (the part of `submit` after understanding).
+    /// Run an interpretation (the part of `submit` after understanding), with no extra signals.
+    #[cfg(test)]
     pub fn run_interpretation(&self, src: &dyn Sources, text: &str, query_id: &str, now: DateTime<Local>, interp: &Interpretation) -> AssistantCard {
+        self.run_with_signals(src, text, query_id, now, interp, Signals::default())
+    }
+
+    /// [`Engine::run_interpretation`] with what the language engine noticed besides the capability.
+    pub fn run_with_signals(&self, src: &dyn Sources, text: &str, query_id: &str, now: DateTime<Local>, interp: &Interpretation, signals: Signals) -> AssistantCard {
         let started = Instant::now();
         let now_ms = now.timestamp_millis();
         let inherited = lock(&self.session).last_plan.clone().filter(|(_, at)| now_ms - at <= PLAN_TTL_MS).map(|(ids, _)| ids);
         let prefs = src.load_prefs();
-        let run = Run { src, now, lang: interp.lang, prefs: prefs.as_ref(), inherited: inherited.as_deref(), allow_ask: true };
+        let run = Run { src, now, lang: interp.lang, prefs: prefs.as_ref(), inherited: inherited.as_deref(), allow_ask: true, signals };
         let outcome = exec::execute(&run, interp);
         // nothing understood: the honest message stays and "search it on Google" is offered as a click
-        let outcome = super::actions::with_web_offer(outcome, interp, text);
+        // (not for a request to change something, and not over the sentence that says why it is refused)
+        let outcome = super::actions::with_web_offer(outcome, interp, text, signals);
         self.finish(query_id, text, interp.lang, interp.follow_up, Some(interp), outcome, now_ms, now_ms, started)
     }
 
@@ -244,7 +256,8 @@ impl Engine {
             (e.pending.clone().ok_or("APP-041: search expired")?, e.card.query.clone(), e.card.lang, e.card.created_at)
         };
         let prefs = src.load_prefs();
-        let run = Run { src, now, lang, prefs: prefs.as_ref(), inherited: None, allow_ask: true };
+        // (a mailbox question carries its own signals; `exec::resume` puts them on the run)
+        let run = Run { src, now, lang, prefs: prefs.as_ref(), inherited: None, allow_ask: true, signals: Signals::default() };
         let outcome = exec::resume(&run, &pending, option_id)?;
         if remember && outcome.phase != CardPhase::Choices {
             if let Some(chosen) = outcome.used_plan.clone().filter(|c| !c.is_empty()) {

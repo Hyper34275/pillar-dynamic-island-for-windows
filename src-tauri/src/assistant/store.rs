@@ -2,6 +2,7 @@
 //! to the real target (EntryID key, path key, AUMID key, note id, event start) only here. Nothing is
 //! persisted and nothing in here is ever logged.
 
+use super::signals::Signals;
 use super::wire::{AssistantCard, CardPhase, ResultGroup, SearchResults};
 use crate::intent::Interpretation;
 use crate::outlook_mail::{MailCursor, MailHit, MailQuery, MailboxInfo, MailboxOutcome};
@@ -31,8 +32,9 @@ pub enum Target {
 /// A question waiting for the user's answer.
 #[derive(Clone, Debug)]
 pub enum Pending {
-    /// Which mailbox: `offered` are the mailbox ids behind the choices.
-    Mailbox { interp: Interpretation, offered: Vec<String> },
+    /// Which mailbox: `offered` are the mailbox ids behind the choices. The `signals` of the
+    /// question (exact word, shared mailbox) go on to the search the answer starts.
+    Mailbox { interp: Interpretation, offered: Vec<String>, signals: Signals },
     /// Which calendar of several that match the person.
     Calendar { interp: Interpretation, offered: Vec<String> },
 }
@@ -49,6 +51,8 @@ pub struct MailRun {
     pub partial: bool,
     /// The question asked for the newest mail ("האחרון"): the summary names the first hit.
     pub latest: bool,
+    /// An exact word was asked for: subjects with `query.terms` as whole words are listed first.
+    pub exact: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -214,7 +218,7 @@ mod tests {
     fn pending_needs_choices_and_freshness() {
         let mut s = Store::new();
         let mut e = entry("a", CardPhase::Choices);
-        e.pending = Some(Pending::Mailbox { interp: dummy_interp(), offered: vec![] });
+        e.pending = Some(Pending::Mailbox { interp: dummy_interp(), offered: vec![], signals: Signals::default() });
         s.insert(e, 0);
         assert!(s.latest_pending(1000).is_some());
         assert!(s.latest_pending(PENDING_TTL_MS + 1).is_none());

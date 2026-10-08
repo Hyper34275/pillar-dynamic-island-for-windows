@@ -47,6 +47,8 @@ struct Fake {
     notes: Vec<NoteHit>,
     opened: Mutex<Vec<String>>,
     prefs: Mutex<Option<Prefs>>,
+    /// The terms every files / notes search was given.
+    local_terms: Mutex<Vec<Vec<Vec<String>>>>,
 }
 
 impl Sources for Fake {
@@ -109,7 +111,8 @@ impl Sources for Fake {
         self.opened.lock().unwrap().push("event".into());
         Ok(())
     }
-    fn search_files(&self, _t: &[Vec<String>], _e: Option<&str>, _l: usize, _b: u64) -> Result<FileSearch, String> {
+    fn search_files(&self, t: &[Vec<String>], _e: Option<&str>, _l: usize, _b: u64) -> Result<FileSearch, String> {
+        self.local_terms.lock().unwrap().push(t.to_vec());
         Ok(FileSearch { hits: self.files.clone(), partial: false, index_used: true })
     }
     fn open_file(&self, key: &str) -> Result<(), String> {
@@ -123,7 +126,8 @@ impl Sources for Fake {
         self.opened.lock().unwrap().push(format!("app:{key}"));
         Ok(())
     }
-    fn search_notes(&self, _t: &[Vec<String>], _latest: bool, _l: usize) -> Result<Vec<NoteHit>, String> {
+    fn search_notes(&self, t: &[Vec<String>], _latest: bool, _l: usize) -> Result<Vec<NoteHit>, String> {
+        self.local_terms.lock().unwrap().push(t.to_vec());
         Ok(self.notes.clone())
     }
     fn open_note(&self, id: &str) -> Result<(), String> {
@@ -1485,4 +1489,425 @@ fn known_people_are_the_calendar_owners_then_the_organizers() {
     assert_eq!(known.people, vec!["איציק כהן", "דנה לוי", "Avi Levi", "Dana  Levi"]);
     assert_eq!(known.calendars.len(), 4);
     assert_eq!(known.calendars[1], KnownName { id: "c-i".into(), name: "איציק כהן".into() });
+}
+
+// ----- what the language engine noticed: exact words, the shared mailbox, refusals -----------------
+
+fn sig(exact_terms: bool, shared_mailbox: bool, unsupported: Option<&'static str>) -> Signals {
+    Signals { exact_terms, shared_mailbox, unsupported }
+}
+
+fn exact() -> Signals {
+    sig(true, false, None)
+}
+
+fn shared() -> Signals {
+    sig(false, true, None)
+}
+
+fn run_sig(e: &Engine, f: &Fake, id: &str, i: &Interpretation, s: Signals) -> AssistantCard {
+    e.run_with_signals(f, "text", id, now(), i, s)
+}
+
+fn titles(items: &[AssistantItem]) -> Vec<&str> {
+    items.iter().map(|i| i.title.as_str()).collect()
+}
+
+/// Newest first, as a search returns them: only some have "תקציב" as a whole word.
+fn budget_hits(mailbox: &str) -> Vec<MailHit> {
+    vec![
+        hit("k1", mailbox, "תקציבים 2027", 9),
+        hit("k2", mailbox, "re: תקציב שנתי", 8),
+        hit("k3", mailbox, "סיכום תקציבי", 7),
+        hit("k4", mailbox, "בתקציב החדש", 6),
+        hit("k5", mailbox, "Fwd: תקציב", 5),
+    ]
+}
+
+fn one_box() -> Fake {
+    Fake { boxes: vec![mailbox("m1", "Yuval Cohen", MailboxKind::Primary)], ..Fake::default() }
+}
+
+const NEWEST_FIRST: [&str; 5] = ["תקציבים 2027", "re: תקציב שנתי", "סיכום תקציבי", "בתקציב החדש", "Fwd: תקציב"];
+const WHOLE_WORD_FIRST: [&str; 5] = ["re: תקציב שנתי", "בתקציב החדש", "Fwd: תקציב", "תקציבים 2027", "סיכום תקציבי"];
+
+#[test]
+fn an_exact_word_lists_the_whole_word_subjects_first_in_the_card_and_in_the_results() {
+    let f = one_box();
+    f.mail.lock().unwrap().push_back(Ok(result(budget_hits("m1"), false)));
+    f.mail.lock().unwrap().push_back(Ok(result(budget_hits("m1"), false)));
+    let e = Engine::new();
+    let i = exec_cap(caps::EMAIL_SEARCH, mail_slots());
+    let plain = run_sig(&e, &f, "q1", &i, Signals::default());
+    let exact_card = run_sig(&e, &f, "q2", &i, exact());
+    // without the signal: newest first, as before
+    assert_eq!(titles(&plain.items), NEWEST_FIRST[..3]);
+    // with it: whole words first (a proclitic attached still counts), newest first within each rank
+    assert_eq!(titles(&exact_card.items), WHOLE_WORD_FIRST[..3]);
+    let groups = e.results("q2", now().timestamp_millis()).unwrap().groups;
+    assert_eq!(groups.len(), 1);
+    assert_eq!(titles(&groups[0].items), WHOLE_WORD_FIRST);
+    // nothing added, nothing dropped, and the search asked for exactly the typed term
+    assert_eq!((plain.total, exact_card.total), (5, 5));
+    for (q, _) in f.queries.lock().unwrap().iter() {
+        assert_eq!(q.terms, terms("תקציב"));
+    }
+}
+
+#[test]
+fn an_exact_word_orders_across_mailboxes_in_the_card() {
+    let f = Fake { boxes: three_boxes(), ..Fake::default() };
+    f.mail.lock().unwrap().push_back(Ok(MailSearchResult {
+        hits: vec![hit("a", "m1", "תקציבים", 9), hit("b", "m2", "תקציב", 8), hit("c", "m3", "תקציבי", 7), hit("d", "m1", "על התקציב", 6)],
+        per_mailbox: vec![done("m1"), done("m2"), done("m3")],
+        partial: false,
+        cursor: None,
+    }));
+    let e = Engine::new();
+    let i = exec_cap(caps::EMAIL_SEARCH, Slots { terms: terms("תקציב"), all_mailboxes: true, ..Slots::default() });
+    let card = run_sig(&e, &f, "q1", &i, exact());
+    assert_eq!(titles(&card.items), ["תקציב", "על התקציב", "תקציבים"]);
+}
+
+#[test]
+fn a_question_about_the_mailbox_keeps_the_exact_word_for_the_search_that_follows() {
+    let f = Fake { boxes: three_boxes(), ..Fake::default() };
+    f.mail.lock().unwrap().push_back(Ok(result(budget_hits("m1"), false)));
+    let e = Engine::new();
+    let asked = run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), exact());
+    assert_eq!(asked.phase, CardPhase::Choices);
+    assert_eq!(asked.choices.len(), 4);
+    let card = e.choose(&f, "q1", "mb:m1", false, now()).unwrap();
+    assert_eq!(titles(&card.items), WHOLE_WORD_FIRST[..3]);
+}
+
+#[test]
+fn a_longer_mail_search_keeps_the_exact_order() {
+    let f = one_box();
+    let mut first = result(vec![hit("k1", "m1", "תקציבים 2027", 9)], true);
+    first.per_mailbox = vec![MailboxOutcome { mailbox_id: "m1".into(), complete: false, error: None }];
+    f.mail.lock().unwrap().push_back(Ok(first));
+    f.mail.lock().unwrap().push_back(Ok(result(vec![hit("k2", "m1", "re: תקציב שנתי", 3)], false)));
+    let e = Engine::new();
+    let card = run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), exact());
+    assert!(card.can_extend);
+    assert_eq!(titles(&card.items), ["תקציבים 2027"]);
+    let card = e.extend(&f, "q1", now()).unwrap();
+    assert_eq!(titles(&card.items), ["re: תקציב שנתי", "תקציבים 2027"], "the older whole-word hit now leads");
+    assert_eq!(f.queries.lock().unwrap()[1].0.terms, terms("תקציב"), "the extension searches the same term");
+}
+
+#[test]
+fn the_newest_mail_with_the_exact_word_is_named_in_the_summary() {
+    let f = one_box();
+    f.mail.lock().unwrap().push_back(Ok(result(budget_hits("m1"), false)));
+    let e = Engine::new();
+    let i = exec_cap(caps::EMAIL_SEARCH, Slots { latest: true, ..mail_slots() });
+    let card = run_sig(&e, &f, "q1", &i, exact());
+    assert!(card.summary.starts_with("re: תקציב שנתי"), "{}", card.summary);
+}
+
+#[test]
+fn an_exact_word_orders_notes_and_files_and_never_changes_the_search() {
+    let note = |id: &str, title: &str, at: i64| NoteHit { id: id.into(), title: title.into(), snippet: String::new(), updated_at: at, pinned: false };
+    let file = |key: &str, name: &str| FileHit { key: key.into(), name: name.into(), ..file_hit() };
+    let f = Fake {
+        notes: vec![note("n1", "תקציבים", 9), note("n2", "רשימה: התקציב", 8), note("n3", "תקציב", 7)],
+        files: vec![file("f1", "תקציבים.xlsx"), file("f2", "old תקציב v2.docx"), file("f3", "Budget.xlsx"), file("f4", "תקציב.xlsx")],
+        ..Fake::default()
+    };
+    let e = Engine::new();
+    let notes = exec_cap(caps::NOTES_SEARCH, mail_slots());
+    let files = exec_cap(caps::FILES_SEARCH, mail_slots());
+    // as before without the signal
+    assert_eq!(titles(&run_sig(&e, &f, "q1", &notes, Signals::default()).items), ["תקציבים", "רשימה: התקציב", "תקציב"]);
+    assert_eq!(titles(&run_sig(&e, &f, "q2", &files, Signals::default()).items), ["תקציבים.xlsx", "old תקציב v2.docx", "Budget.xlsx"]);
+    // whole word first; the rest keeps its order
+    assert_eq!(titles(&run_sig(&e, &f, "q3", &notes, exact()).items), ["רשימה: התקציב", "תקציב", "תקציבים"]);
+    let card = run_sig(&e, &f, "q4", &files, exact());
+    assert_eq!(titles(&card.items), ["old תקציב v2.docx", "תקציב.xlsx", "תקציבים.xlsx"]);
+    assert_eq!(card.total, 4);
+    // every search got the typed term and nothing else
+    assert!(f.local_terms.lock().unwrap().iter().all(|t| *t == terms("תקציב")));
+}
+
+#[test]
+fn a_multi_source_answer_orders_each_source_by_whole_words() {
+    let f = Fake {
+        boxes: vec![mailbox("m1", "Y", MailboxKind::Primary)],
+        notes: vec![
+            NoteHit { id: "n1".into(), title: "תקציבים".into(), snippet: String::new(), updated_at: 3, pinned: false },
+            NoteHit { id: "n2".into(), title: "תקציב".into(), snippet: String::new(), updated_at: 2, pinned: false },
+        ],
+        ..Fake::default()
+    };
+    f.mail.lock().unwrap().push_back(Ok(result(vec![hit("k1", "m1", "תקציבי", 9), hit("k2", "m1", "תקציב", 8)], false)));
+    let e = Engine::new();
+    let i = interp(Decision::MultiSource { caps: vec![caps::EMAIL_SEARCH, caps::NOTES_SEARCH] }, mail_slots());
+    let card = run_sig(&e, &f, "q1", &i, exact());
+    // one from each source in turn, the whole-word one of each first
+    assert_eq!(titles(&card.items), ["תקציב", "תקציב", "תקציבי"]);
+}
+
+#[test]
+fn the_real_engine_marks_an_exact_word_and_the_order_follows() {
+    let f = one_box();
+    for (text, expected) in [("מצא את המייל עם המילה תקציב", WHOLE_WORD_FIRST), ("חפש מייל \"תקציב\"", WHOLE_WORD_FIRST), ("מצא את המייל על תקציב", NEWEST_FIRST)] {
+        f.mail.lock().unwrap().push_back(Ok(result(budget_hits("m1"), false)));
+        let card = Engine::new().submit(&f, text, "q1", now());
+        assert_eq!(card.phase, CardPhase::Answer, "{text}: {card:?}");
+        assert_eq!(titles(&card.items), expected[..3], "{text}");
+        assert_eq!(card.total, 5, "{text}");
+    }
+    let q = f.queries.lock().unwrap();
+    assert!(q.iter().all(|(q, _)| q.terms == terms("תקציב")), "the typed word is searched as typed");
+}
+
+// ---- the shared mailbox ----
+
+fn with_shared(n: usize) -> Fake {
+    let mut boxes = vec![mailbox("m1", "Yuval Cohen", MailboxKind::Primary)];
+    for i in 0..n {
+        boxes.push(mailbox(&format!("s{}", i + 1), &format!("תיבה משותפת {}", i + 1), MailboxKind::Shared));
+    }
+    Fake { boxes, ..Fake::default() }
+}
+
+fn searched_mailboxes(f: &Fake) -> Vec<Vec<String>> {
+    f.queries.lock().unwrap().iter().map(|(q, _)| q.mailboxes.clone()).collect()
+}
+
+#[test]
+fn the_shared_mailbox_is_used_when_it_is_the_only_one() {
+    let f = with_shared(1);
+    f.mail.lock().unwrap().push_back(Ok(result(vec![hit("k1", "s1", "תקציב", 9)], false)));
+    let e = Engine::new();
+    let card = run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    assert_eq!(card.phase, CardPhase::Answer, "{card:?}");
+    assert_eq!(searched_mailboxes(&f), vec![vec!["s1".to_string()]], "never the primary mailbox");
+    assert_eq!(card.total, 1);
+    // without the signal the same two mailboxes ask which one
+    let card = run_sig(&e, &f, "q2", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), Signals::default());
+    assert_eq!(card.phase, CardPhase::Choices);
+}
+
+#[test]
+fn several_shared_mailboxes_ask_only_about_the_shared_ones() {
+    let f = with_shared(2);
+    let e = Engine::new();
+    let card = run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    assert_eq!(card.phase, CardPhase::Choices, "{card:?}");
+    assert_eq!(card.question.as_deref(), Some("באיזו תיבת דואר לחפש?"));
+    let labels: Vec<&str> = card.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["תיבה משותפת 1 (משותפת)", "תיבה משותפת 2 (משותפת)", "אני לא יודע — חפש בכל התיבות המשותפות."]);
+    assert_eq!(card.choices.last().unwrap().kind, ChoiceKind::AllMailboxes);
+    assert!(f.queries.lock().unwrap().is_empty(), "nothing is searched before the answer");
+    // one of them
+    f.mail.lock().unwrap().push_back(Ok(result(vec![hit("k1", "s2", "תקציב", 9)], false)));
+    let card = e.choose(&f, "q1", "mb:s2", false, now()).unwrap();
+    assert_eq!((card.phase, card.total), (CardPhase::Answer, 1));
+    assert_eq!(searched_mailboxes(&f), vec![vec!["s2".to_string()]]);
+    // the primary mailbox was not offered, so it cannot be chosen
+    let again = run_sig(&e, &f, "q2", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    assert_eq!(again.phase, CardPhase::Choices);
+    assert!(e.choose(&f, "q2", "mb:m1", false, now()).unwrap_err().starts_with("APP-042"));
+}
+
+#[test]
+fn i_dont_know_to_the_shared_question_means_all_the_shared_mailboxes() {
+    let f = with_shared(2);
+    let e = Engine::new();
+    run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    // typed, as the island does
+    let Route::Choose { query_id, option_id } = e.route("אני לא יודע", now().timestamp_millis()) else { panic!("a typed reply must answer the question") };
+    assert_eq!(option_id, "all");
+    e.choose(&f, &query_id, &option_id, false, now()).unwrap();
+    assert_eq!(searched_mailboxes(&f), vec![vec!["s1".to_string(), "s2".to_string()]]);
+    // and by number: the shared ones are numbered from 1
+    run_sig(&e, &f, "q2", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    let Route::Choose { option_id, .. } = e.route("2", now().timestamp_millis()) else { panic!() };
+    assert_eq!(option_id, "mb:s2");
+}
+
+#[test]
+fn the_exact_word_survives_the_shared_mailbox_question() {
+    let f = with_shared(2);
+    f.mail.lock().unwrap().push_back(Ok(result(budget_hits("s1"), false)));
+    let e = Engine::new();
+    let asked = run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), sig(true, true, None));
+    assert_eq!(asked.phase, CardPhase::Choices);
+    let card = e.choose(&f, "q1", "all", false, now()).unwrap();
+    assert_eq!(titles(&card.items), WHOLE_WORD_FIRST[..3]);
+    assert_eq!(searched_mailboxes(&f), vec![vec!["s1".to_string(), "s2".to_string()]]);
+}
+
+#[test]
+fn a_sender_or_all_with_the_shared_mailbox_searches_every_shared_mailbox_without_asking() {
+    let f = with_shared(2);
+    let e = Engine::new();
+    let from_dana = Slots { sender: Some("דנה".into()), ..mail_slots() };
+    assert_eq!(run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, from_dana), shared()).phase, CardPhase::Answer);
+    let all = Slots { all_mailboxes: true, ..mail_slots() };
+    assert_eq!(run_sig(&e, &f, "q2", &exec_cap(caps::EMAIL_SEARCH, all), shared()).phase, CardPhase::Answer);
+    let both = vec!["s1".to_string(), "s2".to_string()];
+    assert_eq!(searched_mailboxes(&f), vec![both.clone(), both]);
+}
+
+#[test]
+fn a_saved_choice_counts_for_the_shared_mailboxes_it_covers() {
+    let f = with_shared(2);
+    *f.prefs.lock().unwrap() = Some(Prefs::new(vec!["s2".into()], vec!["m1".into(), "s1".into(), "s2".into()]));
+    let e = Engine::new();
+    assert_eq!(run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared()).phase, CardPhase::Answer);
+    assert_eq!(searched_mailboxes(&f), vec![vec!["s2".to_string()]]);
+    // a saved choice of the primary mailbox only says nothing about the shared ones: ask
+    *f.prefs.lock().unwrap() = Some(Prefs::new(vec!["m1".into()], vec!["m1".into(), "s1".into(), "s2".into()]));
+    assert_eq!(run_sig(&e, &f, "q2", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared()).phase, CardPhase::Choices);
+}
+
+#[test]
+fn no_shared_mailbox_is_said_honestly() {
+    let f = with_shared(0);
+    let e = Engine::new();
+    let card = run_sig(&e, &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(card.title, "לא מצאתי תיבות משותפות");
+    assert_eq!((card.total, card.choices.len(), card.error_code.clone()), (0, 0, None));
+    assert!(f.queries.lock().unwrap().is_empty(), "the primary mailbox is not searched instead");
+    let mut en = exec_cap(caps::EMAIL_SEARCH, mail_slots());
+    en.lang = Lang::En;
+    assert_eq!(run_sig(&e, &f, "q2", &en, shared()).title, "I couldn't find any shared mailboxes");
+    // an archive and a data file are not shared mailboxes
+    let g = Fake {
+        boxes: vec![mailbox("m1", "Y", MailboxKind::Primary), mailbox("a1", "ארכיון", MailboxKind::Archive), mailbox("d1", "backup.pst", MailboxKind::DataFile)],
+        ..Fake::default()
+    };
+    assert_eq!(run_sig(&e, &g, "q3", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared()).title, "לא מצאתי תיבות משותפות");
+    assert!(g.queries.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_shared_mailbox_that_cannot_be_read_gives_its_own_error() {
+    let mut f = with_shared(1);
+    f.boxes[1].access = MailboxAccess::Denied;
+    let card = run_sig(&Engine::new(), &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    assert_eq!((card.phase, card.error_code.as_deref()), (CardPhase::Error, Some("MAIL-101")));
+    assert!(f.queries.lock().unwrap().is_empty(), "the primary mailbox is not searched instead");
+}
+
+#[test]
+fn an_added_mailbox_counts_as_shared() {
+    let f = Fake { boxes: vec![mailbox("m1", "Y", MailboxKind::Primary), mailbox("x1", "מחלקה", MailboxKind::Additional)], ..Fake::default() };
+    let card = run_sig(&Engine::new(), &f, "q1", &exec_cap(caps::EMAIL_SEARCH, mail_slots()), shared());
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(searched_mailboxes(&f), vec![vec!["x1".to_string()]]);
+}
+
+#[test]
+fn the_real_engine_reads_the_shared_mailbox() {
+    let f = with_shared(1);
+    f.mail.lock().unwrap().push_back(Ok(result(vec![hit("k1", "s1", "תקציב", 9)], false)));
+    let e = Engine::new();
+    let card = e.submit(&f, "תחפש מייל על תקציב בתיבה המשותפת", "q1", now());
+    assert_eq!(card.phase, CardPhase::Answer, "{card:?}");
+    assert_eq!(searched_mailboxes(&f), vec![vec!["s1".to_string()]]);
+    assert!(f.queries.lock().unwrap()[0].0.terms.iter().flatten().any(|t| t == "תקציב"));
+    // a second shared mailbox: the question is only about the shared ones
+    let g = with_shared(2);
+    let card = e.submit(&g, "תחפש מייל על תקציב בתיבה המשותפת", "q2", now());
+    assert_eq!(card.phase, CardPhase::Choices, "{card:?}");
+    assert_eq!(card.choices.len(), 3);
+    // and with none
+    let h = with_shared(0);
+    let card = e.submit(&h, "search the shared mailbox for budget", "q3", now());
+    assert_eq!(card.title, "I couldn't find any shared mailboxes", "{card:?}");
+}
+
+// ---- requests that are out of scope ----
+
+const OFFERABLE: &str = "כמה אנשים גרים בישראל";
+
+#[test]
+fn a_request_to_change_something_says_what_the_app_does_and_offers_no_web_search() {
+    let f = Fake::default();
+    let e = Engine::new();
+    for (n, text) in ["תמחק את המייל מדנה", "תשלח מייל לדנה שאני מאחר", "תקבע פגישה עם דנה מחר", "הורד את וורד"].into_iter().enumerate() {
+        let card = e.submit(&f, text, &format!("q{n}"), now());
+        assert_eq!(card.phase, CardPhase::Answer, "{text}");
+        assert_eq!(card.title, "אני יכול רק לחפש ולקרוא, לא לעשות את זה", "{text}");
+        assert_eq!(card.summary, "אפשר לשאול למשל: מה יש לי היום?", "{text}");
+        assert!(card.items.is_empty(), "{text}: no Google button for it: {:?}", card.items);
+    }
+    for (n, text) in ["delete the email from Dana", "shutdown the computer"].into_iter().enumerate() {
+        let card = e.submit(&f, text, &format!("e{n}"), now());
+        assert_eq!(card.title, "I can only search and read; I can't do that", "{text}");
+        assert!(card.items.is_empty(), "{text}: {:?}", card.items);
+    }
+}
+
+#[test]
+fn write_install_and_power_never_get_the_google_button_even_for_an_offerable_text() {
+    let f = Fake::default();
+    let e = Engine::new();
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    // the same text is offered the web when nothing is known about it
+    let plain = e.run_with_signals(&f, OFFERABLE, "q0", now(), &nothing, Signals::default());
+    assert_eq!(plain.items.len(), 1, "{plain:?}");
+    for (n, kind) in ["write", "install", "power"].into_iter().enumerate() {
+        let card = e.run_with_signals(&f, OFFERABLE, &format!("q{}", n + 1), now(), &nothing, sig(false, false, Some(kind)));
+        assert_eq!(card.title, "אני יכול רק לחפש ולקרוא, לא לעשות את זה", "{kind}");
+        assert!(card.items.is_empty(), "{kind}: {:?}", card.items);
+        assert_eq!(card.total, 0);
+    }
+}
+
+#[test]
+fn weather_and_news_say_they_need_the_internet_and_keep_the_google_button() {
+    let f = Fake::default();
+    let e = Engine::new();
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    for (n, (kind, text)) in [("weather", "מה מזג האוויר"), ("news", "מה שער הדולר"), ("news", "חדשות היום")].into_iter().enumerate() {
+        let card = e.run_with_signals(&f, text, &format!("q{n}"), now(), &nothing, sig(false, false, Some(kind)));
+        assert_eq!(card.title, "אין לי דרך לבדוק את זה בלי אינטרנט", "{text}");
+        assert_eq!(card.items.len(), 1, "{text}: {:?}", card.items);
+        assert_eq!(card.items[0].kind, ItemKind::Action);
+        assert!(card.items[0].title.starts_with("חפש בגוגל: "), "{}", card.items[0].title);
+    }
+    let mut en = interp(Decision::NoMatch, Slots::default());
+    en.lang = Lang::En;
+    let card = e.run_with_signals(&f, "what is the weather", "qe", now(), &en, sig(false, false, Some("weather")));
+    assert_eq!(card.title, "I have no way to check that without the internet");
+    assert_eq!(card.items.len(), 1);
+    assert!(card.items[0].title.starts_with("Search Google: "));
+}
+
+#[test]
+fn translate_keeps_the_google_button() {
+    let f = Fake::default();
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    let card = Engine::new().run_with_signals(&f, "תרגם לי את הדוח", "q1", now(), &nothing, sig(false, false, Some("translate")));
+    assert_eq!(card.title, "אין לי דרך לתרגם בלי אינטרנט");
+    assert_eq!(card.items.len(), 1, "{card:?}");
+    assert!(card.items[0].title.starts_with("חפש בגוגל: "));
+}
+
+#[test]
+fn an_unknown_reason_or_none_gives_the_usual_answer() {
+    let f = Fake::default();
+    let e = Engine::new();
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    for (n, s) in [Signals::default(), sig(false, false, Some("something-new"))].into_iter().enumerate() {
+        let card = e.run_with_signals(&f, OFFERABLE, &format!("q{n}"), now(), &nothing, s);
+        assert_eq!(card.title, "אפשר לשאול למשל: מה יש לי היום?");
+        assert_eq!(card.items.len(), 1, "the web is still offered");
+    }
+}
+
+#[test]
+fn the_reason_is_only_for_a_no_match() {
+    // a request that is understood is carried out, whatever a stray signal says
+    let f = itzik_fake();
+    let slots = Slots { person: Some("איציק".into()), time: Some(tomorrow()), ..Slots::default() };
+    let card = run_sig(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, slots), sig(false, false, Some("write")));
+    assert_eq!(card.title, "מחר יש לאיציק 3 פגישות");
 }

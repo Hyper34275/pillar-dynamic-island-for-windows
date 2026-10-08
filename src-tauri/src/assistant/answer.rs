@@ -337,6 +337,20 @@ pub fn all_mailboxes_label(lang: Lang) -> &'static str {
     }
 }
 
+/// "I mean the shared mailboxes" when the profile has none.
+pub fn no_shared_mailbox(lang: Lang) -> &'static str {
+    if lang == Lang::He { "לא מצאתי תיבות משותפות" } else { "I couldn't find any shared mailboxes" }
+}
+
+/// The "I don't know" button of a question that is only about the shared mailboxes.
+pub fn all_shared_label(lang: Lang) -> &'static str {
+    if lang == Lang::He {
+        "אני לא יודע — חפש בכל התיבות המשותפות."
+    } else {
+        "I don't know — search every shared mailbox."
+    }
+}
+
 pub fn tap_to_open(lang: Lang) -> &'static str {
     if lang == Lang::He { "לחץ כדי לפתוח" } else { "Click to open" }
 }
@@ -481,6 +495,40 @@ pub fn no_match(lang: Lang) -> (&'static str, &'static str) {
     } else {
         ("You can ask, for example: what do I have today?", "Find the email with the word budget\nWhat does Dana have tomorrow?\nWhat is 12 times 7")
     }
+}
+
+/// The answer to a request that is out of scope for a reason the engine knows (`Analysis::unsupported`):
+/// `(title, hint)`. The wording is general on purpose: the engine says what kind of request it is, not
+/// which verb, so no action is named that was not asked. `None` for a kind that has no wording here.
+///
+/// "write" | "install" | "power": the app only searches and reads. "weather" | "news" | "translate":
+/// they need the internet (the card keeps the Google button, see `actions::with_web_offer`).
+pub fn unsupported(kind: Option<&str>, lang: Lang) -> Option<(&'static str, &'static str)> {
+    let he = lang == Lang::He;
+    Some(match kind? {
+        "write" | "install" | "power" => {
+            if he {
+                ("אני יכול רק לחפש ולקרוא, לא לעשות את זה", no_match(lang).0)
+            } else {
+                ("I can only search and read; I can't do that", no_match(lang).0)
+            }
+        }
+        "weather" | "news" => {
+            if he {
+                ("אין לי דרך לבדוק את זה בלי אינטרנט", "")
+            } else {
+                ("I have no way to check that without the internet", "")
+            }
+        }
+        "translate" => {
+            if he {
+                ("אין לי דרך לתרגם בלי אינטרנט", "")
+            } else {
+                ("I have no way to translate without the internet", "")
+            }
+        }
+        _ => return None,
+    })
 }
 
 pub fn calc_by_zero(lang: Lang) -> &'static str {

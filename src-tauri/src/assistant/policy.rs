@@ -2,7 +2,7 @@
 
 use super::prefs::Prefs;
 use super::wire::{Choice, ChoiceKind};
-use crate::outlook_mail::{MailboxAccess, MailboxAvailability, MailboxInfo};
+use crate::outlook_mail::{MailboxAccess, MailboxAvailability, MailboxInfo, MailboxKind};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MailPlan {
@@ -14,6 +14,13 @@ pub enum MailPlan {
     NoneSearchable,
     /// The mailbox the user named exists but cannot be searched now.
     NamedUnavailable(String),
+    /// "בתיבה המשותפת", several shared mailboxes can be searched and nothing decides: ask which of
+    /// these (their ids).
+    AskShared(Vec<String>),
+    /// "בתיבה המשותפת", but the profile has no shared mailbox.
+    NoShared,
+    /// "בתיבה המשותפת": there are shared mailboxes, none can be searched now.
+    SharedUnavailable,
 }
 
 pub struct PlanInput<'a> {
@@ -29,10 +36,63 @@ pub struct PlanInput<'a> {
     pub prefs: Option<&'a Prefs>,
     /// False inside a multi-source answer: never stop to ask there.
     pub allow_ask: bool,
+    /// "בתיבה המשותפת" (`Signals::shared_mailbox`): only the shared mailboxes are in play.
+    pub shared_only: bool,
 }
 
 pub fn searchable_ids(mailboxes: &[MailboxInfo]) -> Vec<String> {
     mailboxes.iter().filter(|m| m.searchable()).map(|m| m.id.clone()).collect()
+}
+
+/// A mailbox that is somebody else's or a team's: a delegate or auto-mapped shared mailbox, or one
+/// added by hand under "open these additional mailboxes". Not the user's own (`Primary`), an
+/// archive or a data file.
+pub fn is_shared(m: &MailboxInfo) -> bool {
+    matches!(m.kind, MailboxKind::Shared | MailboxKind::Additional)
+}
+
+/// The shared mailboxes, whether they can be searched or not.
+pub fn shared_boxes(mailboxes: &[MailboxInfo]) -> Vec<MailboxInfo> {
+    mailboxes.iter().filter(|m| is_shared(m)).cloned().collect()
+}
+
+/// The shared mailboxes that can be searched now.
+pub fn shared_searchable_ids(mailboxes: &[MailboxInfo]) -> Vec<String> {
+    mailboxes.iter().filter(|m| is_shared(m) && m.searchable()).map(|m| m.id.clone()).collect()
+}
+
+/// The plan for "בתיבה המשותפת": one shared mailbox is used, several are asked about (after what a
+/// sender, "all", an earlier plan or a saved choice already decide), none is said so.
+fn plan_shared(input: &PlanInput, searchable: &[String]) -> MailPlan {
+    let shared = shared_boxes(input.mailboxes);
+    if shared.is_empty() {
+        return MailPlan::NoShared;
+    }
+    let ok = shared_searchable_ids(input.mailboxes);
+    if ok.is_empty() {
+        return MailPlan::SharedUnavailable;
+    }
+    if ok.len() == 1 || input.all || input.has_sender {
+        return MailPlan::Search(ok);
+    }
+    if let Some(inherited) = input.inherited {
+        let still: Vec<String> = ok.iter().filter(|id| inherited.contains(id)).cloned().collect();
+        if !still.is_empty() {
+            return MailPlan::Search(still);
+        }
+    }
+    // a saved choice counts only for the shared mailboxes it covers (and only while no mailbox is new)
+    if let Some(ids) = input.prefs.and_then(|p| p.applies(searchable)) {
+        let own: Vec<String> = ids.into_iter().filter(|id| ok.contains(id)).collect();
+        if !own.is_empty() {
+            return MailPlan::Search(own);
+        }
+    }
+    if input.allow_ask {
+        MailPlan::AskShared(ok)
+    } else {
+        MailPlan::Search(ok)
+    }
 }
 
 pub fn plan(input: &PlanInput) -> MailPlan {
@@ -44,6 +104,9 @@ pub fn plan(input: &PlanInput) -> MailPlan {
         if input.mailboxes.iter().any(|m| m.id == named) {
             return MailPlan::NamedUnavailable(named.to_string());
         }
+    }
+    if input.shared_only {
+        return plan_shared(input, &searchable);
     }
     if searchable.is_empty() {
         return MailPlan::NoneSearchable;
@@ -164,7 +227,6 @@ pub fn match_reply(text: &str, choices: &[Choice]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::outlook_mail::MailboxKind;
 
     fn mb(id: &str, access: MailboxAccess, av: MailboxAvailability) -> MailboxInfo {
         MailboxInfo {
@@ -181,10 +243,87 @@ mod tests {
         mb(id, MailboxAccess::Ok, MailboxAvailability::Ok)
     }
     fn input<'a>(boxes: &'a [MailboxInfo]) -> PlanInput<'a> {
-        PlanInput { mailboxes: boxes, named: None, all: false, has_sender: false, inherited: None, prefs: None, allow_ask: true }
+        PlanInput { mailboxes: boxes, named: None, all: false, has_sender: false, inherited: None, prefs: None, allow_ask: true, shared_only: false }
     }
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn kind(id: &str, kind: MailboxKind) -> MailboxInfo {
+        MailboxInfo { kind, ..ok(id) }
+    }
+    fn shared_input<'a>(boxes: &'a [MailboxInfo]) -> PlanInput<'a> {
+        PlanInput { shared_only: true, ..input(boxes) }
+    }
+
+    #[test]
+    fn shared_means_a_delegate_or_added_mailbox_only() {
+        assert!(is_shared(&kind("a", MailboxKind::Shared)));
+        assert!(is_shared(&kind("a", MailboxKind::Additional)));
+        for k in [MailboxKind::Primary, MailboxKind::Archive, MailboxKind::DataFile, MailboxKind::Other] {
+            assert!(!is_shared(&kind("a", k)), "{k:?}");
+        }
+        let boxes = [kind("me", MailboxKind::Primary), kind("s", MailboxKind::Shared), mb("d", MailboxAccess::Denied, MailboxAvailability::Ok)];
+        assert_eq!(shared_searchable_ids(&boxes), ids(&["s"]));
+        assert_eq!(shared_boxes(&boxes).len(), 2);
+    }
+
+    #[test]
+    fn the_shared_mailbox_plan() {
+        let me = kind("me", MailboxKind::Primary);
+        // none: said so, the primary mailbox is not used instead
+        assert_eq!(plan(&shared_input(&[me.clone()])), MailPlan::NoShared);
+        assert_eq!(plan(&shared_input(&[])), MailPlan::NoShared);
+        // one: used without asking
+        let boxes = [me.clone(), kind("s1", MailboxKind::Shared)];
+        assert_eq!(plan(&shared_input(&boxes)), MailPlan::Search(ids(&["s1"])));
+        // several: ask among them, or take them all where asking is not allowed
+        let boxes = [me.clone(), kind("s1", MailboxKind::Shared), kind("s2", MailboxKind::Additional), kind("s3", MailboxKind::Shared)];
+        assert_eq!(plan(&shared_input(&boxes)), MailPlan::AskShared(ids(&["s1", "s2", "s3"])));
+        let mut i = shared_input(&boxes);
+        i.allow_ask = false;
+        assert_eq!(plan(&i), MailPlan::Search(ids(&["s1", "s2", "s3"])));
+        // a sender or "all" decides without asking
+        let mut i = shared_input(&boxes);
+        i.has_sender = true;
+        assert_eq!(plan(&i), MailPlan::Search(ids(&["s1", "s2", "s3"])));
+        let mut i = shared_input(&boxes);
+        i.all = true;
+        assert_eq!(plan(&i), MailPlan::Search(ids(&["s1", "s2", "s3"])));
+        // a named mailbox is still the one named
+        let mut i = shared_input(&boxes);
+        i.named = Some("me");
+        assert_eq!(plan(&i), MailPlan::Search(ids(&["me"])));
+    }
+
+    #[test]
+    fn the_shared_plan_uses_what_is_inherited_or_saved_only_inside_the_shared_mailboxes() {
+        let boxes = [kind("me", MailboxKind::Primary), kind("s1", MailboxKind::Shared), kind("s2", MailboxKind::Shared)];
+        let inherited = ids(&["s2", "me"]);
+        let mut i = shared_input(&boxes);
+        i.inherited = Some(&inherited);
+        assert_eq!(plan(&i), MailPlan::Search(ids(&["s2"])));
+        let primary_only = ids(&["me"]);
+        i.inherited = Some(&primary_only);
+        assert_eq!(plan(&i), MailPlan::AskShared(ids(&["s1", "s2"])));
+        // a saved choice
+        let prefs = Prefs::new(ids(&["s1", "me"]), ids(&["me", "s1", "s2"]));
+        let mut i = shared_input(&boxes);
+        i.prefs = Some(&prefs);
+        assert_eq!(plan(&i), MailPlan::Search(ids(&["s1"])));
+        // ... that no longer applies once a mailbox is new
+        let stale = Prefs::new(ids(&["s1"]), ids(&["me", "s1"]));
+        i.prefs = Some(&stale);
+        assert_eq!(plan(&i), MailPlan::AskShared(ids(&["s1", "s2"])));
+    }
+
+    #[test]
+    fn shared_mailboxes_that_cannot_be_searched() {
+        let boxes = [kind("me", MailboxKind::Primary), mb("s1", MailboxAccess::Denied, MailboxAvailability::Ok)];
+        assert_eq!(plan(&shared_input(&boxes)), MailPlan::SharedUnavailable);
+        // one that works is enough
+        let boxes = [kind("me", MailboxKind::Primary), mb("s1", MailboxAccess::Denied, MailboxAvailability::Ok), ok("s2")];
+        assert_eq!(plan(&shared_input(&boxes)), MailPlan::Search(ids(&["s2"])));
     }
 
     #[test]
