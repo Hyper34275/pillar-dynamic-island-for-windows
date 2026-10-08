@@ -6,6 +6,11 @@
   "bundle": {
     "resources": {
       "../center/publish": "center"
+    },
+    "windows": {
+      "nsis": {
+        "template": "nsis/installer.nsi"
+      }
     }
   }
 }
