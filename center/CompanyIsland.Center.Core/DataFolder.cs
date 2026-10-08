@@ -18,8 +18,9 @@ public static class DataFolder
     public static string Resolve(string localAppData)
     {
         string current = Path.Combine(localAppData, Name);
-        // An empty "Yuval" is what the island treats as absent too: it removes it and migrates.
-        if (Directory.Exists(current) && !IsEmpty(current))
+        // A "Yuval" with no file in it (only empty folders) is what the island treats as absent too:
+        // it removes the shell and migrates.
+        if (Directory.Exists(current) && HasFiles(current))
         {
             return current;
         }
@@ -39,20 +40,21 @@ public static class DataFolder
     /// <summary><see cref="Resolve"/> on the real <c>%LOCALAPPDATA%</c>.</summary>
     public static string Resolve() => Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
 
-    private static bool IsEmpty(string directory)
+    /// <summary>True when any file is anywhere below <paramref name="directory"/>; a folder that cannot be read counts as content.</summary>
+    private static bool HasFiles(string directory)
     {
         try
         {
-            using IEnumerator<string> entries = Directory.EnumerateFileSystemEntries(directory).GetEnumerator();
-            return !entries.MoveNext();
+            using IEnumerator<string> files = Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories).GetEnumerator();
+            return files.MoveNext();
         }
         catch (IOException)
         {
-            return false;
+            return true;
         }
         catch (UnauthorizedAccessException)
         {
-            return false;
+            return true;
         }
     }
 }

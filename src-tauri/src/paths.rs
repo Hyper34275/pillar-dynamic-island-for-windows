@@ -113,9 +113,33 @@ fn is_cache_dir(name: &str) -> bool {
     n == "logs" || n.starts_with("ebwebview")
 }
 
-/// True for a directory with no entries at all.
-fn is_empty_dir(dir: &Path) -> bool {
-    std::fs::read_dir(dir).map_or(false, |mut entries| entries.next().is_none())
+/// True when anything but plain directories is below `dir` (a file, a link, or a folder that cannot
+/// be read: all of those count as content).
+fn has_content(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return true };
+    entries.flatten().any(|entry| match entry.file_type() {
+        Ok(kind) if kind.is_dir() && !kind.is_symlink() => has_content(&entry.path()),
+        _ => true,
+    })
+}
+
+/// Removes an "empty shell": `dir` with nothing but (nested) empty directories below it, such as
+/// `Yuval\logs` created by something that asked for it before the migration ran. `remove_dir` only
+/// ever removes an empty directory, so no file can be deleted. Returns whether `dir` is gone.
+fn remove_empty_shell(dir: &Path) -> bool {
+    if has_content(dir) {
+        return false;
+    }
+    fn prune(dir: &Path) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                prune(&entry.path());
+            }
+        }
+        let _ = std::fs::remove_dir(dir);
+    }
+    prune(dir);
+    !dir.exists()
 }
 
 /// Copies `from` into `to` (created), counting copied and skipped files. A file that cannot be
@@ -161,8 +185,8 @@ fn write_marker(dir: &Path, how: &str, from: &str) {
 /// One-time migration of the per-user data folder, `base` being `%LOCALAPPDATA%`.
 ///
 /// * `Yuval` exists: nothing happens (an older folder is left alone, even if it holds newer data).
-///   An existing but EMPTY `Yuval` folder counts as absent: something may have created the shell
-///   before the first start.
+///   A `Yuval` folder that holds no file at all (only empty folders such as `logs\`) counts as
+///   absent: something may have created the shell before the first start.
 /// * Otherwise the first existing folder of [`LEGACY_APP_DIRS`] is renamed to `Yuval`: atomic on one
 ///   volume, keeps settings, reminder state, notes, logs and WebView2 profiles together.
 /// * If the rename fails (a file is locked) the user's data files are copied instead, into a temp
@@ -180,9 +204,8 @@ pub fn migrate_data_dir(base: &Path) -> Migration {
 fn migrate_with(base: &Path, rename: &dyn Fn(&Path, &Path) -> std::io::Result<()>) -> Migration {
     let new = root_under(base);
     if new.exists() {
-        if new.is_dir() && is_empty_dir(&new) {
-            // Only succeeds on an empty directory.
-            let _ = std::fs::remove_dir(&new);
+        if new.is_dir() {
+            remove_empty_shell(&new);
         }
         if new.exists() {
             return Migration::NotNeeded;
@@ -451,6 +474,22 @@ mod tests {
         std::fs::create_dir_all(base.path().join("Yuval")).unwrap();
         assert_eq!(migrate_data_dir(base.path()), Migration::Moved { from: "CompanyIsland" });
         assert_eq!(base.read("Yuval/state/notes.json").unwrap(), "[notes]");
+
+        // Folders only (something asked for Yuval\logs before the migration ran) is still a shell.
+        let nested = Base::new("nested-shell");
+        nested.seed_old("CompanyIsland");
+        std::fs::create_dir_all(nested.path().join("Yuval").join("logs")).unwrap();
+        std::fs::create_dir_all(nested.path().join("Yuval").join("state").join("deeper")).unwrap();
+        assert_eq!(migrate_data_dir(nested.path()), Migration::Moved { from: "CompanyIsland" });
+        assert_eq!(nested.read("Yuval/settings.json").unwrap(), r#"{"hideInFullscreen":false}"#);
+
+        // A populated folder keeps its empty subfolders: it is never touched.
+        let populated = Base::new("populated");
+        populated.seed_old("CompanyIsland");
+        populated.write("Yuval/settings.json", "new");
+        std::fs::create_dir_all(populated.path().join("Yuval").join("state")).unwrap();
+        assert_eq!(migrate_data_dir(populated.path()), Migration::NotNeeded);
+        assert!(populated.exists("Yuval/state"));
 
         // A shell with anything inside is real data.
         let real = Base::new("not-empty-shell");

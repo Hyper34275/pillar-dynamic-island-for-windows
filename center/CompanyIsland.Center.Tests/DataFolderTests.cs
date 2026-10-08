@@ -56,11 +56,15 @@ public sealed class DataFolderTests : IDisposable
     }
 
     [Fact]
-    public void An_empty_Yuval_folder_counts_as_not_there_like_in_the_island()
+    public void A_Yuval_folder_without_any_file_counts_as_not_there_like_in_the_island()
     {
         Make("Yuval");
+        Directory.CreateDirectory(Path.Combine(_base, "Yuval", "logs"));
         string old = Make("CompanyIsland", "settings.json");
         Assert.Equal(old, DataFolder.Resolve(_base));
+
+        File.WriteAllText(Path.Combine(_base, "Yuval", "logs", "center.log"), "x");
+        Assert.Equal(Path.Combine(_base, "Yuval"), DataFolder.Resolve(_base));
     }
 
     [Fact]
