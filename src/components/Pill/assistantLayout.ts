@@ -5,6 +5,7 @@
 
 import { alert as alertTokens, control, smallExpanded, type as typeRoles, type TypeRole } from "../../design/tokens";
 import type { AssistantCard, AssistantItem, Choice } from "../../lib/assistant/types";
+import { funnyStatusLines } from "../../lib/assistant/funnyStatus";
 import { t } from "../../lib/i18n";
 import { measureText } from "../../lib/textMeasure";
 import type { IslandSize } from "./animations";
@@ -136,7 +137,8 @@ function compute(card: AssistantCard): AssistantLayout {
   const base = { phase: card.phase, titleLines: 0, summaryLines: 0, items: [] as AssistantItem[], choices: [] as Choice[], showAll: false, showExtend: false, showRemember: false, showTime: false };
 
   if (card.phase === "processing") {
-    const label = width(t("ai.processing"), typeRoles.headline);
+    // sized for the widest of the rotating lines (AssistantCard ProcessingBody): a new line never resizes the pill
+    const label = Math.max(width(t("ai.processing"), typeRoles.headline), ...funnyStatusLines().map((line) => width(line, typeRoles.headline)));
     const w = Math.ceil(PROCESSING_PAD * 2 + PROCESSING_SPARKLE + SPARKLE_GAP + label + MEASURE_AIR + SPARKLE_GAP + control.round);
     return { ...base, size: sizeOf(Math.min(smallExpanded.width, Math.max(PROCESSING_MIN_WIDTH, w)), PROCESSING_HEIGHT) };
   }

@@ -4,6 +4,7 @@ import { textDirection, uiDirection } from "../../design/direction";
 import { alert as alertTokens, color, radius, smallExpanded } from "../../design/tokens";
 import { timeParts } from "../../lib/dateFormat";
 import { ERROR_CODES } from "../../lib/appInfo";
+import { FUNNY_STATUS_MS, funnyStatusOrder } from "../../lib/assistant/funnyStatus";
 import type { AssistantCard as Card, AssistantItem, Choice } from "../../lib/assistant/types";
 import { dlog } from "../../lib/debugLog";
 import { describeError } from "../../lib/errors";
@@ -328,12 +329,34 @@ function ErrorBody({ card, layout, onClose }: { card: Card; layout: AssistantLay
   );
 }
 
-function ProcessingBody({ reducedMotion, onClose }: { reducedMotion: boolean } & CardCallbacks) {
+/** The rotating playful line of a working search (src/lib/assistant/funnyStatus.ts), one per FUNNY_STATUS_MS. */
+function useFunnyStatus(seed: string): string {
+  const lines = useMemo(() => funnyStatusOrder(seed), [seed]);
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    setIndex(0);
+    const timer = window.setInterval(() => setIndex((i) => (i + 1) % lines.length), FUNNY_STATUS_MS);
+    return () => window.clearInterval(timer);
+  }, [lines]);
+  return lines[index] ?? t("ai.processing");
+}
+
+function ProcessingBody({ seed, reducedMotion, onClose }: { seed: string; reducedMotion: boolean } & CardCallbacks) {
+  const line = useFunnyStatus(seed);
   return (
     <div className="flex items-center h-full" style={{ gap: SPARKLE_GAP }}>
       <Sparkle size={PROCESSING_SPARKLE} animated reducedMotion={reducedMotion} />
-      <span className="bidi min-w-0 flex-1 truncate text-headline" style={{ color: color.fg }}>
-        {t("ai.processing")}
+      {/* a screen reader hears "ai.processing" through the shell's live region; the joke is decoration */}
+      <span className="bidi min-w-0 flex-1 truncate text-headline" style={{ color: color.fg }} aria-hidden="true" data-funny-status="">
+        <motion.span
+          key={line}
+          className="inline-block"
+          initial={reducedMotion ? false : { opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.22, ease: "easeOut" }}
+        >
+          {line}
+        </motion.span>
       </span>
       <CloseButton onClose={onClose} />
     </div>
@@ -385,7 +408,7 @@ export function AssistantCard({ card, reducedMotion = false, onClose, onHide, on
           animate={{ opacity: 1 }}
           transition={{ duration: 0.16, ease: "easeOut" }}
         >
-          {card.phase === "processing" && <ProcessingBody reducedMotion={reducedMotion} {...callbacks} />}
+          {card.phase === "processing" && <ProcessingBody seed={card.queryId} reducedMotion={reducedMotion} {...callbacks} />}
           {card.phase === "answer" && <AnswerBody card={card} layout={layout} {...callbacks} />}
           {card.phase === "choices" && <ChoicesBody card={card} layout={layout} {...callbacks} />}
           {card.phase === "error" && <ErrorBody card={card} layout={layout} {...callbacks} />}

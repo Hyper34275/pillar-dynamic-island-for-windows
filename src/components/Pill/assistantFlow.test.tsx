@@ -144,7 +144,7 @@ describe("the smart-search card in the shell", () => {
     await send(wire("q1"));
     await ms(150);
     expect(island().dataset.view).toBe("assistant");
-    expect(island().textContent).toContain("Working…");
+    expect(island().querySelector("[data-funny-status]")).not.toBeNull();
     expect(island().getAttribute("role")).toBe("group");
     expect(island().getAttribute("aria-label")).toBe("Smart search");
     const layer = container.querySelector('[data-layer="assistant"]');

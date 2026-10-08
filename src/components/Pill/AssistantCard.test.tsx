@@ -5,6 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AssistantCard as Card, AssistantItem, Choice } from "../../lib/assistant/types";
+import { FUNNY_STATUS_MS, funnyStatusLines, funnyStatusOrder } from "../../lib/assistant/funnyStatus";
 import { AssistantCard, assistantAnnouncement } from "./AssistantCard";
 import { assistantLayout } from "./assistantLayout";
 
@@ -93,7 +94,10 @@ afterEach(() => {
 describe("working", () => {
   it("is one line with a moving sparkle and a close button", () => {
     render(card({ phase: "processing", title: "" }));
-    expect(layer().textContent).toContain("Working…");
+    // the visible label is a rotating joke; a screen reader still hears "Working…" (assistantAnnouncement)
+    const label = layer().querySelector("[data-funny-status]");
+    expect(funnyStatusLines()).toContain(label?.textContent);
+    expect(label?.getAttribute("aria-hidden")).toBe("true");
     expect(layer().querySelector('[data-sparkle="moving"]')).not.toBeNull();
     expect(layer().querySelectorAll("button")).toHaveLength(1);
     expect(layer().style.height).toBe("44px");
@@ -285,5 +289,24 @@ describe("announcements", () => {
     expect(assistantAnnouncement(card({ phase: "choices", question: "Which mailbox?" }))).toBe("Which mailbox?");
     expect(assistantAnnouncement(card({ phase: "processing" }))).toBe("Working…");
     expect(assistantAnnouncement(card({ phase: "error", title: "Failed", summary: "Open Outlook" }))).toBe("Failed. Open Outlook");
+  });
+});
+
+describe("working jokes", () => {
+  it("rotate in the query's order without resizing the pill", () => {
+    vi.useFakeTimers();
+    try {
+      const c = card({ phase: "processing", title: "" });
+      render(c);
+      const order = funnyStatusOrder(c.queryId);
+      const text = () => layer().querySelector("[data-funny-status]")?.textContent;
+      const width = layer().style.width;
+      expect(text()).toBe(order[0]);
+      act(() => vi.advanceTimersByTime(FUNNY_STATUS_MS));
+      expect(text()).toBe(order[1]);
+      expect(layer().style.width).toBe(width);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
