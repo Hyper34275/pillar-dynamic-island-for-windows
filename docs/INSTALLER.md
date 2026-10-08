@@ -64,7 +64,9 @@ The NSIS stub itself is a 32-bit PE even though the payload is x64; that is norm
 | No Start menu / desktop shortcuts | add `/NS` |
 | Silent uninstall | `"%ProgramFiles%\Yuval\uninstall.exe" /S` |
 
-Default folder: `%ProgramFiles%\Yuval`. Installer language follows the Windows UI language (English or Hebrew,
+Default folder: `%ProgramFiles%\Yuval`; an update keeps the folder Yuval is already in, and when no Yuval was
+ever installed but CompanyIsland was (for example in `E:\CompanyIsland`), the default follows it (`E:\Yuval`,
+`YUVAL_FOLLOW_OLD_LOCATION`; `/D=` still wins). Installer language follows the Windows UI language (English or Hebrew,
 no selector; Tauri's own texts are in Hebrew too since 1.0.14, see `YUVAL_LANGSTRINGS` in
 `installer-hooks.nsh`).
 
