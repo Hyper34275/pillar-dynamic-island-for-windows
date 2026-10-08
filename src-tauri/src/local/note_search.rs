@@ -1,9 +1,13 @@
-//! Notes search: an in-memory scan of `notes::load()` (at most 500 notes). Folded token matching,
-//! ranked by matches x recency with a bonus for pinned notes. Note text is never logged.
+//! Notes search: an in-memory scan of `notes::load()` (at most 500 notes) together with the user's
+//! Windows Sticky Notes (read only, see `sticky_notes`; none when that is not available). Folded token
+//! matching, ranked by matches x recency with a bonus for pinned notes. A Sticky Notes hit has the id
+//! `sticky:<guid>`: the assistant labels it "Sticky Notes" and opens the Sticky Notes app for it.
+//! Note text is never logged.
 
 use super::{clip, NoteHit};
 use crate::intent::fold;
 use crate::notes::{self, Note};
+use crate::sticky_notes::{self, StickyNote};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
@@ -12,8 +16,19 @@ const TITLE_MAX: usize = 80;
 const SNIPPET_MAX: usize = 120;
 const DAY_MS: f64 = 86_400_000.0;
 
+/// Sticky Notes as searchable notes: ids carry the `sticky:` prefix (so they can never collide with the
+/// island's own ids and say where they open), nothing is pinned.
+fn as_notes(sticky: &[StickyNote]) -> Vec<Note> {
+    sticky
+        .iter()
+        .map(|s| Note { id: sticky_notes::hit_id(s), text: s.text.clone(), created_at: s.created_at, updated_at: s.updated_at, pinned: false })
+        .collect()
+}
+
 pub(super) fn search(terms: &[Vec<String>], latest: bool, limit: usize) -> Result<Vec<NoteHit>, String> {
-    let all = notes::load()?;
+    let mut all = notes::load()?;
+    // Never an error: without Sticky Notes (or when it cannot be read) there is just nothing extra.
+    all.extend(as_notes(&sticky_notes::for_search().notes));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -300,6 +315,58 @@ mod tests {
         cache.last_used = Some(Instant::now() - CACHE_IDLE - Duration::from_secs(1));
         rank_with(&v, &terms(&[&["תקציב"]]), false, 5, NOW, &mut cache);
         assert_eq!(cache.map.len(), 1);
+    }
+
+    fn sticky(id: &str, text: &str, age_days: i64) -> StickyNote {
+        StickyNote {
+            id: id.into(),
+            text: text.into(),
+            title: sticky_notes::title_of(text),
+            colour: "yellow".into(),
+            updated_at: NOW - age_days * DAY,
+            created_at: NOW - age_days * DAY - 1000,
+        }
+    }
+
+    #[test]
+    fn sticky_notes_are_searched_with_the_own_notes_and_keep_their_own_hit_id() {
+        let mut all = fixture();
+        all.extend(as_notes(&[
+            sticky("11111111-aaaa", "תקציב רבעון\nלהכין מצגת\nלשלוח להנהלה", 3),
+            sticky("22222222-bbbb", "Pick up the dry cleaning", 1),
+        ]));
+        let r = rank_notes(&all, &terms(&[&["תקציב", "budget"]]), false, 10, NOW);
+        let ids: Vec<&str> = r.iter().map(|h| h.id.as_str()).collect();
+        assert!(ids.contains(&"sticky:11111111-aaaa"), "{ids:?}");
+        assert!(ids.contains(&"a") && ids.contains(&"c"), "the island's own notes still match: {ids:?}");
+        assert!(!ids.contains(&"sticky:22222222-bbbb"));
+        let hit = r.iter().find(|h| h.id == "sticky:11111111-aaaa").unwrap();
+        assert_eq!(hit.title, "תקציב רבעון");
+        assert!(!hit.pinned);
+        assert!(sticky_notes::is_hit_id(&hit.id));
+        assert!(ids.iter().filter(|i| !sticky_notes::is_hit_id(i)).all(|i| crate::notes::valid_id(i)));
+    }
+
+    #[test]
+    fn sticky_notes_join_the_latest_and_a_group_needs_all_terms() {
+        let mut all = fixture();
+        all.extend(as_notes(&[sticky("s-new", "הערה אחרונה\nחשובה", 0), sticky("s-old", "ישן\nמאוד", 300)]));
+        let r = rank_notes(&all, &[], true, 2, NOW);
+        assert_eq!(r.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), vec!["sticky:s-new", "d"]);
+        // AND of groups across a Sticky Note too.
+        let r = rank_notes(&all, &terms(&[&["הערה"], &["חשובה"]]), false, 10, NOW);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].id, "sticky:s-new");
+        assert_eq!(r[0].snippet, "חשובה");
+    }
+
+    #[test]
+    fn no_sticky_notes_changes_nothing() {
+        assert!(as_notes(&[]).is_empty());
+        let plain = rank_notes(&fixture(), &terms(&[&["תקציב"]]), false, 10, NOW);
+        let mut with_none = fixture();
+        with_none.extend(as_notes(&[]));
+        assert_eq!(rank_notes(&with_none, &terms(&[&["תקציב"]]), false, 10, NOW), plain);
     }
 
     #[test]

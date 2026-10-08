@@ -299,6 +299,10 @@ impl exec::Sources for Live {
         local::search_notes(terms, latest, limit)
     }
     fn open_note(&self, id: &str) -> Result<(), String> {
+        // A Windows Sticky Note is edited in Sticky Notes itself (read only here).
+        if crate::sticky_notes::is_hit_id(id) {
+            return crate::sticky_notes::open_app();
+        }
         center::open(&self.app, &format!("note:{id}"))
     }
     fn load_prefs(&self) -> Option<prefs::Prefs> {
