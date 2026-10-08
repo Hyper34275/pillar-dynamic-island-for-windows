@@ -1,6 +1,6 @@
 [package]
 name = "companyisland"
-version = "1.0.13"
+version = "1.0.14"
 description = "Yuval - a Dynamic Island style date, time and calendar overlay for Windows"
 authors = ["Yuval"]
 license = "MIT"

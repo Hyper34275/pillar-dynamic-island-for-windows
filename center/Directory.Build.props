@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <!-- Checked by scripts/check-versions.cjs against package.json / Cargo.toml / tauri.conf.json. -->
-    <Version>1.0.13</Version>
+    <Version>1.0.14</Version>
     <Company>Yuval</Company>
     <Product>Yuval Center</Product>
     <Copyright>Yuval</Copyright>
