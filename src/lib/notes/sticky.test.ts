@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createStickyStore, normalizeStickyNote, normalizeStickySnapshot, stickyHasSection, STICKY_POLL_MS, type StickySnapshot } from "./sticky";
+import { createStickyStore, normalizeStickyAnswer, normalizeStickyNote, normalizeStickySnapshot, stickyHasSection, STICKY_POLL_MS, type StickyAnswer, type StickySnapshot } from "./sticky";
 import { stickyMarkColor } from "./stickyColour";
 
 const wireNote = (over: Record<string, unknown> = {}) => ({
@@ -70,6 +70,17 @@ describe("normalizeStickySnapshot", () => {
   });
 });
 
+describe("normalizeStickyAnswer", () => {
+  it("carries the unchanged flag, and an unchanged answer is not a snapshot", () => {
+    const unchanged = normalizeStickyAnswer({ availability: "ok", revision: 9, notes: [], unchanged: true })!;
+    expect(unchanged).toEqual({ availability: "ok", notes: [], revision: 9, unchanged: true });
+    expect(normalizeStickySnapshot({ availability: "ok", revision: 9, notes: [], unchanged: true })).toBeNull();
+    expect(normalizeStickyAnswer({ availability: "ok", revision: 9, notes: [wireNote()] })!.unchanged).toBe(false);
+    expect(normalizeStickyAnswer({ availability: "ok", revision: 9, notes: [], unchanged: "yes" })!.unchanged).toBe(false);
+    expect(normalizeStickyAnswer(null)).toBeNull();
+  });
+});
+
 describe("stickyMarkColor", () => {
   it("has a distinct colour for each of the seven Sticky Notes colours", () => {
     const names = ["yellow", "green", "blue", "purple", "pink", "gray", "charcoal"] as const;
@@ -83,10 +94,42 @@ describe("createStickyStore", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  const snap = (revision: number, availability: StickySnapshot["availability"] = "ok", n = 1): StickySnapshot => ({
+  const snap = (revision: number, availability: StickySnapshot["availability"] = "ok", n = 1): StickyAnswer => ({
     availability,
     revision,
     notes: Array.from({ length: n }, (_, i) => normalizeStickyNote(wireNote({ id: `n${i}` }))!),
+    unchanged: false,
+  });
+
+  it("tells the backend which revision it already shows, and keeps its list on an unchanged answer", async () => {
+    const answers: StickyAnswer[] = [snap(7, "ok", 2), { ...snap(7), notes: [], unchanged: true }, snap(8, "ok", 3)];
+    let i = 0;
+    const load = vi.fn(async (_since?: number) => answers[i++]);
+    const store = createStickyStore({ load });
+    const listener = vi.fn();
+    const off = store.subscribe(listener);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(load).toHaveBeenLastCalledWith(undefined);
+    expect(store.getSnapshot()).toEqual({ availability: "ok", notes: expect.any(Array), revision: 7 });
+    expect(store.getSnapshot()!.notes).toHaveLength(2);
+    expect("unchanged" in store.getSnapshot()!).toBe(false);
+    await vi.advanceTimersByTimeAsync(STICKY_POLL_MS);
+    expect(load).toHaveBeenLastCalledWith(7);
+    expect(store.getSnapshot()!.notes).toHaveLength(2); // the empty "unchanged" answer did not wipe it
+    expect(listener).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(STICKY_POLL_MS);
+    expect(load).toHaveBeenLastCalledWith(7);
+    expect(store.getSnapshot()!.revision).toBe(8);
+    expect(store.getSnapshot()!.notes).toHaveLength(3);
+    off();
+  });
+
+  it("an unchanged answer before any list is ignored", async () => {
+    const store = createStickyStore({ load: async () => ({ ...snap(3), notes: [], unchanged: true }) });
+    const off = store.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getSnapshot()).toBeNull();
+    off();
   });
 
   it("makes no request and no timer until someone subscribes, and none again after the last one leaves", async () => {
@@ -152,8 +195,8 @@ describe("createStickyStore", () => {
   });
 
   it("never has two requests in flight", async () => {
-    let release: (s: StickySnapshot | null) => void = () => {};
-    const load = vi.fn(() => new Promise<StickySnapshot | null>((r) => (release = r)));
+    let release: (s: StickyAnswer | null) => void = () => {};
+    const load = vi.fn(() => new Promise<StickyAnswer | null>((r) => (release = r)));
     const store = createStickyStore({ load });
     const off = store.subscribe(() => {});
     void store.refresh();
@@ -167,7 +210,7 @@ describe("createStickyStore", () => {
   });
 
   it("stays unknown when the backend cannot answer, and keeps the last good answer through a failed ask", async () => {
-    const results: Array<StickySnapshot | null | "throw"> = [null, snap(1), "throw", null, snap(2, "unsupported", 0)];
+    const results: Array<StickyAnswer | null | "throw"> = [null, snap(1), "throw", null, snap(2, "unsupported", 0)];
     let i = 0;
     const load = vi.fn(async () => {
       const r = results[i++];

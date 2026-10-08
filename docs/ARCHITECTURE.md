@@ -550,8 +550,9 @@ happens in the Sticky Notes app, which a click opens.
    kept `Id` and `Text` still reads.
 3. **Cache.** The answer is cached; it is read again only when the size or modification time of `plum.sqlite` or
    its `-wal` changed (two `stat` calls). The page asks (`sticky_notes_list`) at once and then every 10 s, only while
-   the Notes tab is open and the page is visible (`lib/notes/sticky.ts`); a search asks too. A failed re-read keeps the last good list
-   and retries after 5 s; a first failure is retried after 30 s.
+   the Notes tab is open and the page is visible (`lib/notes/sticky.ts`); a search asks too. The page sends the revision it
+   shows (`since`) and gets `unchanged: true` without the notes while nothing changed. A failed re-read keeps the last good
+   list and retries after 5 s; a first failure is retried after 30 s.
 4. **States, never an error.** `ok`, `noData` (installed, no `plum.sqlite`: never used, or the notes are only in the
    cloud), `notInstalled` (the Notes tab shows no section), `unsupported` (a `Note` table without `Id`/`Text`, or only the
    Windows 7-era `StickyNotes.snt`), `unavailable` (`winsqlite3.dll` missing, copy or open failed). The section shows a

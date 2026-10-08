@@ -100,14 +100,36 @@ pub struct StickyNote {
     pub created_at: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
+/// What was read last (kept in memory, shared by the Notes tab and smart search).
+#[derive(Clone, Debug, PartialEq)]
 pub struct StickySnapshot {
     pub availability: Availability,
     /// Newest first; empty unless `availability` is `ok`.
     pub notes: Vec<StickyNote>,
     /// Changes whenever availability or notes changed, so the page can skip identical answers.
     pub revision: u64,
+}
+
+/// The answer of `sticky_notes_list`. A page that already has `revision` says so (`since`) and gets the
+/// state back without the notes, so an unchanged list is not serialised again every ten seconds.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StickyAnswer {
+    pub availability: Availability,
+    pub notes: Vec<StickyNote>,
+    pub revision: u64,
+    /// The page's `since` is this revision: `notes` is left empty and the page keeps what it has.
+    pub unchanged: bool,
+}
+
+fn answer_for(snapshot: &StickySnapshot, since: Option<u64>) -> StickyAnswer {
+    let unchanged = since == Some(snapshot.revision) && snapshot.revision != 0;
+    StickyAnswer {
+        availability: snapshot.availability,
+        notes: if unchanged { Vec::new() } else { snapshot.notes.clone() },
+        revision: snapshot.revision,
+        unchanged,
+    }
 }
 
 // =============================================================================
@@ -828,11 +850,12 @@ pub fn current() -> Arc<StickySnapshot> {
 // Commands
 // =============================================================================
 
-/// The Windows Sticky Notes for the Notes tab: `{availability, notes, revision}`. Never fails for a
-/// missing, locked or unreadable Sticky Notes: that is `availability`.
+/// The Windows Sticky Notes for the Notes tab: `{availability, notes, revision, unchanged}`. Never fails
+/// for a missing, locked or unreadable Sticky Notes: that is `availability`. `since` is the revision the
+/// page already shows.
 #[tauri::command]
-pub async fn sticky_notes_list() -> Result<StickySnapshot, String> {
-    rt::run_blocking("sticky_notes_list", || Ok((*current()).clone())).await
+pub async fn sticky_notes_list(since: Option<u64>) -> Result<StickyAnswer, String> {
+    rt::run_blocking("sticky_notes_list", move || Ok(answer_for(&current(), since))).await
 }
 
 /// Launches the Sticky Notes app. Only ever from an explicit click; the target is fixed here, the page
@@ -966,14 +989,33 @@ mod tests {
             notes: vec![StickyNote { id: "i".into(), text: "t".into(), title: "t".into(), colour: "blue".into(), updated_at: 5, created_at: 4 }],
             revision: 3,
         };
-        let v = serde_json::to_value(&s).unwrap();
+        let v = serde_json::to_value(answer_for(&s, None)).unwrap();
         assert_eq!(v["availability"], "noData");
         assert_eq!(v["revision"], 3);
+        assert_eq!(v["unchanged"], false);
         assert_eq!(v["notes"][0]["updatedAt"], 5);
+        assert_eq!(v["notes"][0]["createdAt"], 4);
         assert_eq!(v["notes"][0]["colour"], "blue");
         for a in [Availability::Ok, Availability::NoData, Availability::NotInstalled, Availability::Unsupported, Availability::Unavailable] {
             assert_eq!(serde_json::to_value(a).unwrap(), a.as_str());
         }
+    }
+
+    #[test]
+    fn a_page_that_has_the_revision_gets_the_state_without_the_notes() {
+        let note = StickyNote { id: "i".into(), text: "t".into(), title: "t".into(), colour: "blue".into(), updated_at: 5, created_at: 4 };
+        let s = StickySnapshot { availability: Availability::Ok, notes: vec![note], revision: 3 };
+        let same = answer_for(&s, Some(3));
+        assert!(same.unchanged && same.notes.is_empty());
+        assert_eq!((same.availability, same.revision), (Availability::Ok, 3));
+        for since in [None, Some(2), Some(4), Some(0)] {
+            let a = answer_for(&s, since);
+            assert!(!a.unchanged, "{since:?}");
+            assert_eq!(a.notes.len(), 1);
+        }
+        // Revision 0 is "never read": it is never "unchanged".
+        let never = StickySnapshot { availability: Availability::Unavailable, notes: Vec::new(), revision: 0 };
+        assert!(!answer_for(&never, Some(0)).unchanged);
     }
 
     // ---- fixture database, built with the very same winsqlite3.dll ----

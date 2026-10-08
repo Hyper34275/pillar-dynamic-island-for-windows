@@ -68,8 +68,14 @@ export function normalizeStickyNote(raw: unknown): StickyNote | null {
   };
 }
 
+/**
+ * What `sticky_notes_list` answers. A page that already shows `revision` (it sent `since`) gets
+ * `unchanged: true` and no notes: it keeps what it has.
+ */
+export type StickyAnswer = StickySnapshot & { unchanged: boolean };
+
 /** The backend's answer, or null when it is not one (the page then shows nothing). */
-export function normalizeStickySnapshot(raw: unknown): StickySnapshot | null {
+export function normalizeStickyAnswer(raw: unknown): StickyAnswer | null {
   if (!isRecord(raw)) return null;
   const availability = AVAILABILITIES.includes(raw.availability as StickyAvailability) ? (raw.availability as StickyAvailability) : "unavailable";
   const seen = new Set<string>();
@@ -84,7 +90,14 @@ export function normalizeStickySnapshot(raw: unknown): StickySnapshot | null {
     }
   }
   const revision = typeof raw.revision === "number" && Number.isFinite(raw.revision) ? raw.revision : 0;
-  return { availability, notes, revision };
+  return { availability, notes, revision, unchanged: raw.unchanged === true };
+}
+
+/** The snapshot of an answer that carries one (not an `unchanged` one); null otherwise. */
+export function normalizeStickySnapshot(raw: unknown): StickySnapshot | null {
+  const answer = normalizeStickyAnswer(raw);
+  if (!answer || answer.unchanged) return null;
+  return { availability: answer.availability, notes: answer.notes, revision: answer.revision };
 }
 
 /** Whether the Notes tab has anything to say about Sticky Notes. Not installed, or not known: nothing. */
@@ -97,8 +110,11 @@ export function stickyHasSection(snapshot: StickySnapshot | null): snapshot is S
 // -----------------------------------------------------------------------------
 
 export interface StickyBackend {
-  /** The backend's answer; null when it could not answer (no backend, a failed call). */
-  load: () => Promise<StickySnapshot | null>;
+  /**
+   * The backend's answer; null when it could not answer (no backend, a failed call). `since` is the
+   * revision the page already shows (undefined before the first answer).
+   */
+  load: (since?: number) => Promise<StickyAnswer | null>;
 }
 
 export interface StickyStoreOptions {
@@ -122,10 +138,11 @@ export function createStickyStore(backend: StickyBackend, options: StickyStoreOp
   let timer: ReturnType<typeof setInterval> | null = null;
   let inflight: Promise<void> | null = null;
 
-  function apply(next: StickySnapshot | null) {
-    if (!next) return;
+  function apply(next: StickyAnswer | null) {
+    // "Unchanged" carries no notes: the page keeps what it has (and with nothing yet, there is nothing to keep).
+    if (!next || next.unchanged) return;
     if (snapshot && snapshot.revision === next.revision && snapshot.availability === next.availability) return;
-    snapshot = next;
+    snapshot = { availability: next.availability, notes: next.notes, revision: next.revision };
     listeners.forEach((l) => l());
   }
 
@@ -133,7 +150,7 @@ export function createStickyStore(backend: StickyBackend, options: StickyStoreOp
   function refresh(): Promise<void> {
     if (inflight) return inflight;
     inflight = backend
-      .load()
+      .load(snapshot?.revision)
       .catch(() => null)
       .then(apply)
       .finally(() => {
