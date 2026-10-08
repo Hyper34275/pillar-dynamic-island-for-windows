@@ -12,7 +12,7 @@
 //! the rename.
 
 use std::sync::Once;
-use windows::core::{w, HSTRING, PCWSTR};
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
@@ -139,6 +139,7 @@ pub fn set_enabled(enabled: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::core::HSTRING;
 
     #[test]
     fn encoding_matches_task_manager() {
