@@ -29,6 +29,10 @@ pub enum ItemKind {
     Slot,
     /// Information only (e.g. a colleague's busy blocks without titles).
     Info,
+    /// A confirmed-by-click command: search the web, open a site / setting / folder, save a note, open a
+    /// new mail window, lock the PC (see `assistant::actions`). The Center reads `kind` as a plain string,
+    /// so an older Center shows it as information with its "פתח" button.
+    Action,
 }
 
 /// One result line. `id` is opaque and only meaningful together with the query id.

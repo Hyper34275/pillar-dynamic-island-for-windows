@@ -317,3 +317,51 @@ Phases 2-9 are implemented and unit-tested (cargo 474 passed with 6 ignored live
   pipe command.
 - Note text is memory only, as everywhere in smart search; the temporary copy of the database that a read needs is deleted
   immediately.
+
+## 9. Commands
+
+"תחפש בגוגל חתולים", "תפתח את ynet", "פתח הגדרות wifi", "פתח הורדות", "תרשום פתק: לקנות חלב", "תכתוב מייל לדני בנושא תקציב", "תנעל את המחשב". The smart search understands explicit commands in Hebrew and English (masculine, feminine, infinitive and imperative forms; with or without "בבקשה", "תוכל", "אפשר", "לי"; the Hebrew letters ב ל מ ה ו ש כ attached to a word, also with a hyphen: "ב-גוגל").
+
+### 9.1 The confirm policy
+
+**A command never runs from text.** Every capability below is `Decision::Confirm { cap }` (sensitivity `Open`, `Launch` for the lock): the card says what it understood and shows one openable item; only a click on that item does it. A command that is missing its text (for example "תחפש בגוגל" alone) is a `Clarify(Content)` with a specific question ("מה לחפש?", "מה לרשום בפתק?", "מה לתרגם?"). The next text typed within the two minutes of the conversation context answers it: it becomes the query of that same command (same engine, same target language) and is offered again as a click. A text that opens with a verb or a question word ("מה יש לי מחר", "תפתח את ynet") is not an answer and goes its own way.
+
+- The click is `assistant_open_item` (island) or `searchOpen` (Center). The item is a native button, so Enter and Space on the focused button work; a screen reader hears the item together with the headline.
+- Nothing typed by the user is ever executed: an item holds a validated https address, or a key of a fixed table (settings page, folder, site), or the text of a note / the recipient and subject of a new mail. The ids are opaque (section 5).
+- The wire shape is unchanged: the item has the new `kind: "action"` (`ItemKind::Action`) in a group of kind `"action"`, and no new field. The Center reads `kind` as a string, so an older Center shows it as information with its "פתח" button; the island's TypeScript accepts it (`ITEM_KINDS`).
+- Shutdown, restart, delete and "send" are not commands at all; "שלח מייל לדנה" stays unrecognised.
+
+### 9.2 Capabilities (`intent::caps`, now 21)
+
+| Capability | Sensitivity | Slots (new, all optional) | What the click does |
+|---|---|---|---|
+| `web.search` | Open | `engine`, `query`, `lang_to`, `lang_from` | Opens the search in the default browser (`ShellExecuteW "open"`, https only) |
+| `web.open` | Open | `site` (table key) or `url` (typed address) | Opens the website |
+| `system.open_settings` | Open | `setting` (table key) | Opens an `ms-settings:` page, the Control Panel (`control.exe`) or the screen snip (`ms-screenclip:`) |
+| `folders.open` | Open | `folder` (table key) | Opens the folder in Explorer; the path comes from the shell (`SHGetKnownFolderPath`), never from text |
+| `notes.create` | Open | `query` (the note) | Saves the note through `notes::save` exactly like the island's composer; refuses a full list instead of dropping the oldest note |
+| `mail.compose` | Open | `mail_to`, `mail_subject` | Displays a NEW message in the user's own running classic Outlook (`CreateItem` + `Display`), To and Subject filled. **Never sent**: the code has no path that sends, and a test fails if one appears |
+| `system.lock` | Launch | none | `LockWorkStation` |
+
+`apps.launch` is unchanged ("תפתח/פתח/תריץ/תפעיל/הפעל/open/launch/start X" reach it; the Hebrew names of common programs were added to `local::apps`: מחשבון, פנקס רשימות, צייר, כלי חיתוך, מנהל המשימות, סייר הקבצים, שורת הפקודה, פאוורשל, אאוטלוק, וורד, אקסל, פאוורפוינט, וואן נוט, טימס, כרום, אדג', פיירפוקס, זום, וואטסאפ, ספוטיפיי, פתקיות, מצלמה, שעון). A program that is also a website opens as the program ("פתח וואטסאפ"); the website needs a word that says so ("וואטסאפ ווב", "האתר של וואטסאפ", "outlook web").
+
+### 9.3 What is understood
+
+- **Web search** (`web.search`): Google by default ("תחפש בגוגל X", "תגגל X", "גוגל X", "google X", "תחפש באינטרנט X", "search the web for X"); YouTube ("תחפש ביוטיוב X", "שים ביוטיוב X", "play X on youtube"); Wikipedia (he/en by the query's script); Google Maps ("איפה נמצא X", "מפה של X", "תנווט ל-X", "איך מגיעים ל-X", "directions to X"); Waze (`https://waze.com/ul?q=X`); Bing only when named; Google Translate ("תתרגם X", "איך אומרים X באנגלית", "translate X to hebrew" -> `translate.google.com/?sl=auto&tl=<code>&text=X`; the target is English for Hebrew text and Hebrew for the rest unless a language is named). The engine can stand in front of the query, behind the verb or at the end ("תחפש X בגוגל"). The query is kept as typed (wrapping quotes, a leading "את" / "על" and a final full stop removed) and percent-encoded (UTF-8, so Hebrew is safe); an address longer than 2000 characters is refused, never cut.
+- **Websites** (`web.open`): a built-in table of 53 sites (ynet, walla, mako, haaretz, kan, youtube, gmail, google drive / calendar / maps / translate, waze, wikipedia, facebook, instagram, linkedin, x, netflix, chatgpt, github, whatsapp web, spotify web, outlook web, microsoft 365, teams web, and Israeli news, bank and government sites whose address is certain) with their Hebrew spellings; any typed domain or http(s) address ("תפתח את example.co.il"). Only `http` and `https` are ever opened. A name that is a file ("report.pdf", "setup.exe") is never taken for a domain (the top-level domains accepted are a list without the file extensions).
+- **Windows settings** (`system.open_settings`): about 50 pages in the `SETTINGS` table of `local/system_actions.rs`, each URI checked against Microsoft's "Launch the Windows Settings app" reference for Windows 10 22H2 (a unit test compares the table with the reference list; an unknown key opens `ms-settings:`). Some words are also program names ("מצלמה", "רשת"): they open the settings only with the word "הגדרות" ("פתח הגדרות מצלמה"), otherwise the program.
+- **Folders** (`folders.open`): הורדות, מסמכים, שולחן העבודה, תמונות, מוזיקה, סרטונים, סל המחזור, המחשב הזה, OneDrive (only when it is set up on the PC).
+- **Notes and mail**: "תרשום פתק: X", "תוסיף פתק X", "פתק חדש: X", "note: X", "take a note: X"; "תכתוב מייל לדני בנושא X", "תכתוב לדני מייל", "write an email to X about Y", "email X about Y". "פתח מייל" alone is still opening the mailbox; only "פתח מייל חדש" is a new message.
+- **Not a command** (stays with the normal engine): "מה יש לי ביומן", "המייל מגוגל", "פגישה עם גוגל מחר", "תפתח את המייל האחרון", "איפה נמצא הקובץ של דני" and "איך מגיעים לפגישה של מחר" (a mail, file, note or meeting word anywhere in the place asked for), a path, a program file, anything with an unknown object. Look-alikes of a search of this PC stay with the engine too: "new mail from Dan" (a bare "new" needs "to Dan" to be a draft), "search internet bill" / "find online order" (a generic word such as web, online, net, map names an engine only as "search the web **for** ..." or as Hebrew "ברשת"/"במפה" in front, and not at the end of a sentence that names a mail or a file), "google sent me a file" / "google calendar invite" (the bare "google X" is not used when X names something local or a Google product), "תרגום החוזה" (the noun), and "תחפש את תחזית המכירות" / "תמצא את הדוח על המניות" (a request to find something is never turned into a weather, currency or sports question).
+- **The text is kept as typed**: symbols between words ("2 + 2", "AT & T", "5 + 3 = 8") stay in the query, the note and the subject; only wrapping quotes and a final full stop are removed.
+
+### 9.4 "I don't know" still offers the web
+
+When nothing is recognised the card keeps its honest message ("אפשר לשאול למשל: ...") and also offers one item, "חפש בגוגל: ״<text>״" (a click, like everything else). Questions about the weather, currency rates, the news and sports ("מה מזג האוויר", "שער הדולר", "תוצאות הכדורגל") get a fitting headline ("את מזג האוויר אפשר לבדוק בגוגל") and are never guessed as a mail or file search (they stay `NoMatch` at the intent level unless they name something of the user's own: a mail, a file, a meeting, "יש לי ...", or open with a request to find something; those get the plain "חפש בגוגל" offer without a topic headline). The offer is not made for a path, a program file, a very long text, or a request to delete, cancel, send, move or install something.
+
+### 9.5 Code and tests
+
+- `intent/commands.rs` (grammar), `intent/lexicon/commands.json` (words and catalogues, compiled in), `intent/commands_tests.rs` (more than 150 Hebrew and 50 English phrasings with the decision, the capability and the extracted query / site / setting / folder, the negatives above, and consistency checks between the lexicon and the tables).
+- `local/system_actions.rs`: the tables (engines, sites, settings, folders, languages), URL building and validation, and the effects. `assistant/actions.rs`: the cards, the click (`Action`, kept in the store as `Target::Action`) and the notes saving. `exec.rs`, `flow.rs`, `store.rs`, `wire.rs` and `mod.rs` of `assistant` only gained the hooks (`Sources::run_action`, one arm in `confirm`, one in `Engine::open`).
+- Error codes (family `APP`): APP-050 an address could not be opened, APP-051 a settings page, APP-052 a folder (missing on this PC or could not open), APP-053 locking, APP-054 a note (empty or the list is full). Text typed by the user is never logged.
+- Not verifiable on the dev machine: the Outlook new-message window on an Exchange profile, `LockWorkStation` and the settings pages on a real Windows 10 22H2 PC (the table is checked against the documentation, not on a device).

@@ -68,6 +68,17 @@ const ALIASES: &[&[&str]] = &[
     &["וואנדרייב", "ואנדרייב", "onedrive", "one drive"],
     &["אקרובט", "acrobat", "adobe acrobat"],
     &["זום", "zoom"],
+    // ---- added with the explicit commands ("תפתח כלי חיתוך", "תפעיל פאוורשל", ...) ----
+    &["כלי חיתוך", "כלי החיתוך", "צילום מסך", "snipping tool", "snip & sketch", "snip and sketch", "screen snip"],
+    &["מנהל המשימות", "מנהל משימות", "task manager", "taskmgr"],
+    &["פאוורשל", "פאורשל", "פאוור של", "powershell", "windows powershell"],
+    &["וואן נוט", "ואן נוט", "onenote", "one note", "microsoft onenote"],
+    &["פיירפוקס", "פייר פוקס", "פייפוקס", "firefox", "mozilla firefox"],
+    &["וואטסאפ", "וואצאפ", "ווטסאפ", "whatsapp"],
+    &["ספוטיפיי", "ספוטיפי", "spotify"],
+    &["פתקיות", "פתקים דביקים", "sticky notes"],
+    &["מצלמה", "camera"],
+    &["שעון", "שעון מעורר", "clock", "alarms & clock", "alarms and clock", "alarm clock"],
 ];
 
 /// The folded query plus the folded members of every alias group it names.
@@ -432,6 +443,55 @@ mod tests {
         assert!(top(&es, "פנקס רשימות").contains(&"Notepad".to_string()));
         assert!(top(&es, "צייר").contains(&"Paint".to_string()));
         assert!(top(&es, "אדג'").contains(&"Microsoft Edge".to_string()));
+    }
+
+    #[test]
+    fn the_hebrew_names_of_common_programs_find_them() {
+        let es = entries(&[
+            "Snipping Tool",
+            "Task Manager",
+            "Windows PowerShell",
+            "Microsoft OneNote",
+            "Mozilla Firefox",
+            "WhatsApp",
+            "Spotify",
+            "Sticky Notes",
+            "Camera",
+            "Alarms & Clock",
+            "Command Prompt",
+            "File Explorer",
+            "Zoom",
+            "Google Chrome",
+            "Microsoft Teams",
+            "Calculator",
+            "Settings",
+        ]);
+        for (hebrew, english) in [
+            ("כלי חיתוך", "Snipping Tool"),
+            ("צילום מסך", "Snipping Tool"),
+            ("מנהל המשימות", "Task Manager"),
+            ("פאוורשל", "Windows PowerShell"),
+            ("וואן נוט", "Microsoft OneNote"),
+            ("פיירפוקס", "Mozilla Firefox"),
+            ("וואטסאפ", "WhatsApp"),
+            ("ספוטיפיי", "Spotify"),
+            ("פתקיות", "Sticky Notes"),
+            ("פתקים דביקים", "Sticky Notes"),
+            ("מצלמה", "Camera"),
+            ("שעון", "Alarms & Clock"),
+            ("שעון מעורר", "Alarms & Clock"),
+            ("שורת הפקודה", "Command Prompt"),
+            ("סייר הקבצים", "File Explorer"),
+            ("זום", "Zoom"),
+            ("כרום", "Google Chrome"),
+            ("טימס", "Microsoft Teams"),
+            ("מחשבון", "Calculator"),
+            ("הגדרות", "Settings"),
+        ] {
+            assert!(top(&es, hebrew).contains(&english.to_string()), "{hebrew} should find {english}: {:?}", top(&es, hebrew));
+        }
+        // a 2-letter prefix of an alias must not pull in unrelated programs
+        assert!(top(&es, "שע").is_empty());
     }
 
     #[test]

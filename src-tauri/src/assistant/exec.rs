@@ -57,6 +57,11 @@ pub trait Sources: Send + Sync {
     fn open_note(&self, id: &str) -> Result<(), String>;
     fn load_prefs(&self) -> Option<Prefs>;
     fn save_prefs(&self, prefs: &Prefs) -> Result<(), String>;
+    /// Do what a clicked command item stands for (web search, site, settings, folder, note, new mail,
+    /// lock). Only ever called from `flow::Engine::open`, i.e. after an explicit click.
+    fn run_action(&self, _action: &super::actions::Action) -> Result<(), String> {
+        Err("APP-042: nothing to open".into())
+    }
 }
 
 /// One group of results with the targets behind its items (ids are minted when the card is built).
@@ -190,7 +195,8 @@ pub fn execute(r: &Run, interp: &Interpretation) -> Outcome {
             // "whose calendar?" is answered with the calendars that fit, never with a bare question
             intent::AskKind::Person if cap.map_or(true, |c| c.as_str().starts_with("calendar.")) => person_clarify(r, interp),
             _ => {
-                let q = answer::clarify_text(*ask, r.lang);
+                // "מה לחפש?" / "מה לרשום בפתק?" / "מה לתרגם?" for the commands that lack their text
+                let q = super::actions::clarify_question(interp, r.lang).unwrap_or_else(|| answer::clarify_text(*ask, r.lang));
                 let mut o = Outcome::answer(q, "");
                 o.question = Some(q.to_string());
                 o
@@ -239,12 +245,17 @@ fn run_cap(r: &Run, interp: &Interpretation, cap: CapId) -> Outcome {
         caps::APPS_SEARCH => apps(r, interp),
         caps::CALCULATOR_EVALUATE => calc(r, interp),
         caps::EMAIL_OPEN | caps::NOTES_OPEN | caps::FILES_OPEN | caps::APPS_LAUNCH => confirm(r, interp, cap),
+        c if super::actions::handles(c) => super::actions::build(r, interp, c),
         _ => execute(r, &Interpretation { decision: Decision::NoMatch, ..interp.clone() }),
     }
 }
 
 /// Open/launch capabilities never run from text: search for the candidates and offer them.
 fn confirm(r: &Run, interp: &Interpretation, cap: CapId) -> Outcome {
+    // explicit commands: the card describes the action and offers it as the one click
+    if super::actions::handles(cap) {
+        return super::actions::build(r, interp, cap);
+    }
     let read = match cap {
         caps::EMAIL_OPEN => caps::EMAIL_SEARCH,
         caps::NOTES_OPEN => caps::NOTES_SEARCH,
