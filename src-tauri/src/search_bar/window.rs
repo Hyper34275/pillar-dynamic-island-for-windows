@@ -189,7 +189,7 @@ fn ensure_window(app: &AppHandle) -> Result<WebviewWindow, String> {
     }
     let win = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::App("search.html".into()))
         .title("CompanyIsland search")
-        .inner_size(560.0, 48.0)
+        .inner_size(572.0, 60.0)
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
@@ -236,14 +236,30 @@ fn force_foreground(hwnd: HWND) {
     }
 }
 
+/// An open that did not end with a visible window: clear `open` and arm the idle destroy. `close()`
+/// would return early (it only acts when `open` was set), so without this the created WebView2
+/// would stay resident until exit. `post` sends a command to the search thread.
+fn reset_failed_open(open: &AtomicBool, mut post: impl FnMut(usize)) {
+    open.store(false, Ordering::Release);
+    post(thread::CMD_IDLE_ARM);
+}
+
+fn fail_open() {
+    reset_failed_open(&OPEN, thread::post);
+}
+
 fn show_on_main(app: &AppHandle, win: &WebviewWindow, layout: &Layout, high_contrast: bool) {
-    let Some(hwnd) = hwnd_of(win) else { return };
+    let Some(hwnd) = hwnd_of(win) else {
+        dlog!("WARN", "search_bar", "WIN-507 search window has no handle");
+        fail_open();
+        return;
+    };
     apply_styles(hwnd);
     apply_geometry(hwnd, layout);
     publish_state(app, layout, high_contrast);
     if let Err(e) = win.show() {
         dlog!("WARN", "search_bar", "WIN-507 search window could not be shown: {}", e);
-        OPEN.store(false, Ordering::Release);
+        fail_open();
         return;
     }
     // tao re-applies its style flags on show; the subclass keeps ours, this covers a missing one.
@@ -266,6 +282,8 @@ fn open_blocking(app: &AppHandle) {
         Ok(w) => w,
         Err(e) => {
             dlog!("WARN", "search_bar", "{}", e);
+            // a half-built window must not outlive the failure
+            thread::post(thread::CMD_IDLE_ARM);
             return;
         }
     };
@@ -274,7 +292,7 @@ fn open_blocking(app: &AppHandle) {
     thread::post(thread::CMD_IDLE_CANCEL);
     let handle = app.clone();
     if let Err(e) = app.run_on_main_thread(move || show_on_main(&handle, &win, &layout, high_contrast)) {
-        OPEN.store(false, Ordering::Release);
+        fail_open();
         dlog!("WARN", "search_bar", "WIN-507 opening could not be queued: {}", e);
     }
 }
@@ -359,6 +377,17 @@ mod tests {
         let s = state();
         assert!(s.width > 0.0 && s.height > 0.0 && s.scale > 0.0);
         assert!(["bottom", "top", "left", "right"].contains(&s.edge.as_str()));
+    }
+
+    #[test]
+    fn a_failed_open_clears_the_flag_and_arms_the_idle_destroy() {
+        // regression (#28): close() returns early when OPEN is already false, so the failure path
+        // has to arm the idle timer itself.
+        let open = AtomicBool::new(true);
+        let mut posted = Vec::new();
+        reset_failed_open(&open, |c| posted.push(c));
+        assert!(!open.load(Ordering::Acquire));
+        assert_eq!(posted, vec![thread::CMD_IDLE_ARM]);
     }
 
     #[test]

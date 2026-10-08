@@ -188,17 +188,21 @@ fn floating(i: &Inputs) -> Layout {
     let gap = px(FLOAT_GAP_DIP, scale);
     let width = px(FLOAT_WIDTH_DIP, scale).min((work.width() - 2 * gap).max(px(160.0, scale)));
     let height = px(FLOAT_HEIGHT_DIP, scale);
+    let margin = px(GLOW_MARGIN_DIP, scale);
     let left = work.left + (work.width() - width) / 2;
     let on_top = i.edge == Some(Edge::Top);
     let top = if on_top { work.top + gap } else { work.bottom - gap - height };
+    // The bar is 560x48; like the anchored box the window adds the glow margin on every side, so
+    // the bar the page draws (window minus the margin) has the same size in both modes.
+    let bar = Bounds { left, top, right: left + width, bottom: top + height };
     Layout {
         anchored: false,
         button: None,
-        window: Bounds { left, top, right: left + width, bottom: top + height },
+        window: inflate(bar, margin),
         scale,
         dpi: monitor.dpi,
         radius_dip: FLOAT_RADIUS_DIP,
-        region_radius_px: px(FLOAT_RADIUS_DIP, scale),
+        region_radius_px: margin,
         edge: i.edge.unwrap_or(Edge::Bottom),
         monitor: monitor.bounds,
     }
@@ -368,13 +372,17 @@ mod tests {
             let l = compute_layout(&i);
             let s = scale_of(dpi);
             assert!(!l.anchored);
-            assert_eq!(l.window.width(), (560.0 * s).round() as i32);
-            assert_eq!(l.window.height(), (48.0 * s).round() as i32);
-            assert_eq!(m.work.bottom - l.window.bottom, (16.0 * s).round() as i32, "dpi {dpi}");
+            let g = (6.0 * s).round() as i32;
+            // regression (#15): the window is the 560x48 bar plus the glow margin, like anchored
+            assert_eq!(l.window.width(), (560.0 * s).round() as i32 + 2 * g, "dpi {dpi}");
+            assert_eq!(l.window.height(), (48.0 * s).round() as i32 + 2 * g, "dpi {dpi}");
+            assert_eq!(m.work.bottom - (l.window.bottom - g), (16.0 * s).round() as i32, "dpi {dpi}");
+            assert_eq!(l.region_radius_px, g);
+            let st = l.to_state(false);
+            assert!((st.width - 572.0).abs() < 1.0 && (st.height - 60.0).abs() < 1.0, "dpi {dpi}: {}x{}", st.width, st.height);
             let centre = (l.window.left + l.window.right) / 2;
             assert!((centre - (m.work.left + m.work.right) / 2).abs() <= 1);
             assert_eq!(l.radius_dip, 24.0);
-            assert_eq!(l.to_state(true).height, 48.0);
             assert!(l.to_state(true).high_contrast);
         }
     }
@@ -387,7 +395,7 @@ mod tests {
         i.mode = SearchMode::Icon;
         i.edge = Some(Edge::Top);
         let l = compute_layout(&i);
-        assert_eq!(l.window.top, 48 + 16);
+        assert_eq!(l.window.top, 48 + 16 - 6);
         assert_eq!(l.edge, Edge::Top);
     }
 
@@ -399,7 +407,7 @@ mod tests {
         let mut i = inputs(m);
         i.mode = SearchMode::Hidden;
         let l = compute_layout(&i);
-        assert_eq!(l.window.width(), 400 - 32);
+        assert_eq!(l.window.width(), 400 - 32 + 12);
         assert!(m.work.contains(&l.window));
     }
 
@@ -458,7 +466,7 @@ mod tests {
         };
         let l = compute_layout(&i);
         assert!(!l.anchored);
-        assert_eq!(l.window.width(), 560);
+        assert_eq!(l.window.width(), 560 + 12);
     }
 
     #[test]
