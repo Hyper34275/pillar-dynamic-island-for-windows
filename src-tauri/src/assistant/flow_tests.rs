@@ -965,3 +965,24 @@ fn the_prefetch_only_filter_is_respected() {
     let card = engine_run(&Engine::new(), &f, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, own));
     assert_eq!(card.total, 4);
 }
+
+#[test]
+fn a_sticky_note_hit_says_where_it_is_from_and_is_openable() {
+    let f = Fake {
+        notes: vec![
+            NoteHit { id: "sticky:3f2a-guid".into(), title: "רשימת קניות".into(), snippet: "חלב".into(), updated_at: 9, pinned: false },
+            NoteHit { id: "n1".into(), title: "רעיון".into(), snippet: String::new(), updated_at: 5, pinned: false },
+        ],
+        ..Fake::default()
+    };
+    let e = Engine::new();
+    let card = engine_run(&e, &f, "qs", &exec_cap(caps::NOTES_SEARCH, mail_slots()));
+    assert_eq!(card.items.len(), 2);
+    assert_eq!(card.items[0].kind, ItemKind::Note);
+    assert_eq!(card.items[0].source.as_deref(), Some("Sticky Notes"));
+    assert!(card.items[0].openable);
+    assert_eq!(card.items[1].source.as_deref(), Some("פתקים"), "the island's own notes keep their label");
+    // a click reaches open_note with the hit id (the live source launches Sticky Notes for the prefix)
+    e.open(&f, "qs", &card.items[0].id, now().timestamp_millis()).unwrap();
+    assert_eq!(f.opened.lock().unwrap().as_slice(), ["note:sticky:3f2a-guid"]);
+}

@@ -265,6 +265,15 @@ const en = {
   "ai.close": "Close",
   "ai.openItem": "Open: {title}",
   "ai.unavailable": "This answer can't be shown",
+  // Notes tab: the user's Windows Sticky Notes (read only; editing happens in Sticky Notes).
+  "sticky.title": "Windows Sticky Notes",
+  "sticky.open": "Open in Sticky Notes",
+  "sticky.more": "Show {n} more",
+  "sticky.less": "Show fewer",
+  "sticky.empty": "No Sticky Notes yet",
+  "sticky.emptyHint": "Notes you write in Sticky Notes appear here.",
+  "sticky.unavailable": "Sticky Notes isn't available",
+  "sticky.unavailableHint": "The Windows notes can't be read on this computer.",
 } satisfies Record<string, Message>;
 
 export type MessageKey = keyof typeof en;
@@ -528,6 +537,14 @@ const he: Record<MessageKey, Message> = {
   "ai.close": "סגור",
   "ai.openItem": "פתח: {title}",
   "ai.unavailable": "לא ניתן להציג את התשובה",
+  "sticky.title": "Sticky Notes של Windows",
+  "sticky.open": "פתח ב-Sticky Notes",
+  "sticky.more": "הצג עוד {n}",
+  "sticky.less": "הצג פחות",
+  "sticky.empty": "אין עדיין פתקים ב-Sticky Notes",
+  "sticky.emptyHint": "פתקים שתכתבו ב-Sticky Notes יופיעו כאן.",
+  "sticky.unavailable": "Sticky Notes לא זמין",
+  "sticky.unavailableHint": "אי אפשר לקרוא את הפתקים של Windows במחשב הזה.",
 };
 
 const tables: Record<Locale, Record<MessageKey, Message>> = { en, he };

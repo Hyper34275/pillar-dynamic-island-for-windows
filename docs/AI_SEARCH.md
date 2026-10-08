@@ -295,3 +295,21 @@ The dev machine runs Windows 11 with a non-Exchange Outlook profile. Not verifia
 ## 7. Implementation status
 
 Phases 2-9 are implemented and unit-tested (cargo 474 passed with 6 ignored live probes, vitest 943, dotnet 161, tsc clean, vite build OK) but the new build has not been run live yet. A fix round for 36 adversarial-review findings is being merged. Phases 10-12 (optimization, installer 1.0.12, QA) are pending. Per-phase commits, tests and limits are in `docs/AI_SEARCH_PROGRESS.md`; the limits in section 6 still apply, and the Center chat UI has only been compiled, never rendered.
+
+## 8. Windows Sticky Notes in `notes.search`
+
+`notes.search` (and "הפתק האחרון שלי") also searches the user's Windows Sticky Notes, read only (`src-tauri/src/sticky_notes.rs`,
+`docs/ARCHITECTURE.md` section 11).
+
+- `local::note_search` merges the app's own notes with the Sticky Notes snapshot and ranks them together (same folded
+  token matching, recency and title bonuses; a Sticky Note is never pinned). When Sticky Notes is not installed, has no
+  database yet, has a layout this version does not know, or cannot be read, the snapshot is empty and the search is exactly
+  what it was: never an error, never a result card for it.
+- A Sticky Notes hit has the id `sticky:<guid>` (an own note id never contains a colon). The assistant labels it
+  `AssistantItem.source = "Sticky Notes"` (own notes stay "פתקים" / "Notes"), `kind` stays `note`, `openable` stays true.
+- Opening such a hit (an explicit click, as for every item) launches the Sticky Notes app
+  (`shell:AppsFolder\Microsoft.MicrosoftStickyNotes_8wekyb3d8bbwe!App`) instead of the Island Center's `note:<id>` page.
+  The wire types are unchanged, so the Center needs no change: its note rows already show `source` and open through the same
+  pipe command.
+- Note text is memory only, as everywhere in smart search; the temporary copy of the database that a read needs is deleted
+  immediately.

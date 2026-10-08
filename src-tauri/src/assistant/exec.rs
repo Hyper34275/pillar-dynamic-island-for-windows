@@ -872,7 +872,14 @@ fn notes(r: &Run, interp: &Interpretation) -> Outcome {
             it.subtitle = Some(h.snippet.clone()).filter(|x| !x.is_empty());
             it.time = Some(h.updated_at);
             it.openable = true;
-            it.source = Some(if lang == Lang::He { "פתקים".into() } else { "Notes".into() });
+            // A Windows Sticky Notes hit (`sticky:<id>`) says so; it opens the Sticky Notes app.
+            it.source = Some(if crate::sticky_notes::is_hit_id(&h.id) {
+                crate::sticky_notes::SOURCE_LABEL.into()
+            } else if lang == Lang::He {
+                "פתקים".into()
+            } else {
+                "Notes".into()
+            });
             (it, Target::Note(h.id.clone()))
         })
         .collect();

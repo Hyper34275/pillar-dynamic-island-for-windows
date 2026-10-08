@@ -3,10 +3,13 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Note } from "../../../lib/ipc";
+import type { StickyNote, StickySnapshot } from "../../../lib/notes/sticky";
 import { islandTyping, noteDraft } from "../../../lib/notes/typing";
 import { notePreview, NotesTab, NotesView, type NotesViewProps } from "./NotesTab";
 
 const mocks = vi.hoisted(() => ({
+  stickyOpen: vi.fn(async () => true),
+  sticky: null as StickySnapshot | null,
   openCenter: vi.fn(async (_page: string) => true),
   islandKeyboard: vi.fn(async (_on: boolean) => true),
   add: vi.fn(async (_text: string) => true),
@@ -24,7 +27,7 @@ vi.mock("../../../lib/ipc", async (importOriginal) => {
   const original = await importOriginal<typeof import("../../../lib/ipc")>();
   return {
     ...original,
-    ipc: { ...original.ipc, openCenter: mocks.openCenter, copyTextToClipboard: mocks.copyTextToClipboard, islandKeyboard: mocks.islandKeyboard },
+    ipc: { ...original.ipc, openCenter: mocks.openCenter, copyTextToClipboard: mocks.copyTextToClipboard, islandKeyboard: mocks.islandKeyboard, stickyNotesOpen: mocks.stickyOpen },
     onEvent: (name: string, handler: (payload: unknown) => void) => {
       mocks.events.set(name, handler);
       return () => mocks.events.delete(name);
@@ -45,6 +48,8 @@ vi.mock("../../../hooks/useNotes", () => ({
   }),
 }));
 
+vi.mock("../../../lib/notes/useSticky", () => ({ useStickyNotes: () => mocks.sticky }));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const NOW = new Date(2026, 9, 6, 15, 30, 0).getTime();
@@ -59,8 +64,10 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   vi.setSystemTime(NOW);
   mocks.notes = [];
+  mocks.sticky = null;
   mocks.loaded = true;
   mocks.loadFailed = false;
+  mocks.stickyOpen.mockClear();
   for (const fn of [mocks.openCenter, mocks.copyTextToClipboard, mocks.remove, mocks.togglePin, mocks.retry, mocks.islandKeyboard, mocks.add]) fn.mockClear();
   mocks.add.mockImplementation(async () => true);
   mocks.events.clear();
@@ -457,5 +464,178 @@ describe("NotesTab", () => {
     act(() => root.unmount());
     expect(vi.getTimerCount()).toBe(0);
     root = createRoot(container);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// The user's Windows Sticky Notes: a read-only section under their own notes.
+// -----------------------------------------------------------------------------
+
+const sticky = (over: Partial<StickyNote> = {}): StickyNote => ({
+  id: "s1",
+  text: "Pick up the dry cleaning",
+  title: "Pick up the dry cleaning",
+  colour: "yellow",
+  updatedAt: NOW - 2 * 60 * MIN,
+  createdAt: NOW - 3 * 60 * MIN,
+  ...over,
+});
+const snapshot = (notes: StickyNote[], availability: StickySnapshot["availability"] = "ok"): StickySnapshot => ({ availability, notes, revision: 1 });
+const stickyRows = () => [...container.querySelectorAll<HTMLElement>("li[data-sticky-id]")];
+const section = () => container.querySelector<HTMLElement>("[data-sticky-section]");
+
+describe("NotesView · Windows Sticky Notes", () => {
+  const withSticky = (snap: StickySnapshot | null, over: Partial<NotesViewProps> = {}) => {
+    const onOpen = vi.fn();
+    const props = viewProps({ notes: [note()], sticky: { snapshot: snap, onOpen }, ...over });
+    renderView(props);
+    return { props, onOpen };
+  };
+
+  it("is exactly the old view without the sticky prop, with nothing known, and when Sticky Notes is not installed", () => {
+    renderView(viewProps({ notes: [note()] }));
+    const plain = container.innerHTML;
+    expect(section()).toBeNull();
+    withSticky(null);
+    expect(container.innerHTML).toBe(plain);
+    withSticky(snapshot([], "notInstalled"));
+    expect(container.innerHTML).toBe(plain);
+  });
+
+  it("shows the Windows notes under the user's own, read only, newest first as given", () => {
+    withSticky(snapshot([sticky({ id: "a", text: "first", title: "first" }), sticky({ id: "b", text: "שלום עולם", title: "שלום עולם", colour: "blue" })]));
+    expect(rows().map((r) => r.dataset.noteId)).toEqual(["n1"]);
+    expect(stickyRows().map((r) => r.dataset.stickyId)).toEqual(["a", "b"]);
+    // the section comes after the own list
+    expect(rows()[0].compareDocumentPosition(section()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section()!.textContent).toContain("Windows Sticky Notes");
+    expect(section()!.querySelector("[data-sticky-count]")!.textContent).toBe("2");
+    const hebrew = stickyRows()[1].querySelector<HTMLElement>("[data-sticky-text]")!;
+    expect(hebrew.textContent).toBe("שלום עולם");
+    expect(hebrew.getAttribute("dir")).toBe("rtl");
+    expect(stickyRows()[0].querySelector<HTMLElement>("[data-sticky-text]")!.getAttribute("dir")).toBe("ltr");
+    expect(hebrew.className).toContain("line-clamp-3");
+    expect(hebrew.className).toContain("bidi");
+    // read only: no pin / copy / delete on a Sticky Note
+    for (const r of stickyRows()) {
+      expect(r.querySelector('button[aria-label="Pin note"], button[aria-label="Copy note"], button[aria-label="Delete note"]')).toBeNull();
+      expect(r.textContent).toMatch(/2 hr|2 hours/);
+    }
+  });
+
+  it("marks each note with its own colour and keeps the mark out of the accessibility tree", () => {
+    withSticky(snapshot([sticky({ id: "a", colour: "yellow" }), sticky({ id: "b", colour: "green" }), sticky({ id: "c", colour: "charcoal" })]));
+    const marks = stickyRows().map((r) => r.querySelector<HTMLElement>("[data-sticky-mark]")!);
+    expect(marks.map((m) => m.dataset.stickyMark)).toEqual(["yellow", "green", "charcoal"]);
+    const colours = marks.map((m) => m.style.background);
+    expect(new Set(colours).size).toBe(3);
+    expect(colours.every((c) => c !== "")).toBe(true);
+    for (const m of marks) expect(m.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("collapses to three with a count and expands and collapses again", () => {
+    const many = Array.from({ length: 7 }, (_, i) => sticky({ id: `s${i}`, text: `note ${i}`, title: `note ${i}` }));
+    withSticky(snapshot(many));
+    expect(stickyRows()).toHaveLength(3);
+    const toggle = container.querySelector<HTMLElement>("button[data-sticky-toggle]")!;
+    expect(toggle.textContent).toBe("Show 4 more");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    act(() => toggle.click());
+    expect(stickyRows()).toHaveLength(7);
+    expect(container.querySelector("button[data-sticky-toggle]")!.textContent).toBe("Show fewer");
+    expect(container.querySelector("button[data-sticky-toggle]")!.getAttribute("aria-expanded")).toBe("true");
+    act(() => container.querySelector<HTMLElement>("button[data-sticky-toggle]")!.click());
+    expect(stickyRows()).toHaveLength(3);
+    // three or fewer: nothing to collapse
+    withSticky(snapshot(many.slice(0, 3)));
+    expect(container.querySelector("button[data-sticky-toggle]")).toBeNull();
+  });
+
+  it("opens Sticky Notes from the section action, from a click on a note and from its own action, once each", () => {
+    const { onOpen } = withSticky(snapshot([sticky({ id: "a" })]));
+    const header = [...section()!.querySelectorAll("button")].find((b) => b.textContent === "Open in Sticky Notes" && !b.closest("li"))!;
+    act(() => header.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    act(() => stickyRows()[0].click());
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    act(() => stickyRows()[0].querySelector<HTMLElement>("button[data-sticky-open]")!.click());
+    expect(onOpen).toHaveBeenCalledTimes(3);
+    const inRow = [...stickyRows()[0].querySelectorAll("button")].find((b) => b.textContent === "Open in Sticky Notes")!;
+    act(() => inRow.click());
+    expect(onOpen).toHaveBeenCalledTimes(4);
+    expect(stickyRows()[0].querySelector("button[data-sticky-open]")!.getAttribute("aria-label")).toBe("Open in Sticky Notes: Pick up the dry cleaning");
+  });
+
+  it("says calmly when there are no Sticky Notes yet, with a way to open the app", () => {
+    const { onOpen } = withSticky(snapshot([], "noData"));
+    expect(section()!.querySelector('[data-state][role="status"]')).not.toBeNull();
+    expect(section()!.textContent).toContain("No Sticky Notes yet");
+    const open = [...section()!.querySelectorAll("button")].find((b) => b.textContent === "Open in Sticky Notes")!;
+    act(() => open.click());
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    withSticky(snapshot([], "ok"));
+    expect(section()!.textContent).toContain("No Sticky Notes yet");
+  });
+
+  it("says calmly that they are not available when the layout is unknown or unreadable: a status block, no error, no action", () => {
+    for (const availability of ["unsupported", "unavailable"] as const) {
+      withSticky(snapshot([], availability));
+      expect(section()!.textContent).toContain("Sticky Notes isn't available");
+      expect(section()!.querySelector('[role="alert"]')).toBeNull();
+      expect(section()!.querySelector("button")).toBeNull();
+      // the user's own notes are untouched
+      expect(rows()).toHaveLength(1);
+    }
+  });
+
+  it("stacks under an empty own list without taking over the tab, and waits while the own list is unknown", () => {
+    withSticky(snapshot([sticky({ id: "a" })]), { notes: [], composer: <div data-composer /> });
+    expect(container.textContent).toContain("No notes yet");
+    expect(stickyRows()).toHaveLength(1);
+    expect(container.querySelector("[data-composer]")).not.toBeNull();
+    // the own empty state is not the tab-filling block there
+    const ownEmpty = container.querySelector<HTMLElement>('[data-state][role="status"]')!;
+    expect(ownEmpty.parentElement!.className).toContain("flex-shrink-0");
+
+    withSticky(snapshot([sticky({ id: "a" })]), { notes: [], loading: true });
+    expect(section()).toBeNull();
+    withSticky(snapshot([sticky({ id: "a" })]), { notes: [], loadFailed: true });
+    expect(section()).toBeNull();
+    expect(container.textContent).toContain("Couldn't load the notes");
+  });
+
+  it("creates no timers of its own", () => {
+    withSticky(snapshot(Array.from({ length: 5 }, (_, i) => sticky({ id: `s${i}` }))));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("NotesTab · Windows Sticky Notes", () => {
+  async function mount() {
+    await act(async () => {
+      root.render(<NotesTab />);
+    });
+  }
+
+  it("shows the notes the store knows and opens Sticky Notes through the backend, never the Island Center", async () => {
+    mocks.notes = [note({ id: "own1" })];
+    mocks.sticky = snapshot([sticky({ id: "s1" }), sticky({ id: "s2", text: "Second", title: "Second" })]);
+    await mount();
+    expect(stickyRows()).toHaveLength(2);
+    expect(rows()).toHaveLength(1);
+    await act(async () => stickyRows()[1].click());
+    expect(mocks.stickyOpen).toHaveBeenCalledTimes(1);
+    expect(mocks.openCenter).not.toHaveBeenCalled();
+    // an own note still opens in the Center
+    await act(async () => rows()[0].click());
+    expect(mocks.openCenter).toHaveBeenLastCalledWith("note:own1");
+  });
+
+  it("has no section while the store has no answer (outside the app, before the first answer)", async () => {
+    mocks.notes = [note({ id: "own1" })];
+    mocks.sticky = null;
+    await mount();
+    expect(section()).toBeNull();
+    expect(rows()).toHaveLength(1);
   });
 });

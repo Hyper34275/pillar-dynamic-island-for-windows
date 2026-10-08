@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import { useMinute } from "../../../hooks/useClock";
 import { useNotes } from "../../../hooks/useNotes";
 import { relativePast } from "../../../lib/dateFormat";
@@ -6,7 +6,10 @@ import { t } from "../../../lib/i18n";
 import { ipc, onEvent, type Note } from "../../../lib/ipc";
 import { color, control, icon } from "../../../design/tokens";
 import { textDirection } from "../../../design/direction";
+import { stickyHasSection, type StickyNote, type StickySnapshot } from "../../../lib/notes/sticky";
+import { stickyMarkColor } from "../../../lib/notes/stickyColour";
 import { islandTyping, noteDraft } from "../../../lib/notes/typing";
+import { useStickyNotes } from "../../../lib/notes/useSticky";
 import { ActionButton, RoundButton } from "../ui/controls";
 import { CopyIcon, NoteIcon, PencilIcon, PinIcon, TrashIcon } from "../ui/icons";
 import { EmptyState, ErrorState, STATE_ICON } from "../ui/states";
@@ -234,18 +237,32 @@ export interface NotesViewProps {
   composer?: ReactNode;
   /** Opens the Island Center's Notes page; with it, the header and the empty state offer that instead of "New note". */
   onOpenApp?: () => void;
+  /**
+   * The user's Windows Sticky Notes, a read-only section under their own notes. Absent (the tour, the
+   * gallery's older exhibits): no section. `snapshot` null = not known yet, or no backend: no section.
+   */
+  sticky?: StickyView;
+}
+
+export interface StickyView {
+  snapshot: StickySnapshot | null;
+  /** Starts the Sticky Notes app (the only way to edit them). */
+  onOpen: () => void;
 }
 
 /** Pure rendering of the notes list (the tour renders it with mock data, no IPC). */
 export function NotesView(props: NotesViewProps) {
-  const { notes, loading = false, loadFailed = false, composer } = props;
-  const list = <NotesList {...props} />;
+  const { notes, loading = false, loadFailed = false, composer, sticky } = props;
   // While the list is unknown the composer waits too: the panel shows one thing at a time.
-  if (!composer || (notes.length === 0 && (loading || loadFailed))) return list;
+  const unknown = notes.length === 0 && (loading || loadFailed);
+  const stickySnapshot = !unknown && sticky && stickyHasSection(sticky.snapshot) ? sticky.snapshot : null;
+  const list = <NotesList {...props} stacked={stickySnapshot !== null} />;
+  if (unknown || (!composer && !stickySnapshot)) return list;
   return (
     <div className="flex flex-col gap-2 flex-1">
       {composer}
       {list}
+      {stickySnapshot && sticky && <StickySection snapshot={stickySnapshot} nowMs={props.nowMs} onOpen={sticky.onOpen} />}
     </div>
   );
 }
@@ -265,13 +282,14 @@ function NotesList({
   onRetry,
   onOpenApp,
   composer,
-}: NotesViewProps) {
+  stacked = false,
+}: NotesViewProps & { stacked?: boolean }) {
   if (loading && notes.length === 0) return <div className="flex-1" aria-busy="true" />;
   if (loadFailed && notes.length === 0) {
     return <ErrorState icon={<NoteIcon size={STATE_ICON} />} title={t("notes.loadFailed")} action={onRetry ? { label: t("notes.retry"), onPress: onRetry } : undefined} />;
   }
   if (notes.length === 0) {
-    return (
+    const empty = (
       <EmptyState
         icon={<NoteIcon size={STATE_ICON} />}
         title={t("notes.empty")}
@@ -279,6 +297,8 @@ function NotesList({
         action={{ label: t(onOpenApp ? "notes.openApp" : "notes.new"), onPress: onOpenApp ?? onNew }}
       />
     );
+    // With the Sticky Notes section below, the empty state takes its own height instead of all the room.
+    return stacked ? <div className="flex flex-col flex-shrink-0">{empty}</div> : empty;
   }
   return (
     <div className="flex flex-col gap-2">
@@ -308,6 +328,110 @@ function NotesList({
         ))}
       </ul>
     </div>
+  );
+}
+
+/** This many Sticky Notes show before "Show N more". */
+const STICKY_COLLAPSED = 3;
+/** The note's colour bar, as wide as the calendar rows' colour bars. */
+const STICKY_BAR_WIDTH = 4;
+
+/**
+ * One Windows Sticky Note: read only. Same card as an own note (surface, 12 padding, three clamped
+ * lines, relative time), with the note's colour as a rounded bar at the leading edge (the calendar
+ * rows' grammar for an identity colour); a click, or the action that shows on hover and focus, opens
+ * the Sticky Notes app (editing happens there).
+ */
+function StickyRow({ note, nowMs, onOpen }: { note: StickyNote; nowMs: number; onOpen: () => void }) {
+  const preview = notePreview(note.text);
+  return (
+    <li
+      data-sticky-id={note.id}
+      className="group flex gap-3 ci-surface hover:bg-surface-hover rounded-surface p-card-pad cursor-pointer transition-colors"
+      onClick={onOpen}
+    >
+      <span
+        aria-hidden="true"
+        data-sticky-mark={note.colour}
+        className="ci-mark flex-shrink-0 self-stretch rounded-full"
+        style={{ width: STICKY_BAR_WIDTH, background: stickyMarkColor(note.colour) }}
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <button
+          type="button"
+          data-sticky-open
+          aria-label={`${t("sticky.open")}: ${preview.slice(0, OPEN_LABEL_CHARS)}`}
+          className="ci-bare block w-full text-start rounded-control"
+        >
+          <span className="bidi block text-body text-fg line-clamp-3 whitespace-pre-wrap break-words" dir={textDirection(preview)} data-sticky-text>
+            {preview}
+          </span>
+        </button>
+        {/* As in an own note: the 28px action row sits in the card's bottom padding (-mb-1 balances the 12 above the text). */}
+        <div className="flex items-center gap-2 -mb-1" style={{ minHeight: control.round }}>
+          {note.updatedAt > 0 && <span className="text-meta text-fg-tertiary tabular-nums truncate">{relativePast(note.updatedAt, nowMs)}</span>}
+          {/* Hidden until the row is hovered or focused, but always there for keyboard and screen readers. */}
+          <span className="ms-auto transition-opacity opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+            <HeaderActionButton onPress={onOpen}>{t("sticky.open")}</HeaderActionButton>
+          </span>
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * The user's Windows Sticky Notes under their own notes: a section row (label with the count, the open
+ * action), then up to three cards with "Show N more" for the rest, or one calm state (empty, or not
+ * available on this computer: never an error). Not installed is handled by the caller (no section).
+ */
+function StickySection({ snapshot, nowMs, onOpen }: { snapshot: StickySnapshot; nowMs: number; onOpen: () => void }) {
+  const [expanded, setExpanded] = useState(false);
+  const { availability, notes } = snapshot;
+  const hasNotes = availability === "ok" && notes.length > 0;
+  const shown = expanded ? notes : notes.slice(0, STICKY_COLLAPSED);
+  const rest = notes.length - shown.length;
+  return (
+    <section className="flex flex-col gap-2" data-sticky-section aria-label={t("sticky.title")}>
+      <div className="flex items-center justify-between gap-2 px-3" style={{ minHeight: control.round }}>
+        {/* The count is its own element, so it sits after the label in the layout's direction whatever the label's bidi runs do. */}
+        <span className="flex min-w-0 items-baseline gap-2 text-micro text-fg-tertiary">
+          <span className="truncate">{t("sticky.title")}</span>
+          {hasNotes && (
+            <span className="flex-shrink-0 tabular-nums" data-sticky-count>
+              {notes.length}
+            </span>
+          )}
+        </span>
+        {hasNotes && <HeaderActionButton onPress={onOpen}>{t("sticky.open")}</HeaderActionButton>}
+      </div>
+      {hasNotes ? (
+        <>
+          <ul className="flex flex-col gap-2" aria-label={t("sticky.title")}>
+            {shown.map((note) => (
+              <StickyRow key={note.id} note={note} nowMs={nowMs} onOpen={onOpen} />
+            ))}
+          </ul>
+          {notes.length > STICKY_COLLAPSED && (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                data-sticky-toggle
+                aria-expanded={expanded}
+                className="ci-link hit-area rounded-control text-label text-accent whitespace-nowrap select-none transition-opacity duration-150 hover:opacity-80 active:opacity-60"
+                onClick={() => setExpanded((e) => !e)}
+              >
+                {expanded ? t("sticky.less") : t("sticky.more", { n: rest })}
+              </button>
+            </div>
+          )}
+        </>
+      ) : availability === "ok" || availability === "noData" ? (
+        <EmptyState icon={<NoteIcon size={STATE_ICON} />} title={t("sticky.empty")} hint={t("sticky.emptyHint")} action={{ label: t("sticky.open"), onPress: onOpen }} />
+      ) : (
+        <EmptyState icon={<NoteIcon size={STATE_ICON} />} title={t("sticky.unavailable")} hint={t("sticky.unavailableHint")} />
+      )}
+    </section>
   );
 }
 
@@ -375,6 +499,8 @@ function useComposerKeyboard() {
 /** The island's notes: writing a new one, reading, pinning, copying and deleting here; a click on a note opens it in the Island Center. */
 export function NotesTab() {
   const { notes, loaded, loadFailed, retry, add, remove, togglePin } = useNotes();
+  const stickySnapshot = useStickyNotes();
+  const sticky = useMemo<StickyView>(() => ({ snapshot: stickySnapshot, onOpen: () => void ipc.stickyNotesOpen() }), [stickySnapshot]);
   const nowMs = useMinute().getTime();
   const keyboard = useComposerKeyboard();
   // The draft outlives the tab (the island closing unmounts it) until it is saved.
@@ -456,6 +582,7 @@ export function NotesTab() {
       onTogglePin={(id) => void togglePin(id).then(saved)}
       onCopy={copy}
       onRemove={(id) => void remove(id).then(saved)}
+      sticky={sticky}
     />
   );
 }
