@@ -1230,6 +1230,25 @@ fn a_calendar_that_cannot_be_read_falls_back_to_free_busy_then_says_why() {
     assert!(card.choices.is_empty(), "the calendar is known: no other one is offered");
 }
 
+#[test]
+fn a_calendar_that_is_open_but_unreachable_is_not_told_to_be_added_again() {
+    // CAL-SHARED-103: the calendar is in Outlook, its server cannot be reached. "Add the calendar"
+    // would be wrong advice, and no other calendars are offered for a problem that is not the name.
+    let f = Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-itzik", "איציק כהן"), cal("c-dana", "דנה לוי")],
+        events: Vec::new(),
+        range_failed: vec![("c-itzik".into(), "CAL-SHARED-103".into())],
+        ..Fake::default()
+    };
+    fb_unresolved(&f);
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, person_slots("איציק", Some(tomorrow()))));
+    assert_eq!(card.phase, CardPhase::Error);
+    assert_eq!(card.error_code.as_deref(), Some("CAL-SHARED-103"));
+    assert_eq!(card.title, "אין לי גישה ליומן של איציק");
+    assert_eq!(card.summary, "Outlook לא הגיב בזמן. נסה שוב בעוד רגע");
+    assert!(card.choices.is_empty());
+}
+
 // case 4: nothing resolves
 
 #[test]
@@ -1354,6 +1373,21 @@ fn a_moment_says_which_day_it_is() {
     let dana = Fake { cals: vec![cal("c1", "Dana Levi")], ..itzik_fake() };
     let card = engine_run(&Engine::new(), &dana, "q2", &en);
     assert_eq!(card.title, "Dana's calendar is busy tomorrow at 14:30");
+}
+
+#[test]
+fn a_window_with_little_left_is_still_a_when_question_not_a_yes_or_no() {
+    // now is Wednesday 12:00: of 11:00-13:00 only the last hour is ahead, yet it was asked as a
+    // two-hour stretch, so the answer lists the free time instead of judging one hour
+    let f = Fake {
+        cals: vec![primary("c-me", "היומן שלי"), cal("c-itzik", "איציק כהן")],
+        events: vec![event("t1", "סיכום", at(10, 12, 30), 30, BusyStatus::Busy)],
+        ..Fake::default()
+    };
+    let window = TimeSpec { from: at(10, 11, 0), to: at(10, 13, 0), grain: Grain::Range };
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_CHECK_AVAILABILITY, person_slots("איציק", Some(window))));
+    assert_eq!(card.title, "היום 11:00–13:00 יש חלונות פנויים לאיציק");
+    assert_eq!(card.summary, "פנוי: 12:00–12:30");
 }
 
 #[test]

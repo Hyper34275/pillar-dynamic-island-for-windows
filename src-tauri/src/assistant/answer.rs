@@ -361,8 +361,8 @@ pub enum NoAccess {
     NotShared,
     /// The calendar is in Outlook but its owner has not allowed reading it (CAL-SHARED-101).
     NoPermission,
-    /// Outlook, or the calendar, did not answer in time or is busy (CAL-SHARED-104/105,
-    /// OUTLOOK-105/109).
+    /// Outlook, or the calendar, did not answer in time, is busy or could not be read right now
+    /// (CAL-SHARED-103/104/105/109, OUTLOOK-105/109).
     Unreachable,
     /// Classic Outlook is not running or cannot be reached (OUTLOOK-101 and the other OUTLOOK codes).
     OutlookDown,
@@ -376,7 +376,9 @@ impl NoAccess {
             // our own marker for "the name resolved to nobody"
             "OUTLOOK-107" => NoAccess::NotShared,
             "OUTLOOK-104" => NoAccess::NewOutlook,
-            "OUTLOOK-105" | "OUTLOOK-109" | "CAL-SHARED-104" | "CAL-SHARED-105" => NoAccess::Unreachable,
+            // the calendar is in Outlook already (so "add it" is not the advice): its server cannot
+            // be reached or synchronised (103), it is busy (104/105) or the read failed otherwise (109)
+            "OUTLOOK-105" | "OUTLOOK-109" | "CAL-SHARED-103" | "CAL-SHARED-104" | "CAL-SHARED-105" | "CAL-SHARED-109" => NoAccess::Unreachable,
             c if c.starts_with("OUTLOOK-") => NoAccess::OutlookDown,
             "CAL-SHARED-101" => NoAccess::NoPermission,
             _ => NoAccess::NotShared,
@@ -713,6 +715,11 @@ mod tests {
         assert_eq!(NoAccess::from_code("MAIL-109"), NoAccess::NotShared);
         assert_eq!(NoAccess::from_code("CAL-SHARED-101"), NoAccess::NoPermission);
         assert_eq!(NoAccess::from_code("CAL-SHARED-104"), NoAccess::Unreachable);
+        // a calendar that is open in Outlook but whose server is out of reach, or any other read failure
+        assert_eq!(NoAccess::from_code("CAL-SHARED-103"), NoAccess::Unreachable);
+        assert_eq!(NoAccess::from_code("CAL-SHARED-109"), NoAccess::Unreachable);
+        // the folder is gone: adding the calendar again is the fix
+        assert_eq!(NoAccess::from_code("CAL-SHARED-102"), NoAccess::NotShared);
         assert_eq!(NoAccess::from_code("OUTLOOK-101"), NoAccess::OutlookDown);
         assert_eq!(NoAccess::from_code("OUTLOOK-104"), NoAccess::NewOutlook);
         assert_eq!(no_access_hint(NoAccess::NotShared, "OUTLOOK-107", Lang::He), "כדי שאוכל לבדוק, פתח ב-Outlook את היומן הזה (הוסף יומן ← מפנקס הכתובות)");

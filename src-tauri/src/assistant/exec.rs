@@ -703,13 +703,15 @@ fn availability(
 ) -> Outcome {
     let lang = r.lang;
     let multi_day = to - from > Duration::hours(30);
+    // Decided on the window as asked: "היום אחר הצהריים" asked at 17:15 has less than an hour left,
+    // but it is still a "when", not a yes or no about one hour.
+    let specific_time = grain == Grain::Instant || (grain == Grain::Range && to - from <= Duration::hours(1));
     let from = ahead(from, to, grain, r.now);
     let busy_now = avail::overlaps(busy, from.with_timezone(&Utc), to.with_timezone(&Utc));
     let mut slots = if grain == Grain::Instant { Vec::new() } else { avail::free_slots(busy, from, to) };
     if multi_day {
         slots = avail::skip_weekend(slots, from, to);
     }
-    let specific_time = grain == Grain::Instant || (grain == Grain::Range && to - from <= Duration::hours(1));
     let (title, summary) = if specific_time {
         // "האם איציק פנוי מחר ב-15:00": a plain yes or no, what is in the way and what is left of the hour
         let in_the_way: Vec<_> = avail::merge(busy.to_vec())
