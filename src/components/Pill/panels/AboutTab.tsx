@@ -4,12 +4,14 @@ import { fullDate, timeParts } from "../../../lib/dateFormat";
 import { t } from "../../../lib/i18n";
 import { ipc } from "../../../lib/ipc";
 import { color, space, type as typeRoles } from "../../../design/tokens";
+import { YuvalWordmark } from "../../brand/YuvalWordmark";
 
 // The About tab is the one hero screen: the clock and the two values IT reads out over the phone.
 // Their sizes are not roles but multiples of the 4-pt unit (7 x 4 = 28, 10 x 4 = 40, 30 x 4 = 120).
 const HERO_VALUE_SIZE = space[1] * 7;
 const HERO_TIME_SIZE = space[1] * 10;
 const CLOCK_SIZE = space[1] * 30;
+const WORDMARK_HEIGHT = space[1] * 7;
 
 const NONE = "—";
 
@@ -155,6 +157,10 @@ export function AboutView({ computerName, localIpv4, now, onCopy }: AboutViewPro
       <BigValue label={t("about.computer")} value={computerName ?? NONE} copyable={!!computerName} onCopy={onCopy} />
       <Clock now={now} />
       <BigValue label={t("about.ip")} value={localIpv4 ?? NONE} copyable={!!localIpv4} onCopy={onCopy} />
+      {/* the product's signature under the values (assets/brand, wordmark B) */}
+      <div className="flex justify-center" data-brand="wordmark">
+        <YuvalWordmark height={WORDMARK_HEIGHT} tone="aurora" />
+      </div>
     </div>
   );
 }
