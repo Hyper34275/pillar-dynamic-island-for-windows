@@ -42,7 +42,7 @@
   --pick: rgba(255, 255, 255, 0.22);
   --bad: #ff7a6e;
   /* Shadow tuned to the window's margins (40 at the sides, 24 above, 64 below the tallest sheet). */
-  --shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.45), 0 26px 44px -6px rgba(0, 6, 22, 0.55), 0 8px 20px -4px rgba(0, 6, 22, 0.32);
+  --shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.45), 0 26px 44px -6px rgba(0, 6, 22, 0.6), 0 8px 20px -4px rgba(0, 6, 22, 0.24), 0 0 22px -2px rgba(0, 6, 22, 0.24);
 }
 .gl-light {
   --fg: rgba(10, 18, 36, 0.92);
@@ -56,7 +56,7 @@
   --inset: inset 0 0 0 0 transparent;
   --pick: rgba(10, 18, 36, 0.14);
   --bad: #c42b1c;
-  --shadow: 0 0 0 1px rgba(20, 40, 90, 0.07), 0 26px 46px -8px rgba(25, 55, 120, 0.32), 0 8px 20px -4px rgba(25, 55, 120, 0.15);
+  --shadow: 0 0 0 1px rgba(20, 40, 90, 0.07), 0 26px 46px -8px rgba(25, 55, 120, 0.42), 0 8px 20px -4px rgba(25, 55, 120, 0.09), 0 0 22px -2px rgba(25, 55, 120, 0.12);
 }
 
 /* ---- the sheet ---- */
