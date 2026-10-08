@@ -36,8 +36,16 @@ pub mod caps {
     pub const APPS_SEARCH: CapId = CapId("apps.search");
     pub const APPS_LAUNCH: CapId = CapId("apps.launch");
     pub const CALCULATOR_EVALUATE: CapId = CapId("calculator.evaluate");
+    // ---- explicit commands (intent/commands.rs). Every one is a `Confirm`: it is offered as a click. ----
+    pub const WEB_SEARCH: CapId = CapId("web.search");
+    pub const WEB_OPEN: CapId = CapId("web.open");
+    pub const SYSTEM_OPEN_SETTINGS: CapId = CapId("system.open_settings");
+    pub const FOLDERS_OPEN: CapId = CapId("folders.open");
+    pub const NOTES_CREATE: CapId = CapId("notes.create");
+    pub const MAIL_COMPOSE: CapId = CapId("mail.compose");
+    pub const SYSTEM_LOCK: CapId = CapId("system.lock");
 
-    pub const ALL: [CapId; 14] = [
+    pub const ALL: [CapId; 21] = [
         CALENDAR_LIST_EVENTS,
         CALENDAR_SEARCH_EVENTS,
         CALENDAR_CHECK_AVAILABILITY,
@@ -52,6 +60,13 @@ pub mod caps {
         APPS_SEARCH,
         APPS_LAUNCH,
         CALCULATOR_EVALUATE,
+        WEB_SEARCH,
+        WEB_OPEN,
+        SYSTEM_OPEN_SETTINGS,
+        FOLDERS_OPEN,
+        NOTES_CREATE,
+        MAIL_COMPOSE,
+        SYSTEM_LOCK,
     ];
 }
 
@@ -159,6 +174,27 @@ pub struct Slots {
     pub expr: Option<String>,
     /// "אותו", "it", "the first one": refers to the previous turn's results.
     pub refers_back: bool,
+    // ---- explicit commands (`intent/commands.rs`); empty for every other capability ----
+    /// What to search for, write in a note or translate, as typed (quotes stripped).
+    pub query: Option<String>,
+    /// Where a web search goes: "google" | "youtube" | "wikipedia" | "maps" | "waze" | "bing" | "translate".
+    pub engine: Option<String>,
+    /// Translate: the target language code ("en", "iw", ...); `None` = decided by the executor.
+    pub lang_to: Option<String>,
+    /// Translate: the source language code; `None` = automatic detection.
+    pub lang_from: Option<String>,
+    /// A built-in website (a key of `local::system_actions::SITES`).
+    pub site: Option<String>,
+    /// A typed http(s) address, already normalised.
+    pub url: Option<String>,
+    /// A Windows settings page (a key of `local::system_actions::SETTINGS`).
+    pub setting: Option<String>,
+    /// A folder (a key of `local::system_actions::FOLDERS`).
+    pub folder: Option<String>,
+    /// `mail.compose`: the recipient as typed (a name or an address).
+    pub mail_to: Option<String>,
+    /// `mail.compose`: the subject.
+    pub mail_subject: Option<String>,
 }
 
 /// One known name the engine can match against (real data, so nothing is invented).

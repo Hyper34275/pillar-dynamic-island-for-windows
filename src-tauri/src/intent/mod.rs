@@ -17,6 +17,7 @@
 //! - A fresh context turns "ומה ...", "רק ..." and bare dates / names into follow-ups.
 
 pub mod calc;
+pub mod commands;
 pub mod context;
 pub mod dates;
 pub mod entities;
@@ -78,6 +79,7 @@ fn lead_of(a: &[lexicon::Ann]) -> Lead {
 
 /// Understand `text`. Pure and deterministic for a given `now`.
 pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> Interpretation {
+    if let Some(i) = commands::detect(text, ctx, now, known) { return i; }
     let lang = detect_lang(text);
     let last = ctx.last(now.timestamp_millis());
     let text: String = text.chars().take(MAX_QUERY_CHARS).collect();
@@ -461,7 +463,8 @@ pub fn evaluate_expr(expr: &str) -> Result<f64, CalcError> {
 pub fn sensitivity(cap: CapId) -> Sensitivity {
     match cap {
         caps::EMAIL_OPEN | caps::NOTES_OPEN | caps::FILES_OPEN => Sensitivity::Open,
-        caps::APPS_LAUNCH => Sensitivity::Launch,
+        caps::WEB_SEARCH | caps::WEB_OPEN | caps::SYSTEM_OPEN_SETTINGS | caps::FOLDERS_OPEN | caps::NOTES_CREATE | caps::MAIL_COMPOSE => Sensitivity::Open,
+        caps::APPS_LAUNCH | caps::SYSTEM_LOCK => Sensitivity::Launch,
         _ => Sensitivity::Read,
     }
 }
