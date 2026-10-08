@@ -80,8 +80,13 @@ pub struct Lexicon {
     possessive: HashMap<String, &'static str>,
     /// Every first name the name tables know, folded.
     name_set: HashSet<String>,
-    /// Spelling-correction candidates: (form, concept, Zipf prior), grouped by length.
-    typo: HashMap<usize, Vec<(Vec<char>, &'static str, f32)>>,
+    /// Folded name -> the nickname groups it belongs to (indexes into `nick_groups`).
+    nick_index: HashMap<String, Vec<usize>>,
+    /// Folded Hebrew name -> its Latin spellings; folded Latin spelling -> Hebrew names.
+    latin_of: HashMap<String, Vec<String>>,
+    hebrew_of: HashMap<String, Vec<String>>,
+    /// Spelling-correction candidates: (form, concept, Zipf prior), by (length, first letter).
+    typo: HashMap<(usize, char), Vec<(Vec<char>, &'static str, f32)>>,
     /// Multi-word phrases: first word -> (all words, concept), longest first.
     phrases: HashMap<String, Vec<(Vec<String>, &'static str)>>,
     /// Real Hebrew words that sit one edit away from a keyword ("חושב", "קצבים", "הים").
@@ -189,12 +194,12 @@ impl Lexicon {
         let mut dup = Vec::new();
         load_concepts(WORDS, &mut map, &mut dup);
         load_concepts(TIME, &mut map, &mut dup);
-        let mut typo: HashMap<usize, Vec<(Vec<char>, &'static str, f32)>> = HashMap::new();
+        let mut typo: HashMap<(usize, char), Vec<(Vec<char>, &'static str, f32)>> = HashMap::new();
         for (form, concept) in &map {
             let cs: Vec<char> = form.chars().collect();
             if typo_eligible(concept) && cs.len() >= 3 && cs.iter().all(|c| c.is_alphabetic()) {
                 let prior = spell::zipf(form).unwrap_or(0.0);
-                typo.entry(cs.len()).or_default().push((cs, *concept, prior));
+                typo.entry((cs.len(), cs[0])).or_default().push((cs, *concept, prior));
             }
         }
         for list in typo.values_mut() {
@@ -230,8 +235,25 @@ impl Lexicon {
         let not_names = strings(&names["not_names"]).iter().map(|s| fold(s)).collect();
         let nick_groups: Vec<Vec<String>> = nick_groups;
         let name_set = nick_groups.iter().flatten().map(|n| fold(n)).chain(latin.iter().map(|(he, _)| fold(he))).collect();
+        let mut nick_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (gi, g) in nick_groups.iter().enumerate() {
+            for n in g {
+                let e = nick_index.entry(fold(n)).or_default();
+                if !e.contains(&gi) {
+                    e.push(gi);
+                }
+            }
+        }
+        let mut latin_of: HashMap<String, Vec<String>> = HashMap::new();
+        let mut hebrew_of: HashMap<String, Vec<String>> = HashMap::new();
+        for (he, lat) in &latin {
+            latin_of.entry(fold(he)).or_default().extend(lat.iter().cloned());
+            for l in lat {
+                hebrew_of.entry(fold(l)).or_default().push(he.clone());
+            }
+        }
         let possessive = possessive_forms(&map);
-        Lexicon { map, possessive, name_set, typo, phrases, real_words, nick_groups, latin, not_names, dup }
+        Lexicon { map, possessive, name_set, nick_index, latin_of, hebrew_of, typo, phrases, real_words, nick_groups, latin, not_names, dup }
     }
 
     /// A form, or a noun with a possessive ending ("יומני", "קבציו", "פגישותיי").
@@ -297,12 +319,9 @@ impl Lexicon {
             // a stripped proclitic is a guess too
             let extra = if k == 0 { 0.0 } else { 0.25 };
             let max = spell::max_cost(if k == 0 { n } else { norm.chars().count() });
-            for len in n.saturating_sub(2)..=n + 2 {
-                let Some(list) = self.typo.get(&len) else { continue };
+            for (len, first) in (n.saturating_sub(2)..=n + 2).flat_map(|len| spell::first_letters(cs[0]).map(move |f| (len, f))) {
+                let Some(list) = self.typo.get(&(len, first)) else { continue };
                 for (form, concept, prior) in list {
-                    if !spell::first_letter_ok(cs[0], form[0]) {
-                        continue;
-                    }
                     let Some(cost) = spell::weighted(&cs, form, max) else { continue };
                     let cost = cost + extra;
                     // a verb is only corrected for a cheap slip ("תחפס"), never from a name ("הראל"),
@@ -641,29 +660,25 @@ pub fn name_variants(name: &str) -> Vec<String> {
     if name.chars().any(is_he) {
         hebrew.push(folded.clone());
     } else {
-        for (he, lat) in &lex.latin {
-            if lat.iter().any(|l| fold(l) == folded) {
-                hebrew.push(fold(he));
-                add(he.clone(), &mut out);
-            }
+        for he in lex.hebrew_of.get(&folded).into_iter().flatten() {
+            hebrew.push(fold(he));
+            add(he.clone(), &mut out);
         }
     }
     for h in hebrew.clone() {
-        for group in &lex.nick_groups {
-            if group.iter().any(|g| fold(g) == h) {
-                for g in group {
-                    add(g.clone(), &mut out);
-                    if fold(g) != h {
-                        hebrew.push(fold(g));
-                    }
+        for &gi in lex.nick_index.get(&h).into_iter().flatten() {
+            for g in &lex.nick_groups[gi] {
+                add(g.clone(), &mut out);
+                let gf = fold(g);
+                if gf != h {
+                    hebrew.push(gf);
                 }
             }
         }
     }
     for h in hebrew {
-        let known = lex.latin.iter().find(|(he, _)| fold(he) == h);
-        match known {
-            Some((_, lat)) => {
+        match lex.latin_of.get(&h) {
+            Some(lat) => {
                 for l in lat {
                     add(l.clone(), &mut out);
                 }
@@ -682,6 +697,54 @@ mod tests {
     fn lexicon_has_no_duplicate_forms() {
         assert!(get().duplicates().is_empty(), "duplicates: {:?}", get().duplicates());
         assert!(get().form_count() > 400);
+    }
+
+    /// The lexicon is built lazily on the first question (no work at app start). Its cost and size,
+    /// printed with `--nocapture`.
+    #[test]
+    fn build_is_cheap() {
+        let t = std::time::Instant::now();
+        let lex = Lexicon::build();
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let typo: usize = lex.typo.values().map(Vec::len).sum();
+        println!(
+            "lexicon build {ms:.1} ms: {} forms, {} possessive forms, {} spelling candidates, {} phrases",
+            lex.map.len(),
+            lex.possessive.len(),
+            typo,
+            lex.phrases.values().map(Vec::len).sum::<usize>()
+        );
+        assert!(ms < 500.0, "lexicon build took {ms:.1} ms");
+    }
+
+    #[test]
+    fn possessive_and_phrase_forms() {
+        let lex = get();
+        assert_eq!(lex.lookup(&fold("יומני")).map(|h| h.concept), Some("N_CAL"));
+        assert_eq!(lex.lookup(&fold("ביומני")).map(|h| (h.concept, h.prefix)), Some(("N_CAL", "ב".to_string())));
+        assert_eq!(lex.lookup(&fold("פגישותיי")).map(|h| h.concept), Some("N_MEETING"));
+        assert_eq!(lex.lookup(&fold("קבציו")).map(|h| h.concept), Some("N_FILE"));
+        // a verb takes no article: "המספר" is not ה + מ + ספר
+        assert!(lex.lookup(&fold("המספר")).map_or(true, |h| !h.concept.starts_with("V_")));
+        // a two-letter grammar word takes no proclitic other than ו / ש
+        assert!(lex.lookup(&fold("כהן")).is_none());
+        assert_eq!(lex.lookup(&fold("ועל")).map(|h| h.concept), Some("P_ABOUT"));
+        let a = annotate(&super::super::normalize::tokenize("מה יש לי בלוח הזמנים"));
+        assert!(a.iter().any(|t| t.is("N_CAL") && t.hit.as_ref().map_or(false, |h| h.phrase)));
+    }
+
+    #[test]
+    fn spelling_correction_needs_context_for_real_words() {
+        let concepts = |t: &str| -> Vec<&'static str> { annotate(&super::super::normalize::tokenize(t)).iter().map(|a| a.concept()).collect() };
+        // a search with no object: the real word "קצבים" is read as "קבצים"
+        assert!(concepts("תחפש לי קצבים").contains(&"N_FILE"));
+        // the mail is the object, so "קצבים" stays a search word
+        assert!(!concepts("מייל על קצבים").contains(&"N_FILE"));
+        // the sea is not today when a day is already named
+        assert!(!concepts("מה יש לי מחר בים").contains(&"T_TODAY"));
+        // numbers and names are never corrected
+        assert!(concepts("ארבעים ושתיים").iter().all(|c| c.is_empty()));
+        assert_eq!(concepts("מכחה לי מחר")[0], "YESH");
     }
 
     #[test]

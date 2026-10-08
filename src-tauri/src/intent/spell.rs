@@ -144,6 +144,11 @@ pub fn first_letter_ok(a: char, b: char) -> bool {
     a == b || same_pair(a, b, &CONFUSABLE)
 }
 
+/// The first letters a keyword may have when the typed word starts with `c`.
+pub fn first_letters(c: char) -> impl Iterator<Item = char> {
+    std::iter::once(c).chain(CONFUSABLE.iter().filter_map(move |&(x, y)| if x == c { Some(y) } else if y == c { Some(x) } else { None }))
+}
+
 fn table() -> &'static HashMap<String, f32> {
     static T: OnceLock<HashMap<String, f32>> = OnceLock::new();
     T.get_or_init(|| {
