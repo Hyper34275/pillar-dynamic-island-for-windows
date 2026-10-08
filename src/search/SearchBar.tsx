@@ -9,7 +9,7 @@ import {
   GLASS_LIST_ID,
   answerRows,
   defaultSelection,
-  enterActsOnSelection,
+  enterOnSelection,
   glassEntries,
   glassOptionId,
   glassView,
@@ -102,6 +102,8 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
   const [cards, setCards] = useState<Record<string, AssistantCard>>({});
   const [stale, setStale] = useState(false); // typed after a result: the field alone again
   const [selected, setSelected] = useState(-1);
+  // The person chose the selected entry (an arrow key, the pointer); false while it is only the default.
+  const [picked, setPicked] = useState(false);
   const [pendingChoice, setPendingChoice] = useState<string | null>(null);
   const [remember, setRemember] = useState(false);
   const [seed, setSeed] = useState("");
@@ -142,6 +144,7 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
         setCards({});
         setStale(false);
         setSelected(-1);
+        setPicked(false);
         setPendingChoice(null);
         setRemember(false);
         setLiveBackdrop(null);
@@ -253,6 +256,7 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
   // A new result starts with its first row (or the preferred button) selected.
   useEffect(() => {
     setSelected(defaultSelection(entries));
+    setPicked(false);
     setPendingChoice(null);
     setRemember(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -306,11 +310,14 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
       // Over a list the arrows walk it (the question recall is for an empty sheet).
       e.preventDefault();
       setSelected((current) => moveSelection(entries.selectable, current, e.key === "ArrowDown" ? 1 : -1));
+      setPicked(true);
       return;
     }
-    if (glass && !composing && e.key === "Enter" && enterActsOnSelection(view, selected, text)) {
+    const onSelection = glass && !composing && e.key === "Enter" ? enterOnSelection(view, selected, text, picked) : "ask";
+    if (onSelection !== "ask") {
       e.preventDefault();
-      activate(selected);
+      // A held key repeats Enter: only its first press may act, and a command waits to be chosen.
+      if (onSelection === "act" && !e.repeat) activate(selected);
       return;
     }
     const action = keyAction({ key: e.key, isComposing: composing }, text);
@@ -397,7 +404,10 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
         pendingChoice={pendingChoice}
         remember={remember}
         onToggleRemember={() => setRemember((on) => !on)}
-        onSelect={setSelected}
+        onSelect={(index) => {
+          setSelected(index);
+          setPicked(true);
+        }}
         onOpenItem={openItem}
         onChoose={chooseOption}
         onExtend={extendSearch}

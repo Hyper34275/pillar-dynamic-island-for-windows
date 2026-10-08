@@ -9,6 +9,7 @@ import {
   choiceText,
   defaultSelection,
   enterActsOnSelection,
+  enterOnSelection,
   estimateSheetHeight,
   glassEntries,
   glassHeadline,
@@ -295,6 +296,21 @@ describe("selection", () => {
     expect(enterActsOnSelection(ask, 0, "דואר עבודה")).toBe(false); // typed text is a reply: Enter submits it
     expect(enterActsOnSelection({ kind: "typing" }, 0, "x")).toBe(false);
     expect(enterActsOnSelection({ kind: "ready" }, 0, "")).toBe(false);
+  });
+
+  it("a command row is only performed by Enter once it was chosen; a row that just opens something is not held", () => {
+    const command: GlassView = { kind: "answer", card: card({ items: [item("a", { kind: "action" })] }) };
+    expect(enterOnSelection(command, 0, "נעל את המחשב", false)).toBe("hold");
+    expect(enterOnSelection(command, 0, "נעל את המחשב", true)).toBe("act");
+    const plain = answer(true);
+    expect(enterOnSelection(plain, 0, "מה יש לי מחר?", false)).toBe("act");
+    // nothing selected, or not a list: the field's own Enter
+    expect(enterOnSelection(command, -1, "x", false)).toBe("ask");
+    expect(enterOnSelection({ kind: "typing" }, 0, "x", false)).toBe("ask");
+    // a question's default button is taken by Enter while the field is empty, as before
+    const ask: GlassView = { kind: "choices", card: card({ phase: "choices" }) };
+    expect(enterOnSelection(ask, 0, "", false)).toBe("act");
+    expect(enterOnSelection(ask, 0, "דואר עבודה", false)).toBe("ask");
   });
 
   it("option ids are stable for aria-activedescendant", () => {

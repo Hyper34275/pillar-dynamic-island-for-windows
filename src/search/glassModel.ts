@@ -244,6 +244,28 @@ export function enterActsOnSelection(view: GlassView, selected: number, text: st
   return false;
 }
 
+/** What Enter does in the field of the sheet. */
+export type EnterAction =
+  /** Act on the selected row / button. */
+  | "act"
+  /** Nothing: the selected row is a command nobody has chosen yet. */
+  | "hold"
+  /** The field's own Enter (ask the question). */
+  | "ask";
+
+/**
+ * Enter with a selection. The first row is selected when an answer arrives (a default, so the arrows
+ * start somewhere), and an Enter that was meant for the question (a second quick press, a held key)
+ * must not run a command with it: a row that is an `action` (lock the PC, a web search, a new mail)
+ * is performed by Enter only after the person has chosen it (`picked`: an arrow key or the pointer),
+ * or by a click. Rows that only open something keep the quick Enter.
+ */
+export function enterOnSelection(view: GlassView, selected: number, text: string, picked: boolean): EnterAction {
+  if (!enterActsOnSelection(view, selected, text)) return "ask";
+  if (view.kind === "answer" && !picked && answerRows(view.card)[selected]?.kind === "action") return "hold";
+  return "act";
+}
+
 // =============================================================================
 // Height
 // =============================================================================

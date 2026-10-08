@@ -387,13 +387,78 @@ describe("the glass sheet: rows and keys", () => {
     expect(api.openItem).toHaveBeenCalledWith("q1", "e2");
   });
 
-  it("an item that acts (a command) is opened only by that click or Enter, never by arriving", async () => {
-    const api = makeApi(card({ title: "חפש בגוגל", items: [item("a1", { kind: "action", title: "חפש בגוגל: תקציב", time: null, endTime: null, accent: null })] }));
-    mount(api);
-    await ask();
-    expect(api.openItem).not.toHaveBeenCalled();
-    press("Enter");
-    expect(api.openItem).toHaveBeenCalledWith("q1", "a1");
+  describe("an item that acts (a command: lock the PC, a web search, a new mail)", () => {
+    const command = () => makeApi(card({ title: "נעל את המחשב", items: [item("a1", { kind: "action", title: "נעל את המחשב", time: null, endTime: null, accent: null })] }));
+    const moveOver = (el: Element, movement: number) => {
+      const ev = new MouseEvent("mousemove", { bubbles: true });
+      Object.defineProperty(ev, "movementX", { value: movement });
+      act(() => {
+        el.dispatchEvent(ev);
+      });
+    };
+
+    it("never runs by arriving, nor by the Enter that was meant for the question (a second press, a held key)", async () => {
+      const api = command();
+      mount(api);
+      await ask();
+      expect(api.openItem).not.toHaveBeenCalled();
+      expect(selectedRow()).toBe(0); // it is the default selection, shown as in the mock ...
+      const second = press("Enter");
+      expect(api.openItem).not.toHaveBeenCalled(); // ... but a second Enter is not a choice
+      expect(second.defaultPrevented).toBe(true);
+      expect(api.submit).toHaveBeenCalledTimes(1); // and it does not ask the question again either
+      press("Enter", { repeat: true });
+      expect(api.openItem).not.toHaveBeenCalled();
+    });
+
+    it("runs by a click on its row", async () => {
+      const api = command();
+      mount(api);
+      await ask();
+      act(() => (rows()[0] as HTMLElement).click());
+      expect(api.openItem).toHaveBeenCalledWith("q1", "a1");
+    });
+
+    it("runs by Enter once the person has chosen it with an arrow key", async () => {
+      const api = command();
+      mount(api);
+      await ask();
+      press("ArrowDown"); // the only row: the selection stays, but it is now a choice
+      press("Enter");
+      expect(api.openItem).toHaveBeenCalledTimes(1);
+      expect(api.openItem).toHaveBeenCalledWith("q1", "a1");
+    });
+
+    it("runs by Enter after the pointer moved over it, not after a layout-driven mousemove with no movement", async () => {
+      const api = command();
+      mount(api);
+      await ask();
+      moveOver(rows()[0], 0); // the row appeared under a pointer at rest
+      press("Enter");
+      expect(api.openItem).not.toHaveBeenCalled();
+      moveOver(rows()[0], 4);
+      press("Enter");
+      expect(api.openItem).toHaveBeenCalledWith("q1", "a1");
+    });
+
+    it("a held Enter acts once at most, even on a chosen row", async () => {
+      const api = command();
+      mount(api);
+      await ask();
+      press("ArrowDown");
+      press("Enter");
+      press("Enter", { repeat: true });
+      press("Enter", { repeat: true });
+      expect(api.openItem).toHaveBeenCalledTimes(1);
+    });
+
+    it("a row that only opens something still takes the quick Enter", async () => {
+      const api = makeApi();
+      mount(api);
+      await ask();
+      press("Enter");
+      expect(api.openItem).toHaveBeenCalledWith("q1", "e1");
+    });
   });
 
   it("ArrowUp recalls the previous question when there is no list under the field", async () => {

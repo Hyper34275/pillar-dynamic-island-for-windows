@@ -188,6 +188,14 @@ function KindIcon({ kind }: { kind: AssistantItem["kind"] }) {
   }
 }
 
+/**
+ * A real move of the pointer. A row that appears under a pointer at rest also gets a mousemove from
+ * the browser (it follows the layout), with no movement: that must not count as the person choosing it.
+ */
+function pointerMoved(e: { movementX?: number; movementY?: number }): boolean {
+  return !!e.movementX || !!e.movementY;
+}
+
 /** The tile colour of a row: the calendar's own colour, a neutral one for what has none. */
 const EVENT_ACCENT = "#0A84FF";
 function rowAccent(item: AssistantItem): string | null {
@@ -539,7 +547,7 @@ function AnswerBody({ card, selected, onSelect, onOpenItem, onOpenCenter, onExte
                 data-sel={sel ? "" : undefined}
                 data-openable="on"
                 aria-label={item.kind === "action" ? [item.title, card.title].filter(Boolean).join(". ") : ss("openItem", locale, { title: item.title })}
-                onMouseMove={() => !sel && onSelect(i)}
+                onMouseMove={(e) => pointerMoved(e) && onSelect(i)}
                 onClick={() => onOpenItem(card, item)}
               >
                 {inner}
@@ -595,7 +603,7 @@ function ChoicesBody({ card, selected, pendingChoice: pending, remember, onToggl
               data-sel={sel ? "" : undefined}
               data-preferred={choice.preferred ? "" : undefined}
               disabled={pending !== null}
-              onMouseMove={() => !sel && onSelect(i)}
+              onMouseMove={(e) => pointerMoved(e) && onSelect(i)}
               onClick={() => {
                 // "Remember" is about mailboxes; a plain option is a one-off answer.
                 void onChoose(card, choice, remember && choice.kind !== "option");
