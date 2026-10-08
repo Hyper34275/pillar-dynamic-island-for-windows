@@ -968,16 +968,21 @@ impl Supervisor {
             let _ = reply.send(Err(SourceError::new(ErrKind::Failed, code, "calendar not connected")));
             return true;
         }
+        let search = window.search;
         match self.run_fetch(window) {
             Outcome::Shutdown => return false,
             Outcome::Done(result) => {
                 let _ = reply.send(result);
             }
             Outcome::TimedOut => {
-                // Same as a hung sync: abandon that worker, the machine counts it.
+                // Same as a hung sync: abandon that worker and leave the calendar it was reading
+                // out for a while, so repeating the question does not wait the watchdog again.
                 self.drop_worker(false);
+                if outlook::quarantine_reading_source() {
+                    dlog!("WARN", "calendar", "CAL-SHARED-104 a calendar did not answer; skipped for a while");
+                }
                 let now = self.now();
-                self.machine.on_timeout(&now);
+                on_range_timeout(&mut self.machine, &now, search);
                 dlog!("ERROR", "calendar", "OUTLOOK-109 watchdog: range read did not answer in {}ms", WATCHDOG_MS);
                 let _ = reply.send(Err(SourceError::new(ErrKind::Busy, "OUTLOOK-109", "watchdog")));
             }
@@ -1196,10 +1201,23 @@ pub async fn calendar_get_range(from_utc: String, to_utc: String) -> Result<Vec<
 /// Longest stretch smart search may read in one call.
 pub const MAX_QUERY_DAYS: i64 = 31;
 
+/// Slack on [`MAX_QUERY_DAYS`] for a DST change: a calendar month that ends an hour later in local
+/// time (Israel in October) is 31 days + 1 h of real time.
+const QUERY_DST_SLACK_HOURS: i64 = 2;
+
+/// A range read hit the watchdog. The worker is gone either way, but only the island's own range
+/// reads count against the regular sync (the island shows them); a smart search read is the
+/// user's question, so it must not push the island's calendar into backoff or "unresponsive".
+fn on_range_timeout(machine: &mut Machine, now: &Now, search: bool) {
+    if !search {
+        machine.on_timeout(now);
+    }
+}
+
 /// Split `[from, to)` into consecutive chunks of at most [`MAX_RANGE_DAYS`] (fixed 24 h days in
 /// UTC, so a DST change inside the range never shifts a boundary). Pure.
 pub fn chunk_range(from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<(DateTime<Utc>, DateTime<Utc>)>, String> {
-    if to <= from || to - from > ChronoDuration::days(MAX_QUERY_DAYS) {
+    if to <= from || to - from > ChronoDuration::days(MAX_QUERY_DAYS) + ChronoDuration::hours(QUERY_DST_SLACK_HOURS) {
         return Err("OUTLOOK-108: invalid range".into());
     }
     let step = ChronoDuration::days(MAX_RANGE_DAYS);
@@ -1774,6 +1792,19 @@ mod tests {
     }
 
     #[test]
+    fn a_search_range_timeout_leaves_the_regular_sync_state_alone() {
+        let mut m = Machine::new(None);
+        let before = (m.status(), m.error_code(), m.abandoned(), m.fail_attempts, m.fetch_not_before);
+        for i in 0..(MAX_ABANDONED + 2) {
+            on_range_timeout(&mut m, &at(i as u64 * 1_000), true);
+        }
+        assert_eq!(before, (m.status(), m.error_code(), m.abandoned(), m.fail_attempts, m.fetch_not_before));
+        // The island's own range reads still count, as before.
+        on_range_timeout(&mut m, &at(50_000), false);
+        assert_eq!((m.status(), m.abandoned()), (CalendarStatus::Unresponsive, 1));
+    }
+
+    #[test]
     fn refresh_fetches_now_but_is_rate_limited() {
         let mut m = Machine::new(None);
         m.on_fetch_started(&at(0));
@@ -1926,9 +1957,20 @@ mod tests {
         assert_eq!(chunk_range(from, from + ChronoDuration::days(14)).unwrap().len(), 2);
         assert_eq!(chunk_range(from, from + ChronoDuration::hours(1)).unwrap().len(), 1);
         assert_eq!(chunk_range(from, from + ChronoDuration::days(31)).unwrap().len(), 5);
-        assert_eq!(chunk_range(from, from + ChronoDuration::days(31) + ChronoDuration::seconds(1)), Err("OUTLOOK-108: invalid range".into()));
+        assert_eq!(chunk_range(from, from + ChronoDuration::days(31) + ChronoDuration::hours(2) + ChronoDuration::seconds(1)), Err("OUTLOOK-108: invalid range".into()));
         assert_eq!(chunk_range(from, from), Err("OUTLOOK-108: invalid range".into()));
         assert_eq!(chunk_range(from, from - ChronoDuration::days(1)), Err("OUTLOOK-108: invalid range".into()));
+    }
+
+    #[test]
+    fn a_whole_october_month_in_israel_is_accepted_when_dst_ends_inside_it() {
+        // 2026-10-01 00:00+03:00 .. 2026-11-01 00:00+02:00 (fixed offsets): 31 days + 1 h.
+        let from = chrono::DateTime::parse_from_rfc3339("2026-10-01T00:00:00+03:00").unwrap().with_timezone(&Utc);
+        let to = chrono::DateTime::parse_from_rfc3339("2026-11-01T00:00:00+02:00").unwrap().with_timezone(&Utc);
+        assert_eq!(to - from, ChronoDuration::days(31) + ChronoDuration::hours(1));
+        let chunks = chunk_range(from, to).unwrap();
+        assert_eq!(chunks[0].0, from);
+        assert_eq!(chunks.last().unwrap().1, to);
     }
 
     #[test]
