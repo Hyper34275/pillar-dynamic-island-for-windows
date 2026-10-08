@@ -262,6 +262,7 @@ fn run_cap(r: &Run, interp: &Interpretation, cap: CapId) -> Outcome {
         caps::CALCULATOR_EVALUATE => calc(r, interp),
         caps::EMAIL_OPEN | caps::NOTES_OPEN | caps::FILES_OPEN | caps::APPS_LAUNCH => confirm(r, interp, cap),
         c if super::actions::handles(c) => super::actions::build(r, interp, c),
+        c if super::talk::handles(c) => super::talk::build(r, c),
         _ => execute(r, &Interpretation { decision: Decision::NoMatch, ..interp.clone() }),
     }
 }

@@ -363,7 +363,9 @@ impl Engine {
     ) -> AssistantCard {
         {
             let mut session = lock(&self.session);
-            if let Some(i) = interp.filter(|i| i.decision != Decision::NoMatch) {
+            // small talk and help are no thread to continue: "ומה לגבי מחר?" after a "תודה" still follows the question before it
+            let small_talk = |i: &Interpretation| matches!(i.decision, Decision::Execute { cap } if intent::caps::is_talk(cap));
+            if let Some(i) = interp.filter(|i| i.decision != Decision::NoMatch && !small_talk(i)) {
                 session.ctx.remember(i, now_ms);
             }
             if let Some(plan) = outcome.used_plan.clone() {

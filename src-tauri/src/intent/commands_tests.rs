@@ -558,8 +558,7 @@ const NOT_COMMANDS: &[&str] = &[
     "תנעל את הדלת",
     "פתח רשת",
     "מה השעה",
-    "שלום",
-    "hello",
+    // ("שלום" and "hello" are small talk now: see TALK below)
     "תפתח",
     "google drive",
     "גוגל מפות",
@@ -1307,5 +1306,408 @@ fn web_topics_are_for_questions_not_for_finding_documents() {
     // a request to find something is a search of this PC, whatever it says
     for t in ["תחפש את תחזית המכירות", "תמצא את הדוח על המניות", "find the exchange rate report"] {
         assert_ne!(run(t).decision, Decision::NoMatch, "{t}");
+    }
+}
+
+// ---- talking to the assistant: help, greetings, thanks, "who are you" ------------------------------
+
+const HELP: CapId = caps::ASSISTANT_HELP;
+const HELLO: CapId = caps::ASSISTANT_HELLO;
+const THANKS: CapId = caps::ASSISTANT_THANKS;
+const ABOUT: CapId = caps::ASSISTANT_ABOUT;
+
+/// (text, capability): sentences that are entirely small talk or a question about the assistant.
+const TALK: &[(&str, CapId)] = &[
+    // ---- help, Hebrew (masculine and feminine; with and without "?", "בבקשה", "לי") ----
+    ("מה אתה יודע לעשות", HELP),
+    ("מה אתה יודע לעשות?", HELP),
+    ("מה את יודעת לעשות", HELP),
+    ("מה את יודעת לעשות?", HELP),
+    ("מה אתה יכול לעשות", HELP),
+    ("מה את יכולה לעשות", HELP),
+    ("מה אתה יכול לעשות לי", HELP),
+    ("מה אתה יודע לעשות בשבילי", HELP),
+    ("מה אתה יודע לעשות בבקשה", HELP),
+    ("בבקשה, מה אתה יכול לעשות?", HELP),
+    ("מה אתה מסוגל לעשות", HELP),
+    ("מה את מסוגלת לעשות", HELP),
+    ("מה אתה יודע", HELP),
+    ("מה אתה עושה", HELP),
+    ("מה אפשר לעשות", HELP),
+    ("מה אפשר לעשות איתך?", HELP),
+    ("מה אפשר לשאול", HELP),
+    ("מה אפשר לשאול אותך?", HELP),
+    ("מה אפשר לבקש ממך", HELP),
+    ("מה אני יכול לשאול", HELP),
+    ("מה אני יכולה לשאול אותך", HELP),
+    ("מה אני יכולה לבקש ממך?", HELP),
+    ("במה אתה יכול לעזור", HELP),
+    ("במה את יכולה לעזור?", HELP),
+    ("במה אתה יכול לעזור לי", HELP),
+    ("איך אתה יכול לעזור לי?", HELP),
+    ("איך משתמשים בך", HELP),
+    ("איך משתמשים בך?", HELP),
+    ("איך משתמשים בזה", HELP),
+    ("איך אני משתמש בך", HELP),
+    ("איך אני משתמשת בך?", HELP),
+    ("איך להשתמש בך", HELP),
+    ("איך אפשר להשתמש בזה", HELP),
+    ("איך זה עובד", HELP),
+    ("איך אתה עובד?", HELP),
+    ("עזרה", HELP),
+    ("עזרה בבקשה", HELP),
+    ("עזור לי", HELP),
+    ("תעזור לי", HELP),
+    ("תעזרי לי בבקשה", HELP),
+    ("אני צריך עזרה", HELP),
+    ("אני צריכה עזרה", HELP),
+    ("מה הפקודות", HELP),
+    ("רשימת פקודות", HELP),
+    ("אילו פקודות אתה מכיר", HELP),
+    ("הוראות שימוש", HELP),
+    ("היי, מה אתה יודע לעשות?", HELP),
+    ("שלום מה אתה יכול לעשות", HELP),
+    ("תגיד, מה אתה יודע לעשות בכלל?", HELP),
+    ("היי יובל מה אתה יכול לעשות", HELP),
+    ("יובל, מה אתה יודע לעשות?", HELP),
+    // ---- help, English ----
+    ("help", HELP),
+    ("Help", HELP),
+    ("HELP!", HELP),
+    ("help me", HELP),
+    ("help please", HELP),
+    ("please help", HELP),
+    ("can you help me", HELP),
+    ("what can you do", HELP),
+    ("What can you do?", HELP),
+    ("what can you do for me", HELP),
+    ("what do you do", HELP),
+    ("what do you know", HELP),
+    ("what are you able to do", HELP),
+    ("what can I ask", HELP),
+    ("What can I ask you?", HELP),
+    ("what can I say", HELP),
+    ("how do I use this", HELP),
+    ("How do I use this?", HELP),
+    ("how do I use you", HELP),
+    ("how does this work", HELP),
+    ("show me what you can do", HELP),
+    ("tell me what you can do", HELP),
+    ("hi, what can you do?", HELP),
+    ("hey Yuval, what can you do?", HELP),
+    // ---- greetings ----
+    ("שלום", HELLO),
+    ("שלום!", HELLO),
+    ("שלום שלום", HELLO),
+    ("היי", HELLO),
+    ("היי!", HELLO),
+    ("הי", HELLO),
+    ("הי!", HELLO),
+    ("אהלן", HELLO),
+    ("הלו", HELLO),
+    ("בוקר טוב", HELLO),
+    ("בוקר טוב!", HELLO),
+    ("ערב טוב", HELLO),
+    ("צהריים טובים", HELLO),
+    ("לילה טוב", HELLO),
+    ("שלום יובל", HELLO),
+    ("היי יובל", HELLO),
+    ("hi", HELLO),
+    ("Hi!", HELLO),
+    ("hello", HELLO),
+    ("Hello!", HELLO),
+    ("hey", HELLO),
+    ("hi there", HELLO),
+    ("good morning", HELLO),
+    ("good evening", HELLO),
+    ("hello Yuval", HELLO),
+    ("hey Yuval", HELLO),
+    // ---- thanks ----
+    ("תודה", THANKS),
+    ("תודה!", THANKS),
+    ("תודה רבה", THANKS),
+    ("תודה רבה לך", THANKS),
+    ("תודה על העזרה", THANKS),
+    ("מעולה תודה", THANKS),
+    ("תודה יובל", THANKS),
+    ("אלף תודות", THANKS),
+    ("thanks", THANKS),
+    ("Thanks!", THANKS),
+    ("thank you", THANKS),
+    ("thank you so much", THANKS),
+    ("thanks a lot", THANKS),
+    ("thx", THANKS),
+    ("thanks Yuval", THANKS),
+    ("thanks for the help", THANKS),
+    ("ok thanks", THANKS),
+    // ---- who are you ----
+    ("מי אתה", ABOUT),
+    ("מי אתה?", ABOUT),
+    ("מי את", ABOUT),
+    ("מי אתה בעצם", ABOUT),
+    ("מה אתה", ABOUT),
+    ("ספר לי על עצמך", ABOUT),
+    ("תספרי לי על עצמך", ABOUT),
+    ("תציג את עצמך", ABOUT),
+    ("מה שמך", ABOUT),
+    ("מה השם שלך", ABOUT),
+    ("איך קוראים לך", ABOUT),
+    ("who are you", ABOUT),
+    ("Who are you?", ABOUT),
+    ("what are you", ABOUT),
+    ("what's your name", ABOUT),
+    ("tell me about yourself", ABOUT),
+    ("introduce yourself", ABOUT),
+];
+
+fn is_talk(i: &Interpretation) -> bool {
+    matches!(i.decision, Decision::Execute { cap } if caps::is_talk(cap))
+}
+
+#[test]
+fn help_and_small_talk_are_understood() {
+    let mut errors = Vec::new();
+    for (text, cap) in TALK {
+        let i = run(text);
+        if i.decision != (Decision::Execute { cap: *cap }) {
+            errors.push(format!("{text:?}: decision {:?} (wanted Execute {})", i.decision, cap.as_str()));
+            continue;
+        }
+        // read-only, nothing extracted, in the language it was typed in
+        if i.slots != Slots::default() || i.follow_up || i.lang != detect_lang(text) || i.ranked != vec![(*cap, 1.0)] || i.confidence < 0.9 {
+            errors.push(format!("{text:?}: {i:?}"));
+        }
+        assert_eq!(crate::intent::sensitivity(*cap), Sensitivity::Read, "{text}");
+    }
+    finish(errors);
+}
+
+#[test]
+fn the_corpus_of_talk_phrasings_is_large_enough() {
+    let count = |cap: CapId| TALK.iter().filter(|(_, c)| *c == cap).count();
+    assert!(count(HELP) >= 40, "help phrasings: {}", count(HELP));
+    assert!(count(HELLO) >= 20, "greetings: {}", count(HELLO));
+    assert!(count(THANKS) >= 12, "thanks: {}", count(THANKS));
+    assert!(count(ABOUT) >= 12, "who-are-you: {}", count(ABOUT));
+    let hebrew = TALK.iter().filter(|(t, _)| detect_lang(t) == Lang::He).count();
+    assert!(hebrew >= 80 && TALK.len() - hebrew >= 40, "Hebrew {hebrew} of {}", TALK.len());
+}
+
+#[test]
+fn a_question_mark_a_please_or_a_greeting_does_not_change_the_answer() {
+    let mut errors = Vec::new();
+    for (text, cap) in TALK {
+        let he = detect_lang(text) == Lang::He;
+        let polite = if he { format!("{text} בבקשה") } else { format!("{text} please") };
+        for variant in [format!("{text}?"), format!("{text}!"), format!(" {text} "), format!("{text}."), polite, format!("{text}\u{200F}")] {
+            let i = run(&variant);
+            if i.decision != (Decision::Execute { cap: *cap }) {
+                errors.push(format!("{variant:?}: {:?} (wanted {})", i.decision, cap.as_str()));
+            }
+        }
+        if *cap != HELLO {
+            let greeting = if he { format!("היי, {text}") } else { format!("hi, {text}") };
+            let i = run(&greeting);
+            if i.decision != (Decision::Execute { cap: *cap }) {
+                errors.push(format!("{greeting:?}: {:?} (wanted {})", i.decision, cap.as_str()));
+            }
+        }
+    }
+    finish(errors);
+}
+
+/// Texts that look like small talk but ask for something: they keep the normal engine's decision.
+const NOT_TALK: &[&str] = &[
+    "מה יש לי היום",
+    "מה יש לי",
+    "מה יש לי מחר",
+    "תעזור לי למצוא את הקובץ של התקציב",
+    "תעזור לי לחפש מייל מדני",
+    "שלום מדני",
+    "שלום, מה יש לי מחר",
+    "היי מה יש לי מחר",
+    "help desk ticket",
+    "help desk",
+    "help me find the budget file",
+    "help with excel",
+    "help.txt",
+    "עזרה עם המייל",
+    "עזרה בהגדרות",
+    "תודה על המייל",
+    "תודה רבה על המייל",
+    "המייל של תודה",
+    "thanks for the file",
+    "thank you email from Dana",
+    "מה אתה יודע על התקציב",
+    "מה יודע דני",
+    "מה אפשר לעשות בקובץ",
+    "מה אתה מחפש",
+    "מי זה דני",
+    "מי אתה חושב שאתה",
+    "אתה יודע לעשות משהו?",
+    "what do you do tomorrow",
+    "what can you do about the budget",
+    "who are you calling",
+    "who is Dana",
+    "how do I use excel",
+    "how do I get to the airport",
+    "hello world",
+    "hello.txt",
+    "hi-fi",
+    "good morning email",
+    "המייל האחרון מדני",
+    "תחפש בגוגל עזרה",
+    "search google for help",
+    "תרשום פתק: תודה",
+    "תכתוב מייל לדני תודה",
+    "open help",
+    "פתח עזרה",
+    "מה נשמע אצל דני",
+    "יובל",
+    "מיובל",
+    "המייל מיובל",
+    "תחפש את יובל",
+    "מה יש ליובל מחר",
+    "שלום אני רוצה לדעת מה יש לי מחר ביומן ומי שלח לי מייל",
+];
+
+#[test]
+fn real_requests_are_not_taken_for_small_talk() {
+    let mut errors = Vec::new();
+    for text in NOT_TALK {
+        let i = run(text);
+        if is_talk(&i) {
+            errors.push(format!("{text:?}: became {:?}", i.decision));
+        }
+        if let Some(d) = detect(text, &Ctx::default(), now(), &Known::default()) {
+            if is_talk(&d) {
+                errors.push(format!("{text:?}: detect gave {:?}", d.decision));
+            }
+        }
+    }
+    finish(errors);
+}
+
+#[test]
+fn the_requests_next_to_small_talk_keep_the_decision_they_had() {
+    let d = |t: &str| run(t).decision;
+    assert_eq!(d("מה יש לי היום"), Decision::Execute { cap: caps::CALENDAR_LIST_EVENTS });
+    assert_eq!(d("היי מה יש לי מחר"), Decision::Execute { cap: caps::CALENDAR_LIST_EVENTS });
+    assert_eq!(d("תעזור לי למצוא את הקובץ של התקציב"), Decision::Execute { cap: caps::FILES_SEARCH });
+    assert_eq!(d("help me find the budget file"), Decision::Execute { cap: caps::FILES_SEARCH });
+    assert_eq!(d("המייל האחרון מדני"), Decision::Execute { cap: caps::EMAIL_SEARCH });
+    // a greeting followed by a name is, for the engine, what it always was
+    assert_eq!(d("שלום מדני"), Decision::NoMatch);
+    assert_eq!(d("help desk ticket"), Decision::NoMatch);
+    assert_eq!(d("תודה על המייל"), Decision::NoMatch);
+    // the commands keep their words
+    assert_eq!(d("תחפש בגוגל עזרה"), Decision::Confirm { cap: caps::WEB_SEARCH });
+    assert_eq!(d("search google for help"), Decision::Confirm { cap: caps::WEB_SEARCH });
+    assert_eq!(d("תרשום פתק: תודה"), Decision::Confirm { cap: caps::NOTES_CREATE });
+    assert_eq!(d("תפתח את ynet"), Decision::Confirm { cap: caps::WEB_OPEN });
+}
+
+#[test]
+fn what_can_you_do_is_not_a_question_about_a_date() {
+    // the screenshot: "מה אתה יודע לעשות" used to ask "לאיזה תאריך התכוונת?"
+    for t in ["מה אתה יודע לעשות", "מה אתה יכול לעשות", "מה את יודעת לעשות", "מה אפשר לעשות", "מה אתה עושה", "מה אתה יודע לעשות?"] {
+        let i = interpret(t, &Ctx::default(), now(), &Known::default());
+        assert_eq!(i.decision, Decision::Execute { cap: caps::ASSISTANT_HELP }, "{t}");
+        assert!(!matches!(i.decision, Decision::Clarify { ask: AskKind::Date, .. }), "{t}");
+        assert!(i.slots.time.is_none() && i.slots.terms.is_empty(), "{t}");
+    }
+    // the same words with a day are still a question about that day
+    for t in ["מה לעשות היום", "מה אפשר לעשות מחר"] {
+        assert_eq!(run(t).decision, Decision::Execute { cap: caps::CALENDAR_LIST_EVENTS }, "{t}");
+    }
+}
+
+#[test]
+fn the_answer_to_a_question_comes_before_small_talk() {
+    // "שלום" after "מה לתרגם?" is the text to translate, "עזרה" after "מה לחפש?" is the search
+    for (ask, answer, cap, query) in [
+        ("תחפש בגוגל", "עזרה", caps::WEB_SEARCH, "עזרה"),
+        ("תחפש בגוגל", "help", caps::WEB_SEARCH, "help"),
+        ("תתרגם", "תודה", caps::WEB_SEARCH, "תודה"),
+        ("תתרגם", "שלום", caps::WEB_SEARCH, "שלום"),
+        ("תרשום פתק", "תודה", caps::NOTES_CREATE, "תודה"),
+        ("take a note", "hello", caps::NOTES_CREATE, "hello"),
+    ] {
+        let (ctx, later) = remembered(ask);
+        let i = interpret(answer, &ctx, later, &Known::default());
+        assert_eq!(i.decision, Decision::Confirm { cap }, "{ask} -> {answer}");
+        assert_eq!(i.slots.query.as_deref(), Some(query), "{ask} -> {answer}");
+        assert!(i.follow_up);
+    }
+    // nobody is waiting for an answer any more: it is small talk again
+    let (ctx, _) = remembered("תחפש בגוגל");
+    let late = now() + chrono::Duration::seconds(300);
+    assert_eq!(interpret("עזרה", &ctx, late, &Known::default()).decision, Decision::Execute { cap: HELP });
+    // and a question that is not a command's does not turn small talk into an answer
+    let (ctx, later) = remembered("מה יש לי מחר");
+    assert_eq!(interpret("תודה", &ctx, later, &Known::default()).decision, Decision::Execute { cap: THANKS });
+}
+
+#[test]
+fn braces_in_the_lexicon_expand_to_every_combination() {
+    assert_eq!(expand("מה {אתה|את} {יודע|יודעת}"), vec!["מה אתה יודע", "מה אתה יודעת", "מה את יודע", "מה את יודעת"]);
+    assert_eq!(expand("{אני|} צריך עזרה"), vec!["אני צריך עזרה", " צריך עזרה"]);
+    assert_eq!(expand("help"), vec!["help"]);
+    // an unclosed brace is left as it is, never a panic
+    assert_eq!(expand("a {b|c"), vec!["a {b|c"]);
+    assert_eq!(expand("}{"), vec!["}{"]);
+    assert_eq!(expand(""), vec![""]);
+}
+
+#[test]
+fn every_talk_phrase_is_reachable_unique_and_no_command() {
+    let l = lex();
+    let mut seen: HashMap<String, &str> = HashMap::new();
+    for (list, cap) in [("talk_help", HELP), ("talk_about", ABOUT), ("talk_thanks", THANKS), ("talk_hello", HELLO)] {
+        let phrases = &l.lists[list];
+        assert!(phrases.len() >= 40, "{list}: {} phrases", phrases.len());
+        for p in phrases {
+            let joined = p.join(" ");
+            assert!(p.len() <= MAX_TALK_WORDS, "{list}: {joined:?} is longer than a sentence of small talk may be");
+            // one meaning per phrase
+            if let Some(prev) = seen.insert(joined.clone(), list) {
+                assert_eq!(prev, list, "{joined:?} is in both {prev} and {list}");
+            }
+            // the sentence reaches its capability...
+            assert_eq!(l.talk(&joined), Some(cap), "{list}: {joined:?}");
+            // ...and is never the grammar of a command
+            assert!(l.parse(&joined).is_none(), "{list}: {joined:?} is also a command");
+        }
+    }
+    // the filler words are not phrases of their own
+    for w in ["לי", "בבקשה", "please", "אז"] {
+        assert!(l.talk(w).is_none(), "{w}");
+    }
+}
+
+#[test]
+fn small_talk_is_whole_sentences_only() {
+    let l = lex();
+    // too long, empty, or only the name / a symbol: nothing
+    assert!(l.talk("").is_none() && l.talk("   ").is_none() && l.talk("???").is_none() && l.talk("יובל").is_none() && l.talk("yuval").is_none());
+    assert!(l.talk("שלום ".repeat(12).trim()).is_none());
+    assert_eq!(l.talk("שלום"), Some(HELLO));
+    // one extra word of substance and it is a request
+    for t in ["שלום דנה", "שלום לכולם שלי", "עזרה ביומן", "תודה תקציב", "help budget", "thanks Dana", "hello Dana"] {
+        assert!(l.talk(t).is_none(), "{t}");
+    }
+}
+
+#[test]
+fn talk_detection_is_fast_and_never_panics() {
+    let start = std::time::Instant::now();
+    for _ in 0..300 {
+        for t in ["מה יש לי ביומן מחר", "תחפש את המייל האחרון מדני עם המילה תקציב", "שלום", "מה אתה יודע לעשות", "help desk ticket"] {
+            let _ = detect(t, &Ctx::default(), now(), &Known::default());
+        }
+    }
+    assert!(start.elapsed() < std::time::Duration::from_secs(3), "{:?}", start.elapsed());
+    for t in ["\u{202E}שלום\u{0000}", "שלום\n\nתודה", "ש", "'", "\"\"", "{|}", "מה {אתה|את}", &"עזרה ".repeat(300)] {
+        let _ = run(t);
     }
 }

@@ -42,6 +42,48 @@
   "generic_engines": ["רשת","internet","the internet","web","the web","net","the net","online","אונליין","מפה","מפות","map","maps"],
   "no_offer_verbs": ["תמחק","מחק","תמחקי","למחוק","שלח","תשלח","תשלחי","שלחי","תבטל","בטל","תבטלי","לבטל","תזיז","תזיזי","הזיז","העבר","תעביר","תעבירי","תדחה","דחה","תעדכן","עדכן","תענה","תעני","תקבע","קבע","תזמין","הזמן","delete","remove","erase","cancel","send","forward","reply","move","reschedule","shutdown","restart","format","wipe","book","reserve","edit","rename","postpone","install","uninstall","download","הורד","תוריד","התקן","תתקין","kill","תהרוג"],
 
+  "talk_noise": ["בבקשה","נא","אנא","please","pls","plz","kindly","לי","בשבילי","בעצם","בכלל","באמת","ממש","אז","נו","רגע","טוב","אוקיי","okay","ok","so","well","just","actually","really","then","hey","hi","hello","yo","היי","הי","שלום","אהלן","הלו","תגיד","תגידי","תגידו","מעולה","יופי","יפה","אחלה","סבבה","מצוין","מושלם","great","perfect","cool","nice","awesome","אחי","אחותי","חביבי"],
+  "talk_help": [
+    "עזרה","תעזור","תעזרי","עזור","עזרי","עזרו","תעזור לי","תעזרי לי","עזור לי","עזרי לי","עזרו לי","תעזרו לי",
+    "{אני|} {צריך|צריכה|זקוק|זקוקה} עזרה","{אני|} {צריך|צריכה|זקוק|זקוקה} עזרה ממך","אפשר עזרה","אפשר לקבל עזרה",
+    "מה {אתה|את} {יודע|יודעת}","מה {אתה|את} {יודע|יודעת} לעשות","מה {אתה|את} {יכול|יכולה}","מה {אתה|את} {יכול|יכולה} לעשות","מה {אתה|את} {מסוגל|מסוגלת}","מה {אתה|את} {מסוגל|מסוגלת} לעשות",
+    "מה {אתה|את} עושה","מה {אתה|את} מכיר","מה {אתה|את} {יכול|יכולה} לעשות בשבילנו","מה {אתה|את} {יודע|יודעת} לעשות בשבילנו",
+    "מה אפשר לעשות","מה אפשר לעשות איתך","מה אפשר לעשות כאן","מה אפשר לעשות פה","מה אפשר לעשות עם זה","מה אפשר לעשות איתך בכלל",
+    "מה אפשר לשאול","מה אפשר לשאול אותך","מה אפשר לבקש","מה אפשר לבקש ממך","מה אפשר להגיד","מה אפשר לומר","מה אפשר להגיד לך","מה אפשר לומר לך","מה אפשר לכתוב","מה אפשר לכתוב כאן",
+    "מה {אני|אנחנו} {יכול|יכולה|יכולים} {לשאול|לבקש|לעשות|להגיד|לומר|לכתוב}","מה {אני|אנחנו} {יכול|יכולה|יכולים} {לשאול|לבקש|לעשות|להגיד|לומר} {אותך|ממך|איתך|כאן|פה}",
+    "במה {אתה|את} {יכול|יכולה} לעזור","במה {אתה|את} {יכול|יכולה} לעזור לנו","איך {אתה|את} {יכול|יכולה} לעזור","איך {אתה|את} {יכול|יכולה} לעזור לנו","בשביל מה {אתה|את} {טוב|טובה}","לשם מה {אתה|את} {קיים|קיימת}",
+    "אילו {פקודות|שאלות|דברים|פעולות|יכולות} {אפשר|אני יכול|אני יכולה} {לשאול|לבקש|לעשות|להגיד|לומר|לתת}","אילו פקודות יש","אילו פקודות {אתה|את} {מכיר|מכירה}","אילו שאלות {אתה|את} {מבין|מבינה}","אילו דברים {אתה|את} {יודע|יודעת}","אילו דברים {אתה|את} {יכול|יכולה} לעשות",
+    "מה הפקודות","מה הפקודות שלך","מה הפקודות שיש","רשימת פקודות","רשימת הפקודות","פקודות","הפקודות","מה היכולות","מה היכולות שלך","מה הדברים {שאתה|שאת} {יכול|יכולה} לעשות","מה הדברים {שאתה|שאת} {יודע|יודעת} לעשות","מה הדברים שאפשר לשאול",
+    "איך משתמשים בך","איך משתמשים בזה","איך משתמשים בו","איך משתמשים","איך משתמשים כאן","איך משתמשים באפליקציה","איך משתמשים בחיפוש","איך להשתמש בך","איך להשתמש בזה","איך להשתמש","איך להשתמש בחיפוש",
+    "איך {אני|אנחנו} {משתמש|משתמשת|משתמשים} {בך|בזה|בו|בחיפוש}","איך {אפשר|ניתן} להשתמש {בך|בזה|בו|בחיפוש}","איך {אפשר|ניתן} להשתמש","איך זה עובד","איך החיפוש עובד","איך עובד החיפוש","איך עובד החיפוש החכם","איך {אתה|את} {עובד|עובדת}","איך עובדים איתך","איך עובדים עם זה","איך עובדים עם החיפוש","איך שואלים","איך שואלים אותך","איך אני שואל","איך אני שואלת",
+    "{תסביר|תסבירי} איך {משתמשים|להשתמש} {בך|בזה}","{תסביר|תסבירי} איך זה עובד","{תסביר|תסבירי} {לי|} איך {אני|} {משתמש|משתמשת} {בך|בזה}","הוראות שימוש","מדריך שימוש","מדריך למשתמש",
+    "help","help me","need help","i need help","i need some help","can you help","can you help me","could you help me","get help","show help","show me help","help please","help me please",
+    "commands","list commands","list the commands","show commands","show me the commands","what are the commands","what commands are there","available commands","what commands do you have","what commands do you know",
+    "what can you do","what can you do for me","what can you do for us","what can you help with","what can you help me with","what can you do to help","what can you do here","what else can you do","what do you do","what do you know","what do you know how to do","what do you know to do",
+    "what are you able to do","what are you capable of","what are you good at","what are your abilities","what are your capabilities","what are your features","what features do you have","what can you search","what can you find","what can you search for","what can you look for",
+    "what can i ask","what can i ask you","what can i ask for","what can i say","what can i say to you","what can i type","what can i search","what can i search for","what can i do","what can i do here","what can i do with this","what can i do with you","what should i ask","what should i ask you","what should i say","what should i type",
+    "show me what you can do","tell me what you can do","tell me what you know","tell me what i can ask","tell me what i can do","tell me how to use this","tell me how to use you",
+    "how do i use this","how do i use you","how do i use it","how do i use yuval","how do i use the search","how do i use this search","how to use this","how to use you","how to use it","how to use the search","how can i use you","how can i use this","how can i use it","how can i use the search",
+    "how does this work","how do you work","how does it work","how does the search work","how do i ask","how do i ask you","how should i ask","how should i ask you","how can i ask you","how do i talk to you","how do i talk to this","how do i search","how do i search with this",
+    "explain how to use this","explain how this works","user guide","usage instructions"
+  ],
+  "talk_about": [
+    "מי {אתה|את}","מי {אתה|את} בעצם","מי {אתה|את} ומה {אתה|את} עושה","מי זה {אתה|את}","מה {אתה|את}","מה זה יובל","{ספר|ספרי|תספר|תספרי} לי על עצמך","{ספר|ספרי|תספר|תספרי} על עצמך","{ספר|ספרי|תספר|תספרי} לי עליך","{ספר|ספרי|תספר|תספרי} עליך","{תציג|תציגי|הצג|הצגי} את עצמך","תכיר את עצמך","הכר את עצמך","מה השם שלך","מה שמך","איך קוראים לך","איך אתה נקרא","איך את נקראת","איך לקרוא לך","מי יצר אותך","מי בנה אותך","מי עשה אותך",
+    "who are you","who are you exactly","who is this","who's this","who am i talking to","who am i speaking to","who is yuval","who's yuval","what are you","what are you exactly","what is this","what's this","what is this thing","what is yuval","what's yuval","what is this app","what's this app","what is this assistant",
+    "what's your name","what is your name","tell me about yourself","tell me about you","tell me who you are","tell me what you are","introduce yourself","about you","about yourself","about this assistant","who made you","who built you","who created you"
+  ],
+  "talk_thanks": [
+    "תודה","תודה רבה","תודה רבה לך","תודה לך","תודה ענקית","תודה גדולה","תודה רבה רבה","תודה רבה מאוד","תודה מאוד","תודה מראש","תודה {על העזרה|על הכל|על הכול|על ההסבר|על התשובה|על התשובות|על הסיוע}","תודה רבה {על העזרה|על הכל|על הכול|על ההסבר|על התשובה|על הסיוע}","תודה לך {על העזרה|על הכל|על הכול}","תודה {אחי|אחותי|חבר|חביבי}","תודה {מעולה|יופי|אחלה|סבבה}",
+    "אלף תודות","המון תודה","המון תודות","תודות","תודות רבות","רב תודות","הרבה תודה","הרבה תודות","מעריך את העזרה","מעריכה את העזרה","אני מעריך את זה","אני מעריכה את זה",
+    "thanks","thank you","thank u","thanks a lot","thanks so much","thanks a bunch","thanks a million","thank you so much","thank you very much","thank you a lot","thanks very much","many thanks","thanks again","thank you again","thx","thnx","tnx","ty","tysm","cheers","much appreciated","appreciate it","i appreciate it","i appreciate that","appreciated",
+    "thanks for the help","thanks for your help","thanks for helping","thank you for the help","thank you for your help","thank you for helping","thanks for everything","thank you for everything","thanks for that","thank you for that","thanks for the answer","thank you for the answer"
+  ],
+  "talk_hello": [
+    "שלום","שלום שלום","שלום רב","שלום לך","שלום לכם","שלום וברכה","היי","הי","היי היי","הלו","אהלן","אהלן וסהלן","הייי","היייי",
+    "בוקר טוב","בוקר אור","בוקר טוב לך","בוקר טוב לכולם","צהריים טובים","צהרים טובים","אחר הצהריים טובים","ערב טוב","ערב טוב לכולם","לילה טוב","שבוע טוב","שבת שלום","חג שמח",
+    "hi","hi there","hello","hello there","hey","hey there","hiya","howdy","greetings","good morning","good afternoon","good evening","good night","good day","yo","heya","hola"
+  ],
+
   "engines": {
     "google": ["גוגל","google","גוגל.קום","google.com","ג'וגל","גוגל סרץ'","אינטרנט","רשת","internet","the internet","web","the web","net","the net","online","אונליין"],
     "youtube": ["יוטיוב","יו טיוב","youtube","you tube","יוטוב","יוטיוב.קום","youtube.com"],

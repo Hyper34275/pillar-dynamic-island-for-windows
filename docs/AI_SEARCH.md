@@ -331,7 +331,7 @@ Phases 2-9 are implemented and unit-tested (cargo 474 passed with 6 ignored live
 - The wire shape is unchanged: the item has the new `kind: "action"` (`ItemKind::Action`) in a group of kind `"action"`, and no new field. The Center reads `kind` as a string, so an older Center shows it as information with its "פתח" button; the island's TypeScript accepts it (`ITEM_KINDS`).
 - Shutdown, restart, delete and "send" are not commands at all; "שלח מייל לדנה" stays unrecognised.
 
-### 9.2 Capabilities (`intent::caps`, now 21)
+### 9.2 Capabilities (`intent::caps`, now 25)
 
 | Capability | Sensitivity | Slots (new, all optional) | What the click does |
 |---|---|---|---|
@@ -365,3 +365,12 @@ When nothing is recognised the card keeps its honest message ("אפשר לשאו
 - `local/system_actions.rs`: the tables (engines, sites, settings, folders, languages), URL building and validation, and the effects. `assistant/actions.rs`: the cards, the click (`Action`, kept in the store as `Target::Action`) and the notes saving. `exec.rs`, `flow.rs`, `store.rs`, `wire.rs` and `mod.rs` of `assistant` only gained the hooks (`Sources::run_action`, one arm in `confirm`, one in `Engine::open`).
 - Error codes (family `APP`): APP-050 an address could not be opened, APP-051 a settings page, APP-052 a folder (missing on this PC or could not open), APP-053 locking, APP-054 a note (empty or the list is full). Text typed by the user is never logged.
 - Not verifiable on the dev machine: the Outlook new-message window on an Exchange profile, `LockWorkStation` and the settings pages on a real Windows 10 22H2 PC (the table is checked against the documentation, not on a device).
+
+### 9.6 Help and small talk
+
+A sentence that is entirely "מה אתה יודע לעשות" / "help" (also "מה אפשר לשאול", "במה אתה יכול לעזור", "איך משתמשים בך", "עזרה", "what can you do", "how do I use this", masculine and feminine, with or without "?", "בבקשה", "לי", a greeting in front), a greeting ("שלום", "היי", "בוקר טוב", "hello"), thanks ("תודה", "thanks") or "מי אתה" / "what are you" is answered from fixed text by four read-only capabilities: `assistant.help`, `assistant.hello`, `assistant.thanks`, `assistant.about`. They are `Decision::Execute` (sensitivity `Read`, nothing to click) and touch no data source.
+
+- Recognition: `Lex::talk` in `intent/commands.rs`, words in `commands.json` (`talk_help`, `talk_hello`, `talk_thanks`, `talk_about`, `talk_noise`; `{a|b}` in a phrase expands to every combination, so one entry covers masculine and feminine). It runs after the commands and after the answer to a question the commands asked ("תתרגם" then "שלום" translates "שלום"), and only the WHOLE sentence counts: "תעזור לי למצוא את הקובץ של התקציב", "help desk ticket", "שלום מדני" and "תודה על המייל" keep the decision they had.
+- The cards (`assistant/talk.rs`): the help card has the title "הנה מה שאני יודע לעשות" and one `ItemKind::Info` item (not openable) per example, in groups of the existing kinds `calendar`, `mail`, `files`, `notes`, `apps`, `action`, `calc`, taken in turn so the island's three rows are calendar, mail and files; the Center lists all eleven under their own headings. A test runs every example through the engine, so the card never promises what the engine cannot do. The others are one line: "היי! אפשר לשאול אותי למשל 'מה יש לי היום?'", "בכיף!", "אני יובל, העוזר של המחשב הזה. ...". No new wire field.
+- Small talk is not remembered as the thread of the conversation, so "ומה לגבי מחר?" after a "תודה" still continues the question before it.
+- Why "מה אתה יודע לעשות" used to ask "לאיזה תאריך התכוונת?": the spelling correction read "לעשות" (to do) as ל + "עושות", which the lexicon lists as "there is" ("מה עושה דני מחר"), so the sentence became "מה יש לי?" with no day. A "there is" word found by correction through a proclitic now needs a day word in the sentence (`correction_stands` / `correction_supported` in `intent/lexicon.rs`); "מה לעשות היום" is still today's calendar.

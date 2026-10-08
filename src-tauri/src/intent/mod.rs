@@ -762,6 +762,19 @@ mod tests {
     }
 
     #[test]
+    fn what_can_you_do_is_help_and_never_a_question_about_a_date() {
+        // the user's screenshot: the island asked "לאיזה תאריך התכוונת?"
+        for t in ["מה אתה יודע לעשות", "מה אתה יודע לעשות?", "מה את יודעת לעשות", "what can you do"] {
+            let i = run(t);
+            assert_eq!(i.decision, Decision::Execute { cap: caps::ASSISTANT_HELP }, "{t}");
+            assert_ne!(i.decision, Decision::Clarify { ask: AskKind::Date, cap: Some(caps::CALENDAR_LIST_EVENTS) }, "{t}");
+        }
+        // a real "what do I have" without a day still asks for the day
+        assert_eq!(run("מה יש לי").decision, Decision::Clarify { ask: AskKind::Date, cap: Some(caps::CALENDAR_LIST_EVENTS) });
+        assert_eq!(sensitivity(caps::ASSISTANT_HELP), Sensitivity::Read);
+    }
+
+    #[test]
     fn unhandled_write_verbs_are_not_searched() {
         // #36: cancel / move / forward / update used to run a search with the verb as a term
         for t in [

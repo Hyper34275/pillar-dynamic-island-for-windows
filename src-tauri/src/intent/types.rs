@@ -44,8 +44,23 @@ pub mod caps {
     pub const NOTES_CREATE: CapId = CapId("notes.create");
     pub const MAIL_COMPOSE: CapId = CapId("mail.compose");
     pub const SYSTEM_LOCK: CapId = CapId("system.lock");
+    // ---- the assistant itself (intent/commands.rs `talk`). Read-only: they are `Execute`d, never confirmed. ----
+    /// "מה אתה יודע לעשות", "help": what can be asked, one example per ability.
+    pub const ASSISTANT_HELP: CapId = CapId("assistant.help");
+    /// "שלום", "היי", "בוקר טוב", "hello".
+    pub const ASSISTANT_HELLO: CapId = CapId("assistant.hello");
+    /// "תודה", "thanks".
+    pub const ASSISTANT_THANKS: CapId = CapId("assistant.thanks");
+    /// "מי אתה", "what are you".
+    pub const ASSISTANT_ABOUT: CapId = CapId("assistant.about");
 
-    pub const ALL: [CapId; 21] = [
+    /// Small talk and help: answered from fixed text, they say nothing about the user's data and are not
+    /// remembered as the thread of a conversation ("תודה" between two questions keeps the follow-up alive).
+    pub fn is_talk(cap: CapId) -> bool {
+        matches!(cap, ASSISTANT_HELP | ASSISTANT_HELLO | ASSISTANT_THANKS | ASSISTANT_ABOUT)
+    }
+
+    pub const ALL: [CapId; 25] = [
         CALENDAR_LIST_EVENTS,
         CALENDAR_SEARCH_EVENTS,
         CALENDAR_CHECK_AVAILABILITY,
@@ -67,6 +82,10 @@ pub mod caps {
         NOTES_CREATE,
         MAIL_COMPOSE,
         SYSTEM_LOCK,
+        ASSISTANT_HELP,
+        ASSISTANT_HELLO,
+        ASSISTANT_THANKS,
+        ASSISTANT_ABOUT,
     ];
 }
 

@@ -11,6 +11,11 @@
 //! item, and nothing happens until the click (see `assistant::actions`). The words live in
 //! `lexicon/commands.json` (compiled in); this file holds the grammar.
 //!
+//! The one exception is talking to the assistant itself: a sentence that is entirely "מה אתה יודע לעשות" /
+//! "help", "שלום", "תודה" or "מי אתה" is a read-only `Decision::Execute` of an `assistant.*` capability (see
+//! `talk` below and `assistant::talk`). It comes after the commands and after the answer to a question this
+//! file asked, so it never takes a real request: only the whole sentence counts.
+//!
 //! Hebrew handling: the one-letter proclitics (ב ל מ ה ו ש כ), also joined by a hyphen ("ב-גוגל"), are
 //! stripped from the object words that are looked up in a catalogue (engines, sites, settings, folders,
 //! languages), longest phrase first. Verbs are matched as written (the lexicon lists the forms), with an
@@ -137,6 +142,8 @@ struct Cat {
 struct Lex {
     lists: HashMap<String, Vec<Vec<String>>>,
     sets: HashMap<String, HashSet<String>>,
+    /// Every phrase of a list as one folded string ("look up"), for whole-phrase lookups.
+    joined: HashMap<String, HashSet<String>>,
     cats: HashMap<String, Cat>,
 }
 
@@ -144,19 +151,29 @@ fn words_of(phrase: &str) -> Vec<String> {
     fold(phrase).split(' ').filter(|w| !w.is_empty()).map(String::from).collect()
 }
 
+/// "מה {אתה|את} {יודע|יודעת}" -> the four phrases. A group may have an empty alternative ("{אני|} צריך");
+/// groups do not nest. A phrase without braces is returned as it is.
+fn expand(phrase: &str) -> Vec<String> {
+    let Some(open) = phrase.find('{') else { return vec![phrase.to_string()] };
+    let Some(close) = phrase[open..].find('}').map(|c| open + c) else { return vec![phrase.to_string()] };
+    let (head, tail) = (&phrase[..open], &phrase[close + 1..]);
+    phrase[open + 1..close].split('|').flat_map(|alt| expand(&format!("{head}{alt}{tail}"))).collect()
+}
+
 impl Lex {
     fn load() -> Lex {
         let v: serde_json::Value = serde_json::from_str(LEXICON).unwrap_or_default();
-        let mut lex = Lex { lists: HashMap::new(), sets: HashMap::new(), cats: HashMap::new() };
+        let mut lex = Lex { lists: HashMap::new(), sets: HashMap::new(), joined: HashMap::new(), cats: HashMap::new() };
         let Some(obj) = v.as_object() else { return lex };
         for (name, value) in obj {
             match value {
                 serde_json::Value::Array(items) => {
-                    let mut phrases: Vec<Vec<String>> = items.iter().filter_map(|x| x.as_str()).map(words_of).filter(|p| !p.is_empty()).collect();
+                    let mut phrases: Vec<Vec<String>> = items.iter().filter_map(|x| x.as_str()).flat_map(expand).map(|p| words_of(&p)).filter(|p| !p.is_empty()).collect();
                     // longest first, so "look up" wins over "look"
                     phrases.sort_by(|a, b| b.len().cmp(&a.len()));
                     let set: HashSet<String> = phrases.iter().filter(|p| p.len() == 1).map(|p| p[0].clone()).collect();
                     lex.sets.insert(name.clone(), set);
+                    lex.joined.insert(name.clone(), phrases.iter().map(|p| p.join(" ")).collect());
                     lex.lists.insert(name.clone(), phrases);
                 }
                 serde_json::Value::Object(groups) => {
@@ -195,7 +212,7 @@ impl Lex {
 
     /// The folded phrase (one or more words) is an entry of the list.
     fn in_list(&self, list: &str, phrase: &str) -> bool {
-        self.lists.get(list).map_or(false, |l| l.iter().any(|p| p.join(" ") == phrase))
+        self.joined.get(list).map_or(false, |l| l.contains(phrase))
     }
 
     /// `w[i..i + len]` (an engine name found by `cat_at`) is a generic word ("web", "online", "map", "ברשת"):
@@ -1012,6 +1029,57 @@ impl Lex {
     }
 }
 
+// =============================================================================
+// Talking to the assistant: help, greetings, thanks, "who are you"
+// =============================================================================
+
+/// A sentence this long is not small talk.
+const MAX_TALK_WORDS: usize = 9;
+/// The name the assistant answers to; in a sentence that is otherwise small talk it only says who is addressed
+/// ("שלום יובל", "hi Yuval, what can you do").
+const ASSISTANT_NAMES: [&str; 2] = ["יובל", "yuval"];
+
+impl Lex {
+    /// `Some(cap)` when the WHOLE sentence is small talk or a question about the assistant ("מה אתה יודע
+    /// לעשות", "help", "שלום", "תודה", "מי אתה"). Whole sentence on purpose: "תעזור לי למצוא את הקובץ של
+    /// התקציב", "help desk ticket", "שלום מדני" and "תודה על המייל" have more to say and stay with the
+    /// normal engine. The sentence is compared as typed (minus a closing "בבקשה"), then without the assistant's
+    /// name, then without the filler words of `talk_noise` that open it, then without all of them ("היי,
+    /// תגיד, מה אתה יודע לעשות בכלל?").
+    fn talk(&self, text: &str) -> Option<CapId> {
+        let cleaned: String = clean(text).chars().take(MAX_CHARS).collect();
+        let w = words(&cleaned);
+        if w.is_empty() || w.len() > MAX_TALK_WORDS {
+            return None;
+        }
+        let mut typed: Vec<&str> = w.iter().map(|x| x.f.as_str()).collect();
+        while typed.len() > 1 && self.has("trailing_polite", typed[typed.len() - 1]) {
+            typed.pop();
+        }
+        let nameless: Vec<&str> = typed.iter().copied().filter(|x| !ASSISTANT_NAMES.contains(x)).collect();
+        // "hi, thank you so much": the greeting goes, the "so" that belongs to the phrase stays
+        let opened: Vec<&str> = nameless.iter().copied().skip_while(|x| self.has("talk_noise", x)).collect();
+        let bare: Vec<&str> = nameless.iter().copied().filter(|x| !self.has("talk_noise", x)).collect();
+        const KINDS: [(&str, CapId); 4] = [
+            ("talk_help", caps::ASSISTANT_HELP),
+            ("talk_about", caps::ASSISTANT_ABOUT),
+            ("talk_thanks", caps::ASSISTANT_THANKS),
+            ("talk_hello", caps::ASSISTANT_HELLO),
+        ];
+        [typed, nameless, opened, bare]
+            .iter()
+            .map(|f| f.join(" "))
+            .filter(|s| !s.is_empty())
+            .find_map(|s| KINDS.iter().find(|(list, _)| self.in_list(list, &s)).map(|(_, cap)| *cap))
+    }
+}
+
+/// Small talk and help, answered by `assistant::talk` from fixed text. Read-only, so it is an `Execute`.
+fn talk(text: &str) -> Option<Interpretation> {
+    let cap = lex().talk(text)?;
+    Some(Interpretation { decision: Decision::Execute { cap }, slots: Slots::default(), confidence: 0.95, lang: detect_lang(text), follow_up: false, ranked: vec![(cap, 1.0)] })
+}
+
 fn looks_like_address(s: &str) -> bool {
     let Some((local, domain)) = s.split_once('@') else { return false };
     !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.') && s.chars().all(|c| c.is_alphanumeric() || matches!(c, '@' | '.' | '-' | '_' | '+'))
@@ -1041,7 +1109,8 @@ fn strip_lamed(word: &str) -> String {
 
 /// Understand an explicit command, or return `None` and leave the text to the normal engine.
 pub fn detect(text: &str, ctx: &Ctx, now: DateTime<Local>, _known: &Known) -> Option<Interpretation> {
-    let Some(cmd) = lex().parse(text) else { return reply_to_question(text, ctx, now).or_else(|| web_topic(text)) };
+    // An answer to a question asked here ("תתרגם" -> "שלום") comes before small talk: "שלום" is the text to translate.
+    let Some(cmd) = lex().parse(text) else { return reply_to_question(text, ctx, now).or_else(|| talk(text)).or_else(|| web_topic(text)) };
     let decision = match cmd.ask {
         Some(ask) => Decision::Clarify { ask, cap: Some(cmd.cap) },
         None => Decision::Confirm { cap: cmd.cap },

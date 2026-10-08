@@ -25,6 +25,7 @@ mod policy;
 mod prefs;
 mod signals;
 mod store;
+mod talk;
 pub mod wire;
 
 pub use wire::*;

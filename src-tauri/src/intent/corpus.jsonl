@@ -133,7 +133,7 @@
 {"id":"c145","text":"how much is 20% of 150","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"expr":"20%*150","value":30}},"split":"holdout","tags":["en","calc"]}
 {"id":"c146","text":"calculate 2^10","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"expr":"2^10","value":1024}},"split":"dev","tags":["en","calc"]}
 {"id":"c147","text":"תחשב 100 פלוס 50 פחות 30","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"expr":"100+50-30","value":120}},"split":"holdout","tags":["he","calc"]}
-{"id":"c150","text":"שלום","expect":{"decision":"nomatch"},"split":"dev","tags":["he","noise"]}
+{"id":"c150","text":"שלום","expect":{"decision":"exec","cap":"assistant.hello"},"split":"dev","tags":["he","noise"]}
 {"id":"c151","text":"מה מזג האוויר","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","out-of-scope"]}
 {"id":"c152","text":"תחפש את החשבונית","expect":{"decision":"multi","caps":["email.search","files.search","notes.search"]},"split":"dev","tags":["he","multi"]}
 {"id":"c153","text":"תמחק את כל המיילים","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","unsafe"]}
@@ -147,7 +147,7 @@
 {"id":"c161","text":"תחפש","expect":{"decision":"clarify","ask":"content"},"split":"holdout","tags":["he","missing-content"]}
 {"id":"c162","text":"מה?","expect":{"decision":"nomatch"},"split":"dev","tags":["he","noise"]}
 {"id":"c163","text":"???","expect":{"decision":"nomatch"},"split":"holdout","tags":["noise"]}
-{"id":"c164","text":"hello","expect":{"decision":"nomatch"},"split":"dev","tags":["en","noise"]}
+{"id":"c164","text":"hello","expect":{"decision":"exec","cap":"assistant.hello"},"split":"dev","tags":["en","noise"]}
 {"id":"c165","text":"תראה לי את התקציב","expect":{"decision":"multi","caps":["email.search","files.search","notes.search"]},"split":"holdout","tags":["he","multi"]}
 {"id":"c166","text":"find the invoice","expect":{"decision":"multi","caps":["email.search","files.search","notes.search"]},"split":"dev","tags":["en","multi"]}
 {"id":"c167","text":"מה יש לי ב-30.2","expect":{"decision":"clarify","cap":"calendar.list_events","ask":"date"},"split":"holdout","tags":["he","invalid-date"]}
@@ -217,7 +217,7 @@
 {"id":"c329","text":"תחשב 2.5 כפול 4","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"expr":"2.5*4","value":10}},"split":"holdout","tags":["he","calc","fresh"]}
 {"id":"c330","text":"(5+3)*2","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":16}},"split":"holdout","tags":["calc","fresh"]}
 {"id":"c331","text":"מה השעה","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","noise","fresh"]}
-{"id":"c332","text":"תכתוב לי מייל ליובל","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","unsafe","fresh"]}
+{"id":"c332","text":"תכתוב לי מייל ליובל","expect":{"decision":"confirm","cap":"mail.compose"},"split":"holdout","tags":["he","unsafe","fresh"]}
 {"id":"c333","text":"download invoice pdf","expect":{"decision":"nomatch"},"split":"holdout","tags":["en","unsafe","fresh"]}
 {"id":"c334","text":"format c:","expect":{"decision":"nomatch"},"split":"holdout","tags":["en","unsafe","fresh"]}
 {"id":"c335","text":"ומה בשבוע הבא?","ctx":"c001","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-11T00:00","follow_up":true}},"split":"holdout","tags":["he","follow-up","fresh"]}
