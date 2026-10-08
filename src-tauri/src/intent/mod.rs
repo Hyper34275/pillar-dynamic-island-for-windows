@@ -97,6 +97,11 @@ pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> 
 pub fn analyze(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> (Interpretation, Analysis) {
     let mut an = Analysis::default();
     let i = understand(text, ctx, now, known, &mut an);
+    // a refusal decided before the full pass (the commands layer's web topics) still says why
+    if i.decision == Decision::NoMatch && an.unsupported.is_none() {
+        let a = lexicon::annotate(&normalize::tokenize(text));
+        an.unsupported = a.iter().find_map(|t| t.is("VETO").then(|| lexicon::unsupported_kind(t.norm())));
+    }
     an.finish(&i);
     (i, an)
 }
@@ -829,6 +834,9 @@ mod tests {
     fn refusals_say_why() {
         let why = |t: &str| analyze(t, &Ctx::default(), now(), &Known::default()).1.unsupported;
         assert_eq!(why("תמחק את המייל"), Some("write"));
+        assert_eq!(why("מה מזג האוויר"), Some("weather"));
+        assert_eq!(why("what's the weather"), Some("weather"));
+        assert_eq!(why("מה שער הדולר"), Some("news"));
         assert_eq!(why("תכבה את המחשב"), Some("power"));
         assert_eq!(why("מה יש לי היום"), None);
     }
