@@ -34,6 +34,9 @@ public sealed class IslandClientOptions
 
     public TimeSpan HelloTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>Connection milestones for a diagnostic log (fixed words and codes only, never message content). Must not throw.</summary>
+    public Action<string>? Log { get; init; }
+
     public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(10);
 
     /// <summary>The protocol's line limit, each way. A longer incoming line closes the connection.</summary>
@@ -190,11 +193,17 @@ public sealed class IslandClient : IAsyncDisposable
     private async Task RunAsync()
     {
         CancellationToken ct = _lifetime.Token;
+        int streak = 0; // failed attempts in a row: the first and then every 20th (about a minute) are logged
         while (!ct.IsCancellationRequested)
         {
             Connection? connection = null;
             try
             {
+                if (streak == 0)
+                {
+                    Note("pipe connect attempt");
+                }
+
                 SetState(ConnectionState.Connecting);
                 var pipe = new NamedPipeClientStream(
                     ".", _pipeName, PipeDirection.InOut, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
@@ -224,6 +233,8 @@ public sealed class IslandClient : IAsyncDisposable
                 }
 
                 LastFailure = null;
+                streak = 0;
+                Note("pipe connected");
                 _connection = connection;
                 SetState(ConnectionState.Connected);
                 await readLoop.ConfigureAwait(false);
@@ -235,6 +246,11 @@ public sealed class IslandClient : IAsyncDisposable
             catch (Exception e)
             {
                 LastFailure = e is IslandException ie && ie.Code.Length > 0 ? ie.Code : e.GetType().Name;
+                streak++;
+                if (streak == 1 || streak % 20 == 0)
+                {
+                    Note($"pipe connect failed ({LastFailure}), attempt {streak}");
+                }
             }
             finally
             {
@@ -254,6 +270,18 @@ public sealed class IslandClient : IAsyncDisposable
         }
 
         SetState(ConnectionState.Disconnected);
+    }
+
+    private void Note(string message)
+    {
+        try
+        {
+            _options.Log?.Invoke(message);
+        }
+        catch
+        {
+            // Diagnostics must not break the connection.
+        }
     }
 
     private void OnEvent(IslandEvent e) => Raise(() => EventReceived?.Invoke(e));

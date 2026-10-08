@@ -11,6 +11,7 @@ public static class Strings
 {
     // Shell
     public static string AppTitle => "מרכז האי";
+    public static string CenterStuck => "מרכז האי כבר פתוח אבל לא מגיב. סגרו את CompanyIsland.Center.exe במנהל המשימות ונסו שוב.";
     public static string NavWelcome => "ברוכים הבאים";
     public static string NavNotes => "פתקים";
     public static string NavSettings => "הגדרות";

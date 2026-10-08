@@ -8,6 +8,8 @@
 
 use crate::{center_ipc, notes, rt};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 use tauri::AppHandle;
 use windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
 
@@ -67,6 +69,83 @@ fn unavailable() -> String {
     "APP-030: island center unavailable".to_string()
 }
 
+/// How long a started Center gets to connect to the island before the next click is told it failed.
+const CONNECT_GRACE_MS: u64 = 8_000;
+
+/// What a click may do when no Center is connected.
+#[derive(Debug, PartialEq, Eq)]
+enum SpawnDecision {
+    /// Nothing was started recently: start the Center.
+    Go,
+    /// A Center was started a moment ago and has not connected yet: do not start another one.
+    Pending,
+    /// The Center started `pid` over the grace ago and never connected. Reported once; the next click starts again.
+    Failed(u32),
+}
+
+/// Spawn-storm guard (pure: the caller passes the clock, in milliseconds since any fixed point).
+#[derive(Debug, Default)]
+struct SpawnGuard {
+    started: Option<(u32, u64)>,
+}
+
+impl SpawnGuard {
+    fn check(&mut self, now_ms: u64) -> SpawnDecision {
+        match self.started {
+            None => SpawnDecision::Go,
+            Some((_, at)) if now_ms.saturating_sub(at) < CONNECT_GRACE_MS => SpawnDecision::Pending,
+            Some((pid, _)) => {
+                self.started = None;
+                SpawnDecision::Failed(pid)
+            }
+        }
+    }
+
+    fn spawned(&mut self, pid: u32, now_ms: u64) {
+        self.started = Some((pid, now_ms));
+    }
+
+    fn connected(&mut self) {
+        self.started = None;
+    }
+}
+
+static GUARD: Mutex<SpawnGuard> = Mutex::new(SpawnGuard { started: None });
+static CLOCK: OnceLock<Instant> = OnceLock::new();
+
+fn now_ms() -> u64 {
+    CLOCK.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+fn guard() -> std::sync::MutexGuard<'static, SpawnGuard> {
+    GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// A Center connected to the island's pipe (called by `center_ipc`): the start worked.
+pub fn note_connected() {
+    guard().connected();
+}
+
+const NOT_OPENED: &str = "APP-033: island center did not open";
+
+/// The island's page only sees `false` from a failed open, so the failure is also shown as a plain message box
+/// (own thread: it blocks until dismissed).
+fn tell_user_not_opened() {
+    use windows::core::w;
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, MB_ICONWARNING, MB_OK, MB_RIGHT, MB_RTLREADING, MB_SETFOREGROUND, MB_TOPMOST,
+    };
+    let _ = std::thread::Builder::new().name("companyisland-center-failed".into()).spawn(|| unsafe {
+        MessageBoxW(
+            HWND::default(),
+            w!("מרכז האי לא נפתח. פרטים בקובץ center.log"),
+            w!("CompanyIsland"),
+            MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST | MB_RTLREADING | MB_RIGHT,
+        );
+    });
+}
+
 fn spawn(page: &str) -> Result<u32, String> {
     let Some(exe) = center_exe().filter(|p| p.is_file()) else {
         dlog!("WARN", "center", "APP-030 center app not found next to the island");
@@ -91,10 +170,24 @@ pub fn open(_app: &AppHandle, page: &str) -> Result<(), String> {
         return Err("APP-032: unknown center page".to_string());
     }
     if let Some(pid) = center_ipc::send_navigate(page, allow_foreground) {
+        guard().connected();
         dlog!("INFO", "center", "navigate {} sent to center pid {}", page_kind(page), pid);
         return Ok(());
     }
+    match guard().check(now_ms()) {
+        SpawnDecision::Go => {}
+        SpawnDecision::Pending => {
+            dlog!("DEBUG", "center", "a center was just started and has not connected yet, not starting another");
+            return Ok(());
+        }
+        SpawnDecision::Failed(pid) => {
+            dlog!("WARN", "center", "APP-030 center started but did not connect (pid {})", pid);
+            tell_user_not_opened();
+            return Err(NOT_OPENED.to_string());
+        }
+    }
     let pid = spawn(page)?;
+    guard().spawned(pid, now_ms());
     allow_foreground(pid);
     dlog!("INFO", "center", "started center pid {} on {}", pid, page_kind(page));
     Ok(())
@@ -108,6 +201,42 @@ pub async fn open_center(app: AppHandle, page: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_guard_starts_once_then_waits_for_the_connection() {
+        let mut g = SpawnGuard::default();
+        assert_eq!(g.check(0), SpawnDecision::Go);
+        g.spawned(41, 1_000);
+        for t in [1_000, 1_200, 5_000, 8_999] {
+            assert_eq!(g.check(t), SpawnDecision::Pending, "{t}");
+        }
+    }
+
+    #[test]
+    fn a_center_that_never_connected_is_reported_once_and_the_next_click_retries() {
+        let mut g = SpawnGuard::default();
+        g.spawned(41, 1_000);
+        assert_eq!(g.check(9_000), SpawnDecision::Failed(41));
+        assert_eq!(g.check(9_001), SpawnDecision::Go, "reported once, then a new try is allowed");
+        g.spawned(42, 9_500);
+        assert_eq!(g.check(10_000), SpawnDecision::Pending);
+        assert_eq!(g.check(17_500), SpawnDecision::Failed(42));
+    }
+
+    #[test]
+    fn a_connection_clears_the_guard() {
+        let mut g = SpawnGuard::default();
+        g.spawned(41, 1_000);
+        g.connected();
+        assert_eq!(g.check(20_000), SpawnDecision::Go, "a Center that connected and later closed is not a failure");
+    }
+
+    #[test]
+    fn a_clock_that_goes_backwards_does_not_panic() {
+        let mut g = SpawnGuard::default();
+        g.spawned(1, 5_000);
+        assert_eq!(g.check(100), SpawnDecision::Pending);
+    }
 
     #[test]
     fn page_names() {

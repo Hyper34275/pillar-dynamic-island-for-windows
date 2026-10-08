@@ -713,6 +713,7 @@ where
     let kill = Arc::new(Notify::new());
     let client_id = hub.register(pid, tx.clone(), kill.clone());
     dlog!("INFO", "center", "client connected, pid {}", pid);
+    crate::center::note_connected();
     let writer = tokio::spawn(write_loop(write_half, rx));
 
     let mut session = Session { hub: hub.clone(), backend: backend.clone(), client_id, ready: false };

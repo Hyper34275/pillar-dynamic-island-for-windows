@@ -88,6 +88,7 @@ public sealed partial class MainWindow : Window
 
         Closed += (_, _) =>
         {
+            CenterLog.Info("window closed");
             _model.Dispose();
             Application.Current.Exit();
         };

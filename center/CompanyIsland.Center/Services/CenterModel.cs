@@ -22,7 +22,7 @@ public sealed class CenterModel : IDisposable
     public CenterModel(DispatcherQueue ui)
     {
         _ui = ui;
-        Client = new IslandClient(PipeNames.ForCurrentUser());
+        Client = new IslandClient(PipeNames.ForCurrentUser(), new IslandClientOptions { Log = CenterLog.Info });
         _notes = new NoteSync(notes => Client.NotesSaveAsync(notes));
         _notes.Changed += () => NotesChanged?.Invoke();
         _notes.Failed += Report;
