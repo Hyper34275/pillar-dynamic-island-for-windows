@@ -225,3 +225,51 @@
 {"id":"c337","text":"אחרי הצהריים","ctx":"c003","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-09T12:00","to":"2026-10-09T18:00","follow_up":true}},"split":"holdout","tags":["he","follow-up","fresh"]}
 {"id":"c338","text":"just from Dana","ctx":"c070","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"Dana","terms":[["התקציב"]],"follow_up":true}},"split":"holdout","tags":["en","refinement","fresh"]}
 {"id":"c339","text":"ומה בשבוע שעבר","ctx":"c003","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-09-27T00:00","follow_up":true}},"split":"holdout","tags":["he","follow-up","fresh"]}
+{"id":"r001","text":"מייל שבו מוזכר פרויקט אלפא","expect":{"decision":"exec","cap":"email.search","slots":{"sender":null,"terms":[["פרויקט"],["אלפא"]]}},"split":"dev","tags":["he","review"]}
+{"id":"r002","text":"שלח מייל לדנה שאני מאחר","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","unsafe","review"]}
+{"id":"r003","text":"מייל מ-Avi על התקציב","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"Avi","terms":[["התקציב"]]}},"split":"dev","tags":["mixed","review"]}
+{"id":"r004","text":"מייל מ-Avi","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"Avi","terms":[]}},"split":"holdout","tags":["mixed","review"]}
+{"id":"r005","text":"המייל שמוטי שלח","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"מוטי","terms":[]}},"split":"dev","tags":["he","review"]}
+{"id":"r006","text":"מייל שרונית שלחה אתמול","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"רונית","date":"2026-10-07","terms":[]}},"split":"holdout","tags":["he","review"]}
+{"id":"r007","text":"17% ממאתיים","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":34}},"split":"dev","tags":["he","calc","review"]}
+{"id":"r008","text":"1,000 * 1.17","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":1170}},"split":"holdout","tags":["en","calc","review"]}
+{"id":"r009","text":"100/3","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":33.333333333}},"split":"dev","tags":["en","calc","review"]}
+{"id":"r010","text":"עשרים ושלוש כפול ארבע","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":92}},"split":"holdout","tags":["he","calc","review"]}
+{"id":"r011","text":"שבע פלוס שמונה","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":15}},"split":"dev","tags":["he","calc","review"]}
+{"id":"r012","text":"מע\"מ 17% על 500","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":85}},"split":"holdout","tags":["he","calc","review"]}
+{"id":"r013","text":"כמה זה 1,250 חלקי 5","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":250}},"split":"dev","tags":["he","calc","review"]}
+{"id":"r014","text":"1/0","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"expr":"1/0"}},"split":"holdout","tags":["en","calc","review"]}
+{"id":"r015","text":"האם איציק פנוי מחר בשתיים","expect":{"decision":"clarify","ask":"time","cap":"calendar.check_availability"},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r016","text":"איציק פנוי היום בשלוש","expect":{"decision":"clarify","ask":"time","cap":"calendar.check_availability"},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r017","text":"האם דנה פנויה ביום חמישי הבא בעשר","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-15T10:00","to":"2026-10-15T11:00"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r018","text":"פגישות ב-15 לחודש","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-15"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r019","text":"מה יש לי בראשון בנובמבר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-11-01"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r020","text":"מה יש לי בסוף החודש","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-25T00:00","to":"2026-11-01T00:00"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r021","text":"מה היה לי ביום שני האחרון","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-05"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r022","text":"מה יש לי ביום ו","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-09"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r023","text":"מה יש לי בעשרים באוקטובר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-20"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r024","text":"מתי הפגישה הבאה שלי","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-08T09:00","to":"2026-10-22T09:00"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r025","text":"when is my next meeting","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-08T09:00","to":"2026-10-22T09:00"}},"split":"dev","tags":["en","calendar","review"]}
+{"id":"r026","text":"מה אני עושה ביום ראשון","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-11"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r027","text":"יש לי חלון מחר?","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"date":"2026-10-09"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r028","text":"מה יש לי ביומן עד סוף השבוע","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-08T09:00","to":"2026-10-11T00:00"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r029","text":"מה שלח לי שרון","expect":{"decision":"exec","cap":"email.search","slots":{"sender":"שרון"}},"split":"dev","tags":["he","review"]}
+{"id":"r030","text":"מי כתב לי היום","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-08","terms":[]}},"split":"holdout","tags":["he","review"]}
+{"id":"r031","text":"inbox","expect":{"decision":"clarify","ask":"content","cap":"email.search"},"split":"dev","tags":["en","review"]}
+{"id":"r032","text":"מיילים עם קובץ מצורף מאתמול","expect":{"decision":"exec","cap":"email.search","slots":{"date":"2026-10-07","terms":[]}},"split":"holdout","tags":["he","review"]}
+{"id":"r033","text":"דואר נכנס","expect":{"decision":"clarify","ask":"content","cap":"email.search"},"split":"dev","tags":["he","review"]}
+{"id":"r034","text":"קבצים שנפתחו השבוע","expect":{"decision":"exec","cap":"files.search","slots":{"from":"2026-10-04T00:00","terms":[]}},"split":"holdout","tags":["he","review"]}
+{"id":"r035","text":"מיילים שלא קראתי","expect":{"decision":"exec","cap":"email.search","slots":{"unread":true,"terms":[]}},"split":"dev","tags":["he","review"]}
+{"id":"r036","text":"תבטל את הפגישה של מחר","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","unsafe","review"]}
+{"id":"r037","text":"cancel my meeting tomorrow","expect":{"decision":"nomatch"},"split":"dev","tags":["en","unsafe","review"]}
+{"id":"r038","text":"תזיז את הפגישה למחר","expect":{"decision":"nomatch"},"split":"holdout","tags":["he","unsafe","review"]}
+{"id":"r039","text":"העבר את המייל לדנה","expect":{"decision":"nomatch"},"split":"dev","tags":["he","unsafe","review"]}
+{"id":"r040","text":"הפעל את הקובץ","expect":{"decision":"clarify","ask":"content","cap":"files.open"},"split":"holdout","tags":["he","unsafe","review"]}
+{"id":"r041","text":"מה יש לי בעשרים ושלוש לחודש","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-23"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r042","text":"מה יש לי בשלושים ואחד באוקטובר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"date":"2026-10-31"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r043","text":"האם אני פנוי מחר באחת עשרה","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T11:00","to":"2026-10-09T12:00"}},"split":"dev","tags":["he","calendar","review"]}
+{"id":"r044","text":"האם דנה פנויה מחר בשבע בערב","expect":{"decision":"exec","cap":"calendar.check_availability","slots":{"from":"2026-10-09T19:00"}},"split":"holdout","tags":["he","calendar","review"]}
+{"id":"r045","text":"חשב 2,500,000 חלקי 4","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":625000}},"split":"dev","tags":["he","calc","review"]}
+{"id":"r046","text":"20% של חמש מאות","expect":{"decision":"exec","cap":"calculator.evaluate","slots":{"value":100}},"split":"holdout","tags":["he","calc","review"]}
+{"id":"r047","text":"20% from five hundred","expect":{"decision":"clarify","ask":"content","cap":"files.search"},"split":"dev","tags":["en","calc","review"]}
+{"id":"r048","text":"מה יש לי עד מחר","expect":{"decision":"exec","cap":"calendar.list_events","slots":{"from":"2026-10-08T09:00","to":"2026-10-10T00:00"}},"split":"holdout","tags":["he","calendar","review"]}

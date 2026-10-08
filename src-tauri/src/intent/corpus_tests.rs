@@ -331,6 +331,62 @@ fn corpus_gates() {
     assert!(under <= 1.0, "under-clarification {under:.1}% > 1%");
 }
 
+const FRESH: &str = include_str!("fresh.jsonl");
+
+/// 40 phrasings written before the review fixes, from outside the findings. Not part of the
+/// gates (the corpus is tuned on); this checks the engine generalises. Every one must pass.
+#[test]
+fn fresh_phrasings_generalise() {
+    let all = HashMap::new();
+    let mut pass = 0;
+    let mut total = 0;
+    for l in FRESH.lines().filter(|l| !l.trim().is_empty()) {
+        let v: Value = serde_json::from_str(l).unwrap_or_else(|e| panic!("bad fresh line {l}: {e}"));
+        let case = Case {
+            id: v["id"].as_str().expect("id").to_string(),
+            text: v["text"].as_str().expect("text").to_string(),
+            ctx: None,
+            ctx_age_s: 10,
+            expect: v["expect"].clone(),
+            split: "dev".into(),
+            tags: Vec::new(),
+        };
+        let i = run(&case, &all);
+        let (ok, why) = check(&case, &i);
+        total += 1;
+        if ok {
+            pass += 1;
+        } else {
+            println!("FRESH MISS {} {:?}: {} -> {} | {}", case.id, case.text, case.expect["decision"], why.join("; "), describe(&i.slots, i.follow_up));
+        }
+    }
+    println!("fresh phrasings: {pass}/{total}");
+    assert_eq!(total, 40);
+    assert_eq!(pass, total, "fresh phrasings that fail");
+}
+
+/// 20,000 interprets of mixed corpus text: a bound loose enough for a debug build on a busy
+/// machine, plus the measured percentiles.
+#[test]
+fn load_20000_interprets() {
+    let cases = load();
+    let all = by_id(&cases);
+    let _ = interpret("מה יש לי היום", &Ctx::default(), fixed_now(), &known());
+    let started = Instant::now();
+    let mut samples = Vec::with_capacity(20_000);
+    for n in 0..20_000usize {
+        let c = &cases[(n * 7) % cases.len()];
+        let t = Instant::now();
+        let _ = run_text(&c.text, c, &all);
+        samples.push(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    let total = started.elapsed().as_secs_f64();
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let (p50, p95, p99) = (samples[10_000], samples[19_000], samples[19_800]);
+    println!("interpret x20000: total {total:.2} s, p50 {p50:.3} ms, p95 {p95:.3} ms, p99 {p99:.3} ms");
+    assert!(total < 20.0, "20,000 interprets took {total:.1} s");
+}
+
 #[test]
 fn latency_p95_is_under_5ms() {
     let cases = load();

@@ -98,7 +98,12 @@ fn take_modifier(a: &mut [Ann], i: usize) -> Option<Mod> {
             return Some(m);
         }
         // "החודש האחרון" / "השבוע האחרון": the last one, i.e. the previous
-        if !a[i + 1].used && a[i + 1].is("M_LATEST_ONE") && matches!(a[i].concept(), "T_WEEK" | "T_MONTH") {
+        // ... and "יום שני האחרון" is the last Monday, in the past
+        let last_one = a[i + 1].norm().ends_with("אחרונ") || a[i + 1].norm().ends_with("אחרונה");
+        if !a[i + 1].used
+            && a[i + 1].is("M_LATEST_ONE")
+            && (matches!(a[i].concept(), "T_WEEK" | "T_MONTH") || (weekday_index(a[i].concept()).is_some() && last_one))
+        {
             a[i + 1].used = true;
             return Some(Mod::Past);
         }
@@ -116,6 +121,77 @@ fn all_digits(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
 }
 
+/// A spelled-out number at token `i` ("עשרים ושלוש", "בשתיים", "ל-שלוש"): the value, the tokens
+/// it takes and whether a "ב" was attached to its first word. See `numwords`.
+fn word_number(a: &[Ann], i: usize) -> Option<(u32, usize, bool)> {
+    let usable = |t: &Ann| !t.used && !t.tok.sym && !t.tok.quoted;
+    if !usable(a.get(i)?) {
+        return None;
+    }
+    let mut words: Vec<&str> = vec![a[i].norm()];
+    for t in a.iter().skip(i + 1).take(4) {
+        if !usable(t) {
+            break;
+        }
+        words.push(t.norm());
+    }
+    if let Some((v, k)) = super::numwords::parse(&words) {
+        return Some((v.min(u32::MAX as u64) as u32, k, false));
+    }
+    let first = a[i].norm();
+    for p in ['ב', 'ל'] {
+        if let Some(rest) = first.strip_prefix(p) {
+            words[0] = rest;
+            if let Some((v, k)) = super::numwords::parse(&words) {
+                return Some((v.min(u32::MAX as u64) as u32, k, p == 'ב'));
+            }
+        }
+    }
+    None
+}
+
+/// "at ten", "around five": English hour words one..twelve.
+fn english_hour(w: &str) -> Option<u32> {
+    Some(match w {
+        "one" => 1,
+        "two" => 2,
+        "three" => 3,
+        "four" => 4,
+        "five" => 5,
+        "six" => 6,
+        "seven" => 7,
+        "eight" => 8,
+        "nine" => 9,
+        "ten" => 10,
+        "eleven" => 11,
+        "twelve" => 12,
+        _ => return None,
+    })
+}
+
+/// The first `weekday` (0 = Sunday) on or after the 1st of `month`, in the nearest such month.
+fn first_weekday_in_month(today: NaiveDate, month: u32, weekday: u32) -> Option<NaiveDate> {
+    let y = if month >= today.month() { today.year() } else { today.year() + 1 };
+    let first = NaiveDate::from_ymd_opt(y, month, 1)?;
+    let delta = (weekday + 7 - first.weekday().num_days_from_sunday()) % 7;
+    Some(first + Duration::days(delta as i64))
+}
+
+/// Day `d` of the current month, or of the next month that has one, from `today` on.
+fn day_of_month(today: NaiveDate, d: u32) -> Option<NaiveDate> {
+    let mut idx = today.year() * 12 + today.month() as i32 - 1;
+    for _ in 0..14 {
+        let (y, m) = (idx.div_euclid(12), idx.rem_euclid(12) as u32 + 1);
+        if let Some(date) = NaiveDate::from_ymd_opt(y, m, d) {
+            if date >= today {
+                return Some(date);
+            }
+        }
+        idx += 1;
+    }
+    None
+}
+
 fn days_in_month(y: i32, m: u32) -> u32 {
     let first = NaiveDate::from_ymd_opt(y, m, 1);
     let next = if m == 12 { NaiveDate::from_ymd_opt(y + 1, 1, 1) } else { NaiveDate::from_ymd_opt(y, m + 1, 1) };
@@ -125,7 +201,7 @@ fn days_in_month(y: i32, m: u32) -> u32 {
     }
 }
 
-enum Numeric {
+pub(crate) enum Numeric {
     Date(NaiveDate),
     /// Looked like a date but does not exist (31.2).
     Invalid,
@@ -134,7 +210,7 @@ enum Numeric {
 }
 
 /// `dd.mm`, `dd/mm`, `dd.mm.yy`, `dd.mm.yyyy`, `yyyy-mm-dd`.
-fn numeric_date(s: &str, today: NaiveDate) -> Numeric {
+pub(crate) fn numeric_date(s: &str, today: NaiveDate) -> Numeric {
     let sep = if s.contains('.') {
         '.'
     } else if s.contains('/') {
@@ -264,6 +340,10 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
     let mut hour: Option<(u32, u32, bool)> = None; // (h, m, definitive)
     let mut instant: Option<DateTime<Local>> = None;
     let mut error: Option<AskKind> = None;
+    // a weekday (0 = Sunday, named without "הבא" / "שעבר") and a month named without a day:
+    // together "ראשון בנובמבר", the first Sunday of November
+    let mut weekday_seen: Option<u32> = None;
+    let mut month_only: Option<u32> = None;
 
     // markers that settle AM / PM for an explicit hour
     let live = |a: &[Ann], c: &[&str]| a.iter().any(|t| !t.used && c.iter().any(|x| t.is(x)));
@@ -328,7 +408,10 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
         let count_of = |t: &Ann| if all_digits(t.norm()) { t.norm().parse::<i64>().ok() } else { None };
         let (qty, unit_at) = match count_of(&a[j]) {
             Some(q) => (q, j + 1),
-            None => (1, j),
+            None => match word_number(a, j) {
+                Some((v, k, _)) if v <= 1000 => (v as i64, j + k),
+                _ => (1, j),
+            },
         };
         if unit_at >= n || a[unit_at].used {
             continue;
@@ -356,26 +439,66 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
         }
     }
 
-    // ---- an explicit hour after a preposition: "ב-3", "בשעה 15", "at 3" ----
-    for i in 0..n {
-        if a[i].used || a[i].tok.sym || !all_digits(a[i].norm()) || a[i].norm().len() > 2 || hour.is_some() {
+    // ---- "ב-15 לחודש", "בעשרים לחודש": a day of the month ----
+    for i in 1..n {
+        if a[i].used || !a[i].is("T_MONTH") || !a[i].hit.as_ref().map_or(false, |h| h.prefix.ends_with('ל')) {
             continue;
         }
-        let v: u32 = a[i].norm().parse().unwrap_or(99);
+        let digit = !a[i - 1].used && !a[i - 1].tok.sym && all_digits(a[i - 1].norm()) && a[i - 1].norm().len() <= 2;
+        let found = if digit {
+            a[i - 1].norm().parse::<u32>().ok().map(|v| (v, i - 1))
+        } else {
+            (i.saturating_sub(3)..i).find_map(|s| word_number(a, s).filter(|(_, k, _)| s + k == i).map(|(v, _, _)| (v, s)))
+        };
+        let Some((v, start)) = found else { continue };
+        let Some(date) = (1..=31).contains(&v).then(|| day_of_month(today, v)).flatten() else { continue };
+        day = Some((date, date + Duration::days(1), Grain::Day));
+        for t in start..=i {
+            a[t].used = true;
+        }
+        // the "ב" / "ב-" in front
+        let mut p = start;
+        if p > 0 && a[p - 1].tok.sym && a[p - 1].norm() == "-" && !a[p - 1].used {
+            a[p - 1].used = true;
+            p -= 1;
+        }
+        if p > 0 && !a[p - 1].used && matches!(a[p - 1].norm(), "ב" | "ה") {
+            a[p - 1].used = true;
+        }
+    }
+
+    // ---- an explicit hour after a preposition: "ב-3", "בשעה 15", "at 3", "בשתיים", "at ten" ----
+    for i in 0..n {
+        if a[i].used || a[i].tok.sym || hour.is_some() {
+            continue;
+        }
+        let (v, span, attached_b): (u32, usize, bool) = if all_digits(a[i].norm()) && a[i].norm().len() <= 2 {
+            (a[i].norm().parse().unwrap_or(99), 1, false)
+        } else if let Some((v, k, b)) = word_number(a, i).filter(|(v, _, _)| (1..=12).contains(v)) {
+            (v, k, b)
+        } else if let Some(v) = english_hour(a[i].norm()) {
+            (v, 1, false)
+        } else {
+            continue;
+        };
         let mut p = i;
         if p > 0 && a[p - 1].tok.sym && a[p - 1].norm() == "-" {
             p -= 1;
         }
-        if p == 0 {
-            continue;
-        }
-        let prev = &a[p - 1];
-        let marker = !prev.used
-            && (matches!(prev.norm(), "ב" | "ל" | "at" | "@" | "around" | "בסביבות") || (prev.is("U_HOUR") && prev.norm().ends_with("שעה")));
+        let marker = attached_b
+            || (p > 0 && {
+                let prev = &a[p - 1];
+                !prev.used
+                    && (matches!(prev.norm(), "ב" | "ל" | "at" | "@" | "around" | "בסביבות") || (prev.is("U_HOUR") && prev.norm().ends_with("שעה")))
+            });
         if !marker {
             continue;
         }
-        if let Some(next) = a.get(i + 1) {
+        // a spelled-out hour needs the preposition: "at ten" yes, "ten" no
+        if span == 1 && english_hour(a[i].norm()).is_some() && !(p > 0 && matches!(a[p - 1].norm(), "at" | "around")) {
+            continue;
+        }
+        if let Some(next) = a.get(i + span) {
             if next.starts("U_") || next.is("T_WEEK") || next.is("T_MONTH") || next.is("T_DAY") || next.starts("MO_") {
                 continue;
             }
@@ -387,9 +510,11 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
             Some(h24) => hour = Some((h24, 0, true)),
             None => error = error.or(Some(AskKind::Time)),
         }
-        a[i].used = true;
-        for t in p - 1..p {
+        for t in i..i + span {
             a[t].used = true;
+        }
+        if !attached_b && p > 0 {
+            a[p - 1].used = true;
         }
         if p != i {
             a[p].used = true;
@@ -455,7 +580,14 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
                     let (ny, nm) = (idx.div_euclid(12), idx.rem_euclid(12) as u32 + 1);
                     let first = NaiveDate::from_ymd_opt(ny, nm, 1).unwrap_or(today);
                     let next = if nm == 12 { NaiveDate::from_ymd_opt(ny + 1, 1, 1) } else { NaiveDate::from_ymd_opt(ny, nm + 1, 1) };
-                    day = Some((first, next.unwrap_or(first + Duration::days(30)), Grain::Range));
+                    let next = next.unwrap_or(first + Duration::days(30));
+                    // "סוף החודש": the last week of it
+                    if i > 0 && a[i - 1].is("T_END") && !a[i - 1].used && matches!(m, None | Some(Mod::This)) {
+                        a[i - 1].used = true;
+                        day = Some((next - Duration::days(7), next, Grain::Range));
+                    } else {
+                        day = Some((first, next, Grain::Range));
+                    }
                 }
                 a[i].used = true;
             }
@@ -480,6 +612,7 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
                     _ => today + Duration::days(((idx + 7 - cur) % 7) as i64),
                 };
                 day = Some((date, date + Duration::days(1), Grain::Day));
+                weekday_seen = m.is_none().then_some(idx);
                 a[i].used = true;
                 if prev_day {
                     a[i - 1].used = true;
@@ -497,6 +630,22 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
                             break;
                         }
                     }
+                }
+                // a spelled-out day: "בעשרים באוקטובר", "עשרים וחמישה באוקטובר"
+                let word_day = if num.is_some() {
+                    None
+                } else {
+                    (i.saturating_sub(3)..i).find_map(|s| word_number(a, s).filter(|(v, k, _)| s + k == i && (1..=31).contains(v)).map(|(v, _, _)| (v, s)))
+                };
+                if let Some((d, s)) = word_day {
+                    match nearest_future(today, mo, d) {
+                        Numeric::Date(date) => day = Some((date, date + Duration::days(1), Grain::Day)),
+                        _ => error = Some(AskKind::Date),
+                    }
+                    for t in s..=i {
+                        a[t].used = true;
+                    }
+                    continue;
                 }
                 match num {
                     Some(k) => {
@@ -516,6 +665,7 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
                         let first = NaiveDate::from_ymd_opt(y, mo, 1).unwrap_or(today);
                         let next = if mo == 12 { NaiveDate::from_ymd_opt(y + 1, 1, 1) } else { NaiveDate::from_ymd_opt(y, mo + 1, 1) };
                         day = Some((first, next.unwrap_or(first + Duration::days(30)), Grain::Range));
+                        month_only = Some(mo);
                         a[i].used = true;
                     }
                 }
@@ -544,13 +694,57 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
         }
     }
 
+    // "ראשון בנובמבר": the first such weekday of that month, not the whole month
+    if let (Some(idx), Some(mo)) = (weekday_seen, month_only) {
+        if let Some(date) = first_weekday_in_month(today, mo, idx) {
+            day = Some((date, date + Duration::days(1), Grain::Day));
+        }
+    }
+
+    // ---- ranges that start now: "הפגישה הבאה" / "next meeting", "עד סוף השבוע" / "until ..." ----
+    let now_minute = now.with_second(0).and_then(|t| t.with_nanosecond(0)).unwrap_or(now);
+    let mut forced: Option<TimeSpec> = None;
+    if day.is_none() && instant.is_none() && tod.is_none() && hour.is_none() {
+        // the next meeting: from now, two weeks ahead (nearest first is the executor's order)
+        for i in 0..n {
+            if a[i].used || !a[i].is("T_NEXT") {
+                continue;
+            }
+            let meeting = |k: Option<usize>| k.and_then(|k| a.get(k)).map_or(false, |t| t.is("N_MEETING") && !t.used);
+            if meeting(i.checked_sub(1)) || meeting(Some(i + 1)) {
+                a[i].used = true;
+                let to = Local
+                    .from_local_datetime(&(now_minute.naive_local() + Duration::days(14)))
+                    .earliest()
+                    .unwrap_or(now_minute + Duration::days(14));
+                forced = Some(TimeSpec { from: now_minute, to, grain: Grain::Range });
+                break;
+            }
+        }
+    }
+    if let Some((d0, d1, g)) = day {
+        // "until X": from now to the end of X
+        if let Some(i) = (0..n).find(|&i| !a[i].used && a[i].is("T_UNTIL")) {
+            let end = match (g, hour.map(|(h, m, _)| (h * 60 + m, h * 60 + m + 60)).or(tod)) {
+                (Grain::Day, Some((_, e))) => local_at(d0, e),
+                _ => local_at(d1, 0),
+            };
+            if end > now_minute {
+                a[i].used = true;
+                forced = Some(TimeSpec { from: now_minute, to: end, grain: Grain::Range });
+            }
+        }
+    }
+
     // ---- assemble ----
-    let has_date = day.is_some() || instant.is_some();
+    let has_date = day.is_some() || instant.is_some() || forced.is_some();
     let window = hour.map(|(h, m, _)| (h * 60 + m, h * 60 + m + 60)).or(tod);
     if error == Some(AskKind::Date) {
         return DateParse { time: None, error, has_date, tod: window };
     }
-    let time = if let Some(inst) = instant {
+    let time = if let (Some(f), None) = (forced, error) {
+        Some(f)
+    } else if let Some(inst) = instant {
         Some(TimeSpec { from: inst, to: inst + Duration::hours(1), grain: Grain::Instant })
     } else if error == Some(AskKind::Time) {
         let (d0, d1, g) = day.unwrap_or((today, today + Duration::days(1), Grain::Day));
@@ -695,6 +889,55 @@ mod tests {
         assert_eq!(range("in 3 days").0, "2026-10-11T00:00");
         assert_eq!(range("בעוד שבוע").0, "2026-10-15T00:00");
         assert!(p("in the inbox").time.is_none());
+    }
+
+    #[test]
+    fn spelled_out_hours() {
+        // #32: "בשתיים" used to be ignored and the whole day was checked
+        assert_eq!(p("מחר בשתיים").error, Some(AskKind::Time));
+        assert_eq!(range("ביום חמישי הבא בעשר"), ("2026-10-15T10:00".into(), "2026-10-15T11:00".into(), Grain::Range));
+        assert_eq!(range("מחר בתשע").0, "2026-10-09T09:00");
+        assert_eq!(range("היום בשתים עשרה").0, "2026-10-08T12:00");
+        assert_eq!(range("מחר באחת עשרה").0, "2026-10-09T11:00");
+        assert_eq!(range("מחר בשבע בערב").0, "2026-10-09T19:00");
+        assert_eq!(range("tomorrow at ten").0, "2026-10-09T10:00");
+        // a spelled number without the preposition is not an hour
+        assert!(p("שלוש הצעות").time.is_none());
+        // offsets take number words too
+        assert_eq!(range("בעוד שלושה ימים").0, "2026-10-11T00:00");
+        assert_eq!(range("בעוד שלוש שעות").0, "2026-10-08T12:00");
+    }
+
+    #[test]
+    fn days_of_the_month_weekdays_and_month_ends() {
+        // #33
+        assert_eq!(range("ב-15 לחודש"), ("2026-10-15T00:00".into(), "2026-10-16T00:00".into(), Grain::Day));
+        assert_eq!(range("ב-3 לחודש").0, "2026-11-03T00:00");
+        assert_eq!(range("בעשרים ושלוש לחודש").0, "2026-10-23T00:00");
+        assert_eq!(range("בראשון בנובמבר"), ("2026-11-01T00:00".into(), "2026-11-02T00:00".into(), Grain::Day));
+        assert_eq!(range("בנובמבר ביום ראשון").0, "2026-11-01T00:00");
+        assert_eq!(range("בשלישי בדצמבר").0, "2026-12-01T00:00");
+        assert_eq!(range("בסוף החודש"), ("2026-10-25T00:00".into(), "2026-11-01T00:00".into(), Grain::Range));
+        assert_eq!(range("ביום שני האחרון").0, "2026-10-05T00:00");
+        assert_eq!(range("ביום ו").0, "2026-10-09T00:00");
+        // a month alone is still the month
+        assert_eq!(range("בנובמבר").0, "2026-11-01T00:00");
+    }
+
+    #[test]
+    fn spelled_dates_next_meeting_and_until() {
+        // #34
+        assert_eq!(range("בעשרים באוקטובר").0, "2026-10-20T00:00");
+        assert_eq!(range("בעשרים וחמישה באוקטובר").0, "2026-10-25T00:00");
+        assert_eq!(range("בשלושים ואחד באוקטובר").0, "2026-10-31T00:00");
+        assert_eq!(p("בשלושים ואחד בנובמבר").error, Some(AskKind::Date));
+        // next meeting: now .. +14 days
+        assert_eq!(range("הפגישה הבאה"), ("2026-10-08T09:00".into(), "2026-10-22T09:00".into(), Grain::Range));
+        assert_eq!(range("next meeting").1, "2026-10-22T09:00");
+        // until: now .. end of that period
+        assert_eq!(range("עד סוף השבוע"), ("2026-10-08T09:00".into(), "2026-10-11T00:00".into(), Grain::Range));
+        assert_eq!(range("until tomorrow"), ("2026-10-08T09:00".into(), "2026-10-10T00:00".into(), Grain::Range));
+        assert_eq!(range("עד סוף החודש").1, "2026-11-01T00:00");
     }
 
     #[test]

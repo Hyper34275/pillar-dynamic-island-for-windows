@@ -183,6 +183,11 @@ impl Lexicon {
         self.not_names.contains(norm)
     }
 
+    /// A first name the tables know (a nickname group member or a Latin-spelling key), folded.
+    pub fn is_known_name(&self, norm: &str) -> bool {
+        self.nick_groups.iter().any(|g| g.iter().any(|n| fold(n) == norm)) || self.latin.iter().any(|(he, _)| fold(he) == norm)
+    }
+
     /// Duplicate surface forms across concepts (a lexicon bug; checked by a test).
     pub fn duplicates(&self) -> &[String] {
         &self.dup

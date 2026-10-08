@@ -103,6 +103,8 @@ impl Features {
         f.file_typo = f.file && !seen_exact.contains(&"N_FILE");
         f.note_typo = f.note && !seen_exact.contains(&"N_NOTE");
         f.app_typo = f.app && !seen_exact.contains(&"N_APP");
+        // "מה שלח לי שרון": the question is about mail even if the word is not there
+        f.mail = f.mail || e.implied_mail;
         f.has_time = has_time;
         f.has_person = e.person.is_some();
         f.has_with = !e.with_names.is_empty();
@@ -294,6 +296,10 @@ pub fn decide(f: &Features, cands: &[(CapId, f32)], eff: &Effects) -> Decision {
         return if f.v_search && !f.any_noun() { Decision::Clarify { ask: AskKind::Content, cap: None } } else { Decision::NoMatch };
     }
     if crate::intent::sensitivity(c1) != Sensitivity::Read {
+        // "הפעל את הקובץ": opening something with nothing to say which one asks what, not a bare Confirm
+        if matches!(c1, caps::EMAIL_OPEN | caps::FILES_OPEN | caps::NOTES_OPEN) && !eff.constraint && !f.refers_back {
+            return Decision::Clarify { ask: AskKind::Content, cap: Some(c1) };
+        }
         return if s1 >= T_CONFIRM { Decision::Confirm { cap: c1 } } else { Decision::Clarify { ask: AskKind::Content, cap: Some(c1) } };
     }
     let is_calendar = c1.as_str().starts_with("calendar.");

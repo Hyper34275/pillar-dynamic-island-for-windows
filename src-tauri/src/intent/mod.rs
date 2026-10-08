@@ -22,6 +22,7 @@ pub mod dates;
 pub mod entities;
 pub mod lexicon;
 pub mod normalize;
+pub mod numwords;
 pub mod score;
 pub mod stem;
 pub mod types;
@@ -524,6 +525,41 @@ mod tests {
             assert_eq!(run(t).decision, Decision::NoMatch, "{t}");
         }
         assert_eq!(run("פתח את אקסל").decision, Decision::Confirm { cap: caps::APPS_LAUNCH });
+    }
+
+    #[test]
+    fn unhandled_write_verbs_are_not_searched() {
+        // #36: cancel / move / forward / update used to run a search with the verb as a term
+        for t in [
+            "תבטל את הפגישה של מחר",
+            "cancel my meeting tomorrow",
+            "תזיז את הפגישה למחר",
+            "העבר את המייל לדנה",
+            "שלח מייל לדנה שאני מאחר",
+            "תדחה את הפגישה למחר",
+            "תעדכן את הפגישה של מחר",
+            "שלח לי את הקובץ",
+        ] {
+            assert_eq!(run(t).decision, Decision::NoMatch, "{t}");
+        }
+        // "who sent" is the same word as the command, but a question
+        assert_eq!(run("מה שלח לי שרון").decision, Decision::Execute { cap: caps::EMAIL_SEARCH });
+        // opening with nothing to say which one asks
+        assert_eq!(run("הפעל את הקובץ").decision, Decision::Clarify { ask: AskKind::Content, cap: Some(caps::FILES_OPEN) });
+        assert_eq!(run("פתח את המייל האחרון").decision, Decision::Confirm { cap: caps::EMAIL_OPEN });
+    }
+
+    #[test]
+    fn daily_mail_phrases() {
+        // #35
+        let i = run("מיילים שלא קראתי");
+        assert_eq!(i.decision, Decision::Execute { cap: caps::EMAIL_SEARCH });
+        assert!(i.slots.unread && i.slots.terms.is_empty());
+        let i = run("מיילים עם קובץ מצורף מאתמול");
+        assert_eq!(i.decision, Decision::Execute { cap: caps::EMAIL_SEARCH });
+        assert!(i.slots.terms.is_empty());
+        assert_eq!(run("דואר נכנס").decision, Decision::Clarify { ask: AskKind::Content, cap: Some(caps::EMAIL_SEARCH) });
+        assert_eq!(run("מי כתב לי היום").decision, Decision::Execute { cap: caps::EMAIL_SEARCH });
     }
 
     #[test]

@@ -34,6 +34,8 @@ pub struct Entities {
     /// File extension of an explicit file name ("budget.xlsx").
     pub explicit_ext: Option<String>,
     pub refers_back: bool,
+    /// "מה שלח לי X": no mail noun was said but the question is about mail.
+    pub implied_mail: bool,
 }
 
 const FILE_EXTS: [&str; 14] =
@@ -86,6 +88,12 @@ fn without_lamed(raw: &str) -> Option<String> {
     }
 }
 
+/// "שלח", "כתבה" ...: the past tense of "wrote / sent" (also the imperative of שלח, so a caller
+/// checks the context: a question word before it, or a relative marker).
+fn is_wrote_verb(norm: &str) -> bool {
+    matches!(norm, "שלח" | "שלחה" | "שלחו" | "כתב" | "כתבה" | "כתבו")
+}
+
 fn push_unique(list: &mut Vec<String>, name: String) {
     let f = fold(&name);
     if !list.iter().any(|n| fold(n) == f) {
@@ -135,6 +143,15 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             a[i + 1].used = true;
         } else if a[i].is("M_ONLY") || a[i].is("M_ALSO") {
             a[i].used = true;
+        }
+    }
+
+    // "מיילים עם קובץ מצורף": an attribute of the mail, not a request for files
+    if mail_hint || a.iter().any(|t| !t.used && t.is("N_MAIL")) {
+        for i in 0..n.saturating_sub(1) {
+            if !a[i].used && a[i].is("N_FILE") && !a[i + 1].used && (a[i + 1].norm().starts_with("מצורפ") || a[i + 1].norm().starts_with("attach")) {
+                a[i].used = true;
+            }
         }
     }
 
@@ -384,8 +401,53 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
     e.person = persons.into_iter().next();
 
     // ---- the mail sender ----
-    let mail_ctx = mail_hint || a.iter().any(|t| !t.used && (t.is("N_MAIL") || t.is("P_FROM")));
+    let mut mail_ctx = mail_hint || a.iter().any(|t| !t.used && (t.is("N_MAIL") || t.is("P_FROM")));
     let mut senders: Vec<String> = Vec::new();
+
+    // "מה שלח לי שרון", "מי כתב לי היום": a question about who wrote is a mail search. The verb is
+    // taken here, otherwise it would count as a "send" command or as a search term.
+    for i in 0..n.saturating_sub(1) {
+        let asks = !a[i].used && (a[i].is("Q_WHAT") || matches!(a[i].norm(), "מי" | "who"));
+        if !asks || a[i + 1].used || !is_wrote_verb(a[i + 1].norm()) {
+            continue;
+        }
+        a[i + 1].used = true;
+        e.implied_mail = true;
+        mail_ctx = true;
+        let mut k = i + 2;
+        if k < n && !a[k].used && a[k].norm() == "לי" {
+            a[k].used = true;
+            k += 1;
+        }
+        if k < n && a[k].is_content() {
+            push_unique(&mut senders, strip_poss(a[k].raw()).to_string());
+            a[k].used = true;
+        }
+    }
+    // "המייל שמוטי שלח", "מייל ששלח יובל": the relative form of the same thing
+    if mail_ctx {
+        for j in 0..n {
+            if a[j].used {
+                continue;
+            }
+            let rel_name = a[j].is_content() && !a[j].tok.quoted && a[j].norm().starts_with('ש') && a[j].raw().chars().count() >= 4;
+            if rel_name && j + 1 < n && !a[j + 1].used && is_wrote_verb(a[j + 1].norm()) {
+                let name = strip_chars(a[j].raw(), 1);
+                if !lex.is_not_name(&fold(&name)) {
+                    push_unique(&mut senders, name);
+                    a[j].used = true;
+                    a[j + 1].used = true;
+                }
+            } else if a[j].hit.as_ref().map_or(false, |h| h.concept == "VETO" && h.prefix.contains('ש')) && is_wrote_verb(a[j].norm().strip_prefix('ש').unwrap_or("")) {
+                if let Some(k) = next_content(a, j + 1, false) {
+                    push_unique(&mut senders, strip_poss(a[k].raw()).to_string());
+                    a[k].used = true;
+                    a[j].used = true;
+                }
+            }
+        }
+    }
+
     for i in 0..n {
         if a[i].used {
             continue;
@@ -398,18 +460,43 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             }
             continue;
         }
+        // "מ-Avi", "מ דנה": the lone "מ" (the hyphen is a token of its own) takes the next word
+        if mail_ctx && a[i].norm() == "מ" && !a[i].tok.sym && !a[i].tok.quoted {
+            let mut j = i + 1;
+            if j < n && a[j].tok.sym && a[j].norm() == "-" {
+                j += 1;
+            }
+            if j < n && a[j].is_content() {
+                push_unique(&mut senders, strip_poss(a[j].raw()).to_string());
+                for t in i..=j {
+                    a[t].used = true;
+                }
+                continue;
+            }
+        }
         if mail_ctx && a[i].is_content() && !a[i].tok.quoted {
             let norm = a[i].tok.norm.clone();
             let raw = a[i].raw().to_string();
             if !norm.starts_with('מ') || raw.chars().count() < 4 || lex.is_not_name(&norm) {
                 continue;
             }
-            let mut name = strip_chars(&raw, 1);
-            if name.starts_with('ה') && name.chars().count() >= 4 {
+            // after a relative marker ("שאני מאחר", "שבו מוזכר") the word is not a sender
+            if i > 0 && a[i - 1].hit.as_ref().map_or(false, |h| h.prefix.contains('ש')) {
+                continue;
+            }
+            // a name that itself starts with מ ("מוטי", "מיכאל") is the name, not "from" + name
+            let whole_is_name = lex.is_known_name(&norm);
+            let mut name = if whole_is_name { raw.clone() } else { strip_chars(&raw, 1) };
+            if !whole_is_name && name.starts_with('ה') && name.chars().count() >= 4 {
                 name = strip_chars(&name, 1);
             }
             let known_person = known.people.iter().any(|p| fold(p).split(' ').any(|w| w == fold(&name)));
-            if !known_person && (lex.is_not_name(&fold(&name)) || lex.lookup(&fold(&name)).is_some()) {
+            if !known_person && !whole_is_name && (lex.is_not_name(&fold(&name)) || lex.lookup(&fold(&name)).is_some()) {
+                continue;
+            }
+            // "מו..." is the passive participle shape (מוזכר, מוסכם, מוכן), not "from ו...": a
+            // sender with a vav-initial name is spelled out by the user with "מ-" or "מאת"
+            if !known_person && !whole_is_name && norm.starts_with("מו") && name.starts_with('ו') {
                 continue;
             }
             push_unique(&mut senders, name);
@@ -483,6 +570,32 @@ mod tests {
         // a מ-noun is not a sender
         let e = run("תחפש מייל על מחיר", &Known::default(), false);
         assert!(e.sender.is_none());
+    }
+
+    #[test]
+    fn ordinary_words_starting_with_mem_are_not_senders() {
+        // #29
+        for t in ["מייל שבו מוזכר פרויקט אלפא", "שלח מייל לדנה שאני מאחר", "מייל מסכם על הפגישה"] {
+            assert!(run(t, &Known::default(), false).sender.is_none(), "{t}");
+        }
+        // a name that starts with מ is the name
+        assert_eq!(run("מייל מוטי", &Known::default(), false).sender.as_deref(), Some("מוטי"));
+        assert_eq!(run("מייל מיובל", &Known::default(), false).sender.as_deref(), Some("יובל"));
+    }
+
+    #[test]
+    fn hyphenated_and_relative_senders() {
+        // #30: the hyphen is a token of its own
+        let e = run("מייל מ-Avi על התקציב", &Known::default(), false);
+        assert_eq!(e.sender.as_deref(), Some("Avi"));
+        assert_eq!(e.terms.len(), 1);
+        assert_eq!(run("מייל מ-דנה", &Known::default(), false).sender.as_deref(), Some("דנה"));
+        assert_eq!(run("המייל שמוטי שלח", &Known::default(), false).sender.as_deref(), Some("מוטי"));
+        assert_eq!(run("מייל ששלח יובל", &Known::default(), false).sender.as_deref(), Some("יובל"));
+        // #35: who wrote to me is a mail question even without the noun
+        let e = run("מה שלח לי שרון", &Known::default(), false);
+        assert_eq!(e.sender.as_deref(), Some("שרון"));
+        assert!(e.implied_mail);
     }
 
     #[test]

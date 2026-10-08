@@ -231,6 +231,79 @@ pub fn evaluate_expr(expr: &str) -> Result<f64, CalcError> {
     Ok(if v == 0.0 { 0.0 } else { v })
 }
 
+/// "1,000" -> "1000", "2,500,000" -> "2500000": a comma between a group of up to three digits and
+/// exactly three more is a thousands separator. "1,23", "1,2,3" and "12,3456" are left alone.
+/// Only sentences go through this; `evaluate_expr` stays strict (a bare "1,000" is a syntax error).
+fn strip_thousands(t: &str) -> String {
+    let cs: Vec<char> = t.chars().collect();
+    let mut out = String::with_capacity(t.len());
+    for (i, &c) in cs.iter().enumerate() {
+        if c == ',' && i > 0 && cs[i - 1].is_ascii_digit() {
+            let group_ok = (1..=3).all(|k| cs.get(i + k).map_or(false, |d| d.is_ascii_digit())) && !cs.get(i + 4).map_or(false, |d| d.is_ascii_digit());
+            // the digits before the comma: one to three of them, not part of a decimal, no leading 0
+            let mut s = i;
+            while s > 0 && cs[s - 1].is_ascii_digit() {
+                s -= 1;
+            }
+            let run = i - s;
+            let after_group = s > 0 && cs[s - 1] == ',';
+            let decimal = s > 0 && cs[s - 1] == '.';
+            let lead_ok = after_group || cs[s] != '0';
+            if group_ok && !decimal && lead_ok && ((1..=3).contains(&run)) && (!after_group || run == 3) {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A spelled-out number starting at `start` (words separated by single spaces): its value, the
+/// index after its last word, and whether a "מ" ("of") was glued to the front of it ("ממאתיים",
+/// only looked for right after a percent).
+fn number_phrase(cs: &[char], start: usize, after_pct: bool) -> Option<(u64, usize, bool)> {
+    let mut words: Vec<String> = Vec::new();
+    let mut ends: Vec<usize> = Vec::new();
+    let mut i = start;
+    while words.len() < 6 && i < cs.len() && cs[i].is_alphabetic() {
+        let s = i;
+        while i < cs.len() && cs[i].is_alphabetic() {
+            i += 1;
+        }
+        words.push(cs[s..i].iter().collect());
+        ends.push(i);
+        if i < cs.len() && cs[i] == ' ' {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    let refs: Vec<&str> = words.iter().map(|w| w.as_str()).collect();
+    if let Some((v, k)) = super::numwords::parse(&refs) {
+        return Some((v, ends[k - 1], false));
+    }
+    if after_pct {
+        if let Some(rest) = words.first().and_then(|w| w.strip_prefix('מ')) {
+            let mut refs = refs.clone();
+            refs[0] = rest;
+            if let Some((v, k)) = super::numwords::parse(&refs) {
+                return Some((v, ends[k - 1], true));
+            }
+        }
+    }
+    None
+}
+
+/// "100/3", "7 / 0": only numbers and one slash, and not a date ("7/8" is the 7th of August).
+fn is_plain_division(t: &str) -> bool {
+    let s: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+    if s.matches('/').count() != 1 || !s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '/') {
+        return false;
+    }
+    let reference = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap_or_default();
+    matches!(super::dates::numeric_date(&s, reference), super::dates::Numeric::NotDate)
+}
+
 /// Normalised expression found in a sentence, or `None`.
 ///
 /// Numbers and operators are collected, filler words are ignored, and the spoken operators are
@@ -239,13 +312,17 @@ pub fn evaluate_expr(expr: &str) -> Result<f64, CalcError> {
 /// parse; "a/b" and a lone minus (which are also how dates are written) need `trigger`, a
 /// calculator word ("חשב", "כמה", "what is") in the sentence.
 pub fn extract_expr(text: &str, trigger: bool) -> Option<String> {
-    let t = fold(text);
+    let t = strip_thousands(&fold(text));
     let cs: Vec<char> = t.chars().collect();
     let n = cs.len();
     let mut items: Vec<String> = Vec::new();
     let mut strong = false;
     let mut weak = false;
     let mut numbers = 0;
+    // a percent was followed by a word that says how it continues, but not by a number
+    let mut dangling = false;
+    // "מע"מ 17% על 500": the VAT amount, i.e. 17% of 500
+    let mut vat = false;
     let mut i = 0;
     let last_is_operand = |items: &Vec<String>| {
         items.last().map_or(false, |s| s == ")" || s == "%" || s.chars().next().map_or(false, |c| c.is_ascii_digit() || c == '.'))
@@ -305,7 +382,26 @@ pub fn extract_expr(text: &str, trigger: bool) -> Option<String> {
                         i += 1;
                     }
                     let w: String = cs[start..i].iter().collect();
+                    // a spelled-out number ("עשרים ושלוש", "ממאתיים" right after a percent)
+                    let after_pct = items.last().map_or(false, |s| s == "%");
+                    if let Some((value, end, glued_of)) = number_phrase(&cs, start, after_pct) {
+                        if glued_of {
+                            items.push("*".into());
+                        } else if last_is_operand(&items) {
+                            return None;
+                        }
+                        items.push(value.to_string());
+                        numbers += 1;
+                        dangling = false;
+                        i = end;
+                        continue;
+                    }
+                    if matches!(w.as_str(), "מע\"מ" | "מעמ" | "vat") {
+                        vat = true;
+                        continue;
+                    }
                     let op = match w.as_str() {
+                        "על" | "on" if vat && after_pct => Some("*"),
                         "פלוס" | "ועוד" | "plus" => Some("+"),
                         "פחות" | "מינוס" | "minus" => Some("-"),
                         "כפול" | "times" | "multiplied" => Some("*"),
@@ -318,11 +414,9 @@ pub fn extract_expr(text: &str, trigger: bool) -> Option<String> {
                     };
                     if let Some(op) = op {
                         items.push(op.to_string());
-                        if op != "-" && op != "/" {
-                            strong = true;
-                        } else {
-                            strong = true; // spelled out, so not a date
-                        }
+                        strong = true; // spelled out, so not a date
+                    } else if after_pct && !matches!(w.as_str(), "בבקשה" | "תודה" | "please" | "thanks" | "thank" | "you" | "לי") {
+                        dangling = true;
                     }
                     continue;
                 }
@@ -333,7 +427,12 @@ pub fn extract_expr(text: &str, trigger: bool) -> Option<String> {
     if numbers == 0 || items.len() < 2 {
         return None;
     }
-    if !(strong || (weak && trigger)) {
+    // "17% from two hundred": a word we do not understand after the percent would leave a bare
+    // "17%" (0.17), a confident wrong number. Better to ask.
+    if dangling && items.last().map_or(false, |s| s == "%") {
+        return None;
+    }
+    if !(strong || (weak && trigger) || is_plain_division(&t)) {
         return None;
     }
     let expr: String = items.concat();
@@ -410,6 +509,37 @@ mod tests {
         assert_eq!(extract_expr("תחשב 120 חלקי 8", true).as_deref(), Some("120/8"));
         assert_eq!(extract_expr("חשב 5 חלקי 0", true).as_deref(), Some("5/0"));
         assert_eq!(extract_expr("3x4", false).as_deref(), Some("3*4"));
+    }
+
+    #[test]
+    fn percent_of_a_spelled_number_is_not_a_bare_percent() {
+        // #31: "ממאתיים" used to be dropped and the answer was 0.17
+        assert_eq!(extract_expr("17% ממאתיים", false).as_deref(), Some("17%*200"));
+        assert_eq!(extract_expr("20% של חמש מאות", false).as_deref(), Some("20%*500"));
+        // a continuation we do not understand asks instead of showing a confident 0.2
+        assert_eq!(extract_expr("20% from five hundred", false), None);
+        // politeness after the percent is fine
+        assert_eq!(extract_expr("חשב 50% בבקשה", false).as_deref(), Some("50%"));
+    }
+
+    #[test]
+    fn spelled_numbers_thousands_vat_and_plain_division() {
+        assert_eq!(extract_expr("עשרים ושלוש כפול ארבע", false).as_deref(), Some("23*4"));
+        assert_eq!(extract_expr("שבע פלוס שמונה", false).as_deref(), Some("7+8"));
+        assert_eq!(extract_expr("1,000 * 1.17", false).as_deref(), Some("1000*1.17"));
+        assert_eq!(extract_expr("2,500,000 חלקי 4", true).as_deref(), Some("2500000/4"));
+        // not thousands separators
+        assert_eq!(extract_expr("1,23 + 4", false), None);
+        // VAT amount: X% of Y
+        assert_eq!(extract_expr("מע\"מ 17% על 500", false).as_deref(), Some("17%*500"));
+        assert_eq!(ev("17%*500"), Ok(85.0));
+        // 100/3 and 1/0 are not dates; 7/8 and 15/10 are
+        assert_eq!(extract_expr("100/3", false).as_deref(), Some("100/3"));
+        assert_eq!(extract_expr("1/0", false).as_deref(), Some("1/0"));
+        assert_eq!(extract_expr("7/8", false), None);
+        assert_eq!(extract_expr("15/10", false), None);
+        // evaluate_expr itself stays strict
+        assert_eq!(ev("1,000"), Err(CalcError::Syntax));
     }
 
     #[test]
