@@ -27,7 +27,9 @@ npm run build:installer      # checks the four versions, then `tauri build --con
   `dist/tour.html`, then `scripts/build-center.cjs`: `dotnet publish` of the Center project under `center/` in
   Release, self-contained and trimmed, into `center/publish/`, with `onnxruntime.dll`, `DirectML.dll` and the
   `.pdb` files removed and `dist/` copied to `center/publish/web/`);
-- maps `bundle.resources` `../center/publish` to `center` under the install folder;
+- maps `bundle.resources` `../center/publish` to `center` under the install folder, and ships the licence notices as files
+  only (never shown in any window): `THIRD_PARTY_NOTICES.txt` (from the repo's `THIRD_PARTY_NOTICES.md`) and
+  `licenses\wordfreq-he.txt` (the CC BY-SA 4.0 notice of the Hebrew word frequencies, `intent/lexicon/freq_he.LICENSE.txt`);
 - sets `bundle.windows.nsis.template` to `nsis/installer.nsi`, **our copy of Tauri's installer script**
   (see "Upgrades and migration", the part about the template). `src-tauri/installer-hooks.nsh`
   (`installerHooks`, in `tauri.conf.json`) holds the logic.

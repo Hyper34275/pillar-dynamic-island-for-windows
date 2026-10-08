@@ -5,7 +5,9 @@
   },
   "bundle": {
     "resources": {
-      "../center/publish": "center"
+      "../center/publish": "center",
+      "src/intent/lexicon/freq_he.LICENSE.txt": "licenses/wordfreq-he.txt",
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.txt"
     },
     "windows": {
       "nsis": {

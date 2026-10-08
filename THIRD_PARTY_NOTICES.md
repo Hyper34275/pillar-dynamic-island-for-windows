@@ -15,6 +15,14 @@ Paul, with Reserved Font Name "Mr Dafoe". Mr Dafoe is licensed under the **SIL O
 `assets/brand/licenses/MrDafoe-OFL.txt`. Only vector outlines of the word "Yuval" are shipped, not the font file, and nothing is
 named "Mr Dafoe". Details and how the outlines were adjusted: `assets/brand/LOGO_NOTES.md`.
 
+## Hebrew word frequencies: wordfreq (data only)
+
+`src-tauri/src/intent/lexicon/freq_he.tsv` (spelling suggestions of the smart search) is derived from **wordfreq** 3.2.0 by Robyn
+Speer (https://github.com/rspeer/wordfreq), built from Wikipedia, OPUS OpenSubtitles 2018, Google Books Ngrams, the OSCAR corpus
+and Twitter word counts. The data is licensed under **Creative Commons Attribution-ShareAlike 4.0 International**
+(https://creativecommons.org/licenses/by-sa/4.0/); the licence covers that data file only, not the code that reads it. The full
+notice (sources, changes) ships with the app as `licenses\wordfreq-he.txt` in the install folder.
+
 ## Runtime dependencies (high level)
 
 Licences are as commonly published by each project; check the package itself for the authoritative text.
