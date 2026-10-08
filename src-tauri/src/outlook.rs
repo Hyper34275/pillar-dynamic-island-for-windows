@@ -887,15 +887,19 @@ fn set_reading(id: Option<&str>) {
 /// The watchdog gave up on a read: if a secondary calendar was being read, leave it out for
 /// [`QUARANTINE_SECS`]. True when one was.
 pub fn quarantine_reading_source() -> bool {
-    let Some(id) = READING.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-        return false;
-    };
+    quarantine_reading_source_id().is_some()
+}
+
+/// Like [`quarantine_reading_source`], also saying which calendar it was (the background
+/// prefetch reports it as failed). The id is never logged.
+pub fn quarantine_reading_source_id() -> Option<String> {
+    let id = READING.lock().unwrap_or_else(|e| e.into_inner()).take()?;
     let until = Instant::now() + std::time::Duration::from_secs(QUARANTINE_SECS);
     let mut q = QUARANTINE.lock().unwrap_or_else(|e| e.into_inner());
     q.retain(|(i, _)| *i != id);
     dlog!("WARN", "outlook", "calendar {} quarantined after a hung read", hash_id(&id));
-    q.push((id, until));
-    true
+    q.push((id.clone(), until));
+    Some(id)
 }
 
 fn is_quarantined(id: &str) -> bool {
@@ -1098,6 +1102,8 @@ impl OutlookSource {
             dlog!("INFO", "outlook", "Outlook profile changed; calendar discovery starts afresh");
         }
         self.watcher = None;
+        // What the background prefetch holds belongs to the old profile.
+        crate::calendar::prefetch_clear();
         self.known.clear();
         self.folders.clear();
         self.checked.clear();

@@ -801,6 +801,8 @@ enum Msg {
     /// Read another stretch of the calendar (a day the user browses to) through the same worker.
     /// It changes nothing in the machine: the regular 48 h sync stays what reminders follow.
     Range { window: FetchWindow, reply: Sender<FetchResult> },
+    /// The `calendarPrefetchDays` setting changed.
+    PrefetchSettings,
 }
 
 /// Longest stretch one `calendar_get_range` may read.
@@ -835,6 +837,12 @@ struct Supervisor {
     pending_ranges: Vec<(FetchWindow, Sender<FetchResult>)>,
     /// A navigation change arrived during a read that may have started before it.
     nav_changed_during_read: bool,
+    /// Background schedule prefetch (lowest priority, see "Schedule prefetch").
+    pf: PrefetchSched,
+    /// A prefetch batch is on the worker right now.
+    in_prefetch: bool,
+    /// A refresh arrived during a prefetch batch (which does not satisfy it).
+    refresh_after_prefetch: bool,
 }
 
 impl Supervisor {
@@ -924,6 +932,11 @@ impl Supervisor {
         dlog!("INFO", "calendar", "calendar navigation changed in Outlook, re-reading");
         let now = self.now();
         self.machine.on_refresh(&now);
+        // A calendar may have been added: read the schedule ahead again soon.
+        if self.pf.armed {
+            self.pf.due = Some(now.mono_ms + PREFETCH_NAV_MS);
+            self.pf.round = None;
+        }
     }
 
     /// Hand the window to the worker and wait up to the watchdog limit for its answer.
@@ -950,8 +963,13 @@ impl Supervisor {
                 Ok(Msg::Reply { generation: g, result }) if g == generation => return Outcome::Done(result),
                 Ok(Msg::Reply { .. }) => {}
                 Ok(Msg::Refresh) => {
-                    // Already reading; the refresh is satisfied by this read.
+                    // Already reading; the refresh is satisfied by this read, unless this is only
+                    // a prefetch batch.
+                    if self.in_prefetch {
+                        self.refresh_after_prefetch = true;
+                    }
                 }
+                Ok(Msg::PrefetchSettings) => self.pf.settings_changed = true,
                 // This read may have looked at the navigation pane before the change.
                 Ok(Msg::NavChanged) => self.nav_changed_during_read = true,
                 Ok(Msg::Range { window, reply }) => self.pending_ranges.push((window, reply)),
@@ -1052,9 +1070,29 @@ impl Supervisor {
         if std::mem::take(&mut self.nav_changed_during_read) {
             self.on_nav_changed();
         }
+        if std::mem::take(&mut self.pf.settings_changed) {
+            self.on_prefetch_settings(&now);
+        }
+        let days = self.prefetch_days();
+        self.prefetch_arm(&now, days);
         let (action, at) = self.machine.next();
         if at > now.mono_ms {
-            let wait = (at - now.mono_ms).min(MAX_IDLE_WAIT_MS);
+            let gate = PrefetchGate {
+                connected: self.machine.status() == CalendarStatus::Connected,
+                days,
+                due: self.pf.due,
+                now: now.mono_ms,
+                sync_at: at,
+                pending_ranges: self.pending_ranges.len(),
+                work_waiting: self.nav_changed_during_read || self.pf.settings_changed,
+            };
+            if prefetch_may_run(&gate) {
+                return self.prefetch_step(days);
+            }
+            let mut wait = (at - now.mono_ms).min(MAX_IDLE_WAIT_MS);
+            if let Some(w) = self.prefetch_wake(&now, days) {
+                wait = wait.min(w.max(1));
+            }
             return match self.rx.recv_timeout(Duration::from_millis(wait)) {
                 Ok(Msg::Refresh) => {
                     let now = self.now();
@@ -1067,6 +1105,10 @@ impl Supervisor {
                 }
                 Ok(Msg::Range { window, reply }) => {
                     self.pending_ranges.push((window, reply));
+                    true
+                }
+                Ok(Msg::PrefetchSettings) => {
+                    self.pf.settings_changed = true;
                     true
                 }
                 Ok(Msg::Shutdown) | Err(RecvTimeoutError::Disconnected) => false,
@@ -1117,6 +1159,9 @@ pub fn start(app: AppHandle) {
         last_logged: (CalendarStatus::Waiting, None),
         pending_ranges: Vec::new(),
         nav_changed_during_read: false,
+        pf: PrefetchSched::default(),
+        in_prefetch: false,
+        refresh_after_prefetch: false,
     };
     let spawned = std::thread::Builder::new().name("companyisland-calendar".into()).spawn(move || {
         supervisor.run();
@@ -1131,6 +1176,7 @@ pub fn start(app: AppHandle) {
 /// Stop the service and give the worker a moment to release COM cleanly.
 pub fn stop() {
     let control = CONTROL.lock().unwrap_or_else(|e| e.into_inner()).take();
+    prefetch_clear();
     if let Some(c) = control {
         let _ = c.tx.send(Msg::Shutdown);
         let _ = c.done.recv_timeout(Duration::from_secs(2));
@@ -1315,6 +1361,680 @@ pub struct RangeRead {
 pub fn known_sources(app: &tauri::AppHandle) -> Vec<CalendarSourceDto> {
     use tauri::Manager;
     app.state::<CalendarState>().get().sources.map(|r| r.sources).unwrap_or_default()
+}
+
+// =============================================================================
+// Schedule prefetch (memory only)
+// =============================================================================
+//
+// The app downloads the next N days (setting `calendarPrefetchDays`, default 7) of the user's own
+// calendar and of every calendar they have in Outlook's Calendar module, checked or not, whatever
+// Outlook's Cached Exchange Mode says (Outlook fetches a folder it does not hold from the server
+// when the object model reads it). Smart search answers from this copy while the asked window
+// lies inside it; otherwise it reads live. The copy is never written to disk.
+//
+// The reads run through the supervisor and its watchdog, one small batch per scheduling step and
+// only while nothing else wants the worker: a regular sync, or the island's own range read,
+// always goes first. A timeout quarantines the calendar being read and never touches the
+// island's state machine (`FetchWindow::search`).
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// Calendars read together by one batch.
+pub const PREFETCH_BATCH: usize = 6;
+/// A copy older than this is not answered from.
+const PREFETCH_FRESH_MS: i64 = 30 * 60 * 1000;
+/// First round after the calendar connects.
+const PREFETCH_FIRST_MS: u64 = 20_000;
+/// Rounds follow each other this far apart.
+const PREFETCH_EVERY_MS: u64 = 15 * 60 * 1000;
+/// After a navigation change (a calendar added) the next round starts this soon.
+const PREFETCH_NAV_MS: u64 = 10_000;
+/// After a changed setting.
+const PREFETCH_SETTING_MS: u64 = 2_000;
+/// Pause between two batches of one round.
+const PREFETCH_PACE_MS: u64 = 500;
+/// Retry when nothing could be planned yet (calendars not discovered).
+const PREFETCH_RETRY_MS: u64 = 15_000;
+/// A batch does not start when the regular sync is due within this time.
+const PREFETCH_SYNC_GAP_MS: u64 = 2_000;
+/// Events kept in memory over all calendars; the latest-starting ones go first.
+pub const PREFETCH_MAX_EVENTS: usize = 2000;
+/// Watchdog hits tolerated in one round, then it ends.
+const PREFETCH_MAX_TIMEOUTS: u32 = 3;
+/// Failed reads (Outlook busy or gone) tolerated in one round, then it ends.
+const PREFETCH_MAX_ERRORS: u32 = 2;
+
+static PREFETCH_DAYS: AtomicU32 = AtomicU32::new(0);
+
+/// One calendar's share of the copy.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrefCal {
+    pub id: String,
+    /// Active in the island (checked, or the primary calendar): what a search without an explicit
+    /// list is answered from.
+    pub active: bool,
+    pub events: Vec<CalendarEventDto>,
+    pub truncated: bool,
+    pub read_unix_ms: i64,
+    /// Why the last round could not read it ("CAL-SHARED-104"...); `None` = read cleanly.
+    pub error: Option<String>,
+}
+
+/// The process-wide copy. Replaced per calendar as batches finish.
+#[derive(Debug)]
+pub struct PrefetchCache {
+    /// Bumped by every clear, so a round that started before it cannot store into the new copy.
+    epoch: u64,
+    window: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// The calendars of the latest round, in reading order, with their active flag.
+    planned: Vec<(String, bool)>,
+    cals: Vec<PrefCal>,
+    capped: bool,
+    fetched_unix_ms: Option<i64>,
+}
+
+impl PrefetchCache {
+    const fn new() -> Self {
+        PrefetchCache { epoch: 0, window: None, planned: Vec::new(), cals: Vec::new(), capped: false, fetched_unix_ms: None }
+    }
+
+    fn clear(&mut self) {
+        self.epoch += 1;
+        self.window = None;
+        self.planned.clear();
+        self.cals.clear();
+        self.capped = false;
+        self.fetched_unix_ms = None;
+    }
+
+    /// Store finished calendars of a round. False (nothing stored) when the cache was cleared
+    /// since the round began. A different window drops what was held for the old one.
+    fn commit(
+        &mut self,
+        epoch: u64,
+        window: (DateTime<Utc>, DateTime<Utc>),
+        planned: &[(String, bool)],
+        done: Vec<PrefCal>,
+        now_ms: i64,
+    ) -> bool {
+        if epoch != self.epoch {
+            return false;
+        }
+        if self.window != Some(window) {
+            self.cals.clear();
+            self.window = Some(window);
+        }
+        self.planned = planned.to_vec();
+        for cal in done {
+            self.cals.retain(|c| c.id != cal.id);
+            self.cals.push(cal);
+        }
+        // Reading order; a calendar that left Outlook's list goes too.
+        let order: HashMap<&str, usize> = self.planned.iter().enumerate().map(|(i, (id, _))| (id.as_str(), i)).collect();
+        self.cals.retain(|c| order.contains_key(c.id.as_str()));
+        self.cals.sort_by_key(|c| order[c.id.as_str()]);
+        for c in self.cals.iter_mut() {
+            c.active = self.planned.iter().any(|(id, a)| *id == c.id && *a);
+        }
+        self.capped = cap_prefetch_events(&mut self.cals, PREFETCH_MAX_EVENTS);
+        self.fetched_unix_ms = Some(now_ms);
+        true
+    }
+}
+
+static PREFETCH: Mutex<PrefetchCache> = Mutex::new(PrefetchCache::new());
+
+fn prefetch_cache() -> std::sync::MutexGuard<'static, PrefetchCache> {
+    PREFETCH.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Keep at most `cap` events over all calendars, dropping the latest-starting first. True when
+/// any were dropped. Pure.
+pub fn cap_prefetch_events(cals: &mut [PrefCal], cap: usize) -> bool {
+    let total: usize = cals.iter().map(|c| c.events.len()).sum();
+    if total <= cap {
+        return false;
+    }
+    let mut starts: Vec<DateTime<Utc>> = cals.iter().flat_map(|c| c.events.iter().map(|e| e.start_utc)).collect();
+    starts.sort();
+    // Events starting after the cut go; among those starting exactly at it, as many as still fit.
+    let cut = starts[cap - 1];
+    let mut at_cut = starts.iter().take(cap).filter(|s| **s == cut).count();
+    for cal in cals.iter_mut() {
+        let mut dropped = false;
+        cal.events.retain(|e| {
+            let keep = e.start_utc < cut || (e.start_utc == cut && at_cut > 0);
+            if keep && e.start_utc == cut {
+                at_cut -= 1;
+            }
+            dropped |= !keep;
+            keep
+        });
+        cal.truncated |= dropped;
+    }
+    true
+}
+
+/// Forget everything held (profile change, stop, prefetch switched off).
+pub fn prefetch_clear() {
+    prefetch_cache().clear();
+}
+
+/// The window the copy covers: from local midnight today to local midnight `days` later
+/// (DST-correct: both ends are calendar dates, not 24 h multiples). `days` 0 = off. Pure, with
+/// the local midnight of a date supplied.
+pub fn prefetch_window_with(
+    today: chrono::NaiveDate,
+    days: u32,
+    midnight: impl Fn(chrono::NaiveDate) -> Option<DateTime<Utc>>,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    if days == 0 {
+        return None;
+    }
+    let days = days.min(MAX_QUERY_DAYS as u32);
+    let from = midnight(today)?;
+    let to = midnight(today + ChronoDuration::days(days as i64))?;
+    (to > from).then_some((from, to))
+}
+
+/// Midnight of a date in the PC's time zone. A zone whose clocks skip midnight starts the day at
+/// the first hour that exists.
+pub fn local_midnight(date: chrono::NaiveDate) -> Option<DateTime<Utc>> {
+    use chrono::TimeZone;
+    (0..3).find_map(|h| {
+        let naive = date.and_hms_opt(h, 0, 0)?;
+        Local.from_local_datetime(&naive).earliest().map(|t| t.with_timezone(&Utc))
+    })
+}
+
+/// What a search over `[from, to)` can be answered with from `cache`, or `None` (read live): the
+/// copy must cover the window completely, and every calendar asked for (`only`; without it, every
+/// active calendar of the latest round) must have been read cleanly in the last 30 minutes.
+/// Events are filtered to the window and to `only`. Pure.
+pub fn prefetched_in(
+    cache: &PrefetchCache,
+    now_ms: i64,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    only: Option<&[String]>,
+) -> Option<RangeRead> {
+    let (win_from, win_to) = cache.window?;
+    if to <= from || from < win_from || to > win_to {
+        return None;
+    }
+    let wanted: Vec<&str> = match only {
+        Some(ids) => ids.iter().map(String::as_str).collect(),
+        None => cache.planned.iter().filter(|(_, a)| *a).map(|(id, _)| id.as_str()).collect(),
+    };
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut parts: Vec<&PrefCal> = Vec::new();
+    for id in wanted {
+        let cal = cache.cals.iter().find(|c| c.id == id)?;
+        if cal.error.is_some() || now_ms.saturating_sub(cal.read_unix_ms) > PREFETCH_FRESH_MS {
+            return None;
+        }
+        if !parts.iter().any(|p| p.id == cal.id) {
+            parts.push(cal);
+        }
+    }
+    // Reading order (the primary calendar first), so a meeting shown by several calendars keeps
+    // the copy of the first.
+    parts.sort_by_key(|p| cache.cals.iter().position(|c| c.id == p.id));
+    let mut truncated = cache.capped;
+    let mut events = Vec::new();
+    for p in parts {
+        truncated |= p.truncated;
+        events.extend(
+            p.events.iter().filter(|e| e.start_utc < to && (e.end_utc > from || e.start_utc >= from)).cloned(),
+        );
+    }
+    let (events, cut) = normalize_events_capped(dedup_meetings(events), SEARCH_MAX_EVENTS);
+    Some(RangeRead { events, truncated: truncated || cut, failed: Vec::new() })
+}
+
+/// Smart search: the events of `[from, to)` from the prefetched copy when it is fresh and
+/// complete for that window, `None` when the question has to be read live.
+#[allow(dead_code)] // used by smart search (assistant)
+pub fn prefetched(from: DateTime<Utc>, to: DateTime<Utc>, only: Option<&[String]>) -> Option<RangeRead> {
+    prefetched_in(&prefetch_cache(), Utc::now().timestamp_millis(), from, to, only)
+}
+
+/// What the Island Center shows about the prefetch.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrefetchStatus {
+    pub days: u32,
+    pub from_unix_ms: Option<i64>,
+    pub to_unix_ms: Option<i64>,
+    pub fetched_unix_ms: Option<i64>,
+    pub calendars_total: usize,
+    pub calendars_read: usize,
+    /// (calendar id, code) of the calendars the last round could not read.
+    pub failed: Vec<(String, String)>,
+}
+
+fn prefetch_status_of(cache: &PrefetchCache, days: u32) -> PrefetchStatus {
+    PrefetchStatus {
+        days,
+        from_unix_ms: cache.window.map(|w| w.0.timestamp_millis()),
+        to_unix_ms: cache.window.map(|w| w.1.timestamp_millis()),
+        fetched_unix_ms: cache.fetched_unix_ms,
+        calendars_total: cache.planned.len(),
+        calendars_read: cache.cals.iter().filter(|c| c.error.is_none()).count(),
+        failed: cache.cals.iter().filter_map(|c| c.error.clone().map(|code| (c.id.clone(), code))).collect(),
+    }
+}
+
+pub fn prefetch_status() -> PrefetchStatus {
+    prefetch_status_of(&prefetch_cache(), PREFETCH_DAYS.load(Ordering::Relaxed))
+}
+
+#[tauri::command]
+pub fn calendar_prefetch_status() -> PrefetchStatus {
+    prefetch_status()
+}
+
+/// The `calendarPrefetchDays` setting changed: restart (or stop) the prefetch.
+pub fn on_prefetch_settings_changed() {
+    if let Some(c) = CONTROL.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = c.tx.send(Msg::PrefetchSettings);
+    }
+}
+
+/// The calendars in reading order: those the last round did not reach (`priority`) first, then the
+/// rest as listed. Ids in `priority` that are no longer listed are dropped. Pure.
+pub fn prefetch_order(ids: &[String], priority: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(ids.len());
+    for id in priority.iter().chain(ids.iter()) {
+        if ids.contains(id) && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    out
+}
+
+/// One read of a round: some calendars over one stretch of days.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PrefetchTask {
+    pub group: usize,
+    pub ids: Vec<String>,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    pub chunk: usize,
+    /// A repeat of a read that came back partial; it is not repeated again.
+    pub retry: bool,
+}
+
+#[derive(Default)]
+struct CalAcc {
+    events: Vec<CalendarEventDto>,
+    truncated: bool,
+    /// (chunk, code) of the stretches that could not be read.
+    fails: Vec<(usize, String)>,
+}
+
+/// One pass over all calendars: the batches still to read and what they returned so far. Pure
+/// (no clock, no Outlook), so batching, rotation and failure handling are unit-tested.
+pub struct PrefetchRound {
+    pub window: (DateTime<Utc>, DateTime<Utc>),
+    pub epoch: u64,
+    pub days: u32,
+    planned: Vec<(String, bool)>,
+    groups: Vec<Vec<String>>,
+    tasks: VecDeque<PrefetchTask>,
+    acc: HashMap<String, CalAcc>,
+    errors: u32,
+    timeouts: u32,
+}
+
+impl PrefetchRound {
+    /// Plan a round: calendars (id, active) in the order of [`prefetch_order`], at most
+    /// [`PREFETCH_BATCH`] per read, the window in chunks of at most [`MAX_RANGE_DAYS`] days.
+    /// `None` when there is nothing to read or the window is unusable.
+    pub fn new(
+        calendars: &[(String, bool)],
+        priority: &[String],
+        window: (DateTime<Utc>, DateTime<Utc>),
+        epoch: u64,
+        days: u32,
+    ) -> Option<Self> {
+        let ids: Vec<String> = calendars.iter().map(|(id, _)| id.clone()).collect();
+        let order = prefetch_order(&ids, priority);
+        if order.is_empty() {
+            return None;
+        }
+        let chunks = chunk_range(window.0, window.1).ok()?;
+        let planned: Vec<(String, bool)> =
+            order.iter().map(|id| (id.clone(), calendars.iter().any(|(i, a)| i == id && *a))).collect();
+        let groups: Vec<Vec<String>> = order.chunks(PREFETCH_BATCH).map(|g| g.to_vec()).collect();
+        let mut tasks = VecDeque::new();
+        for (group, ids) in groups.iter().enumerate() {
+            for (chunk, (from, to)) in chunks.iter().enumerate() {
+                tasks.push_back(PrefetchTask { group, ids: ids.clone(), from: *from, to: *to, chunk, retry: false });
+            }
+        }
+        Some(PrefetchRound {
+            window,
+            epoch,
+            days,
+            planned,
+            groups,
+            tasks,
+            acc: HashMap::new(),
+            errors: 0,
+            timeouts: 0,
+        })
+    }
+
+    pub fn planned(&self) -> &[(String, bool)] {
+        &self.planned
+    }
+
+    pub fn pending_tasks(&self) -> usize {
+        self.tasks.len()
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.tasks.is_empty()
+    }
+
+    pub fn next_task(&mut self) -> Option<PrefetchTask> {
+        self.tasks.pop_front()
+    }
+
+    fn fail(&mut self, id: &str, chunk: usize, code: &str) {
+        let acc = self.acc.entry(id.to_string()).or_default();
+        acc.fails.retain(|(c, _)| *c != chunk);
+        acc.fails.push((chunk, code.to_string()));
+    }
+
+    /// The calendars of `task`'s group, when `task` was the group's last read: ready to store.
+    fn finished_group(&self, task: &PrefetchTask, now_ms: i64) -> Vec<PrefCal> {
+        if self.tasks.iter().any(|t| t.group == task.group) {
+            return Vec::new();
+        }
+        self.groups[task.group]
+            .iter()
+            .filter_map(|id| {
+                let acc = self.acc.get(id)?;
+                let active = self.planned.iter().any(|(i, a)| i == id && *a);
+                let mut events = acc.events.clone();
+                events.sort_by(|a, b| a.start_utc.cmp(&b.start_utc).then_with(|| a.id.cmp(&b.id)));
+                events.dedup_by(|a, b| a.id == b.id);
+                let error = acc.fails.first().map(|(_, code)| code.clone());
+                if error.is_some() {
+                    events.clear();
+                }
+                Some(PrefCal { id: id.clone(), active, events, truncated: acc.truncated, read_unix_ms: now_ms, error })
+            })
+            .collect()
+    }
+
+    /// A read of `task` answered. Calendars it reported as failed are marked (and, when merely
+    /// "pending" in Outlook's time budget, read once more at the end); the rest take its events.
+    /// Returns the calendars that are complete now.
+    pub fn on_result(&mut self, task: &PrefetchTask, fetched: Fetched, now_ms: i64) -> Vec<PrefCal> {
+        let mut again: Vec<String> = Vec::new();
+        for id in &task.ids {
+            let acc = self.acc.entry(id.clone()).or_default();
+            // A repeat that now succeeds clears the earlier failure of this stretch.
+            acc.fails.retain(|(c, _)| *c != task.chunk);
+            acc.truncated |= fetched.truncated;
+        }
+        for (id, code) in &fetched.failed {
+            if !task.ids.contains(id) {
+                continue;
+            }
+            self.fail(id, task.chunk, code);
+            if code == "CAL-SHARED-105" && !task.retry {
+                again.push(id.clone());
+            }
+        }
+        for e in fetched.events {
+            if let Some(acc) = self.acc.get_mut(&e.calendar_id) {
+                if task.ids.contains(&e.calendar_id) {
+                    acc.events.push(e);
+                }
+            }
+        }
+        if !again.is_empty() {
+            self.tasks.push_back(PrefetchTask { ids: again, retry: true, ..task.clone() });
+        }
+        self.finished_group(task, now_ms)
+    }
+
+    /// A read of `task` failed as a whole (Outlook busy or gone). Its calendars are marked; a
+    /// second such failure ends the round.
+    pub fn on_error(&mut self, task: &PrefetchTask, code: &str, now_ms: i64) -> Vec<PrefCal> {
+        for id in &task.ids {
+            self.fail(id, task.chunk, code);
+        }
+        self.errors += 1;
+        if self.errors >= PREFETCH_MAX_ERRORS {
+            self.tasks.clear();
+        }
+        self.finished_group(task, now_ms)
+    }
+
+    /// The watchdog gave up on `task`. `culprit` is the calendar that was being read (now
+    /// quarantined): it is marked failed, the others of the batch are read again without it. When
+    /// no calendar can be blamed (the primary one, say) the round ends.
+    pub fn on_timeout(&mut self, task: &PrefetchTask, culprit: Option<&str>, now_ms: i64) -> Vec<PrefCal> {
+        self.timeouts += 1;
+        match culprit.filter(|c| task.ids.iter().any(|i| i == c)) {
+            Some(bad) => {
+                self.fail(bad, task.chunk, "CAL-SHARED-104");
+                let rest: Vec<String> = task.ids.iter().filter(|i| *i != bad).cloned().collect();
+                if !rest.is_empty() {
+                    self.tasks.push_front(PrefetchTask { ids: rest, retry: true, ..task.clone() });
+                }
+            }
+            None => {
+                for id in &task.ids {
+                    self.fail(id, task.chunk, "OUTLOOK-109");
+                }
+                self.tasks.clear();
+            }
+        }
+        if self.timeouts >= PREFETCH_MAX_TIMEOUTS {
+            self.tasks.clear();
+        }
+        self.finished_group(task, now_ms)
+    }
+
+    /// The calendars to read first next round: those that failed, then those never reached.
+    pub fn unreached(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for (id, _) in &self.planned {
+            if self.acc.get(id).map_or(true, |a| !a.fails.is_empty()) {
+                out.push(id.clone());
+            }
+        }
+        out
+    }
+}
+
+/// What the supervisor needs to decide whether a prefetch batch may start now. Pure.
+#[derive(Clone, Copy, Debug)]
+pub struct PrefetchGate {
+    pub connected: bool,
+    pub days: u32,
+    pub due: Option<u64>,
+    pub now: u64,
+    /// When the machine's next regular step (sync or discovery) is due.
+    pub sync_at: u64,
+    pub pending_ranges: usize,
+    /// A navigation change or refresh is waiting to be handled.
+    pub work_waiting: bool,
+}
+
+/// A prefetch batch goes only when it is due and nothing of higher priority wants the worker: no
+/// island range read queued, no refresh waiting, and the regular sync not about to start.
+pub fn prefetch_may_run(g: &PrefetchGate) -> bool {
+    g.connected
+        && g.days > 0
+        && g.due.is_some_and(|d| d <= g.now)
+        && g.pending_ranges == 0
+        && !g.work_waiting
+        && g.sync_at > g.now + PREFETCH_SYNC_GAP_MS
+}
+
+/// The supervisor's prefetch bookkeeping (monotonic ms).
+#[derive(Default)]
+struct PrefetchSched {
+    due: Option<u64>,
+    round: Option<PrefetchRound>,
+    /// Calendars to read first next round.
+    priority: Vec<String>,
+    /// The first round of this connection is scheduled.
+    armed: bool,
+    settings_changed: bool,
+}
+
+impl Supervisor {
+    fn prefetch_days(&self) -> u32 {
+        let days = self.app.state::<SettingsStore>().get().calendar_prefetch_days;
+        PREFETCH_DAYS.store(days, Ordering::Relaxed);
+        days
+    }
+
+    /// The setting changed: drop the round in progress and start over (or clear when off).
+    fn on_prefetch_settings(&mut self, now: &Now) {
+        let days = self.prefetch_days();
+        self.pf.round = None;
+        self.pf.priority.clear();
+        if days == 0 {
+            prefetch_clear();
+            self.pf.due = None;
+        } else {
+            self.pf.due = Some(now.mono_ms + PREFETCH_SETTING_MS);
+            self.pf.armed = true;
+        }
+    }
+
+    /// First round 20 s after the calendar connects; re-armed after Outlook went away.
+    fn prefetch_arm(&mut self, now: &Now, days: u32) {
+        if self.machine.status() != CalendarStatus::Connected {
+            self.pf.armed = false;
+            return;
+        }
+        if !self.pf.armed && days > 0 {
+            self.pf.armed = true;
+            self.pf.due = Some(now.mono_ms + PREFETCH_FIRST_MS);
+        }
+    }
+
+    /// Milliseconds until the next prefetch batch is due, for the idle wait.
+    fn prefetch_wake(&self, now: &Now, days: u32) -> Option<u64> {
+        if days == 0 || self.machine.status() != CalendarStatus::Connected {
+            return None;
+        }
+        self.pf.due.filter(|d| *d > now.mono_ms).map(|d| d - now.mono_ms)
+    }
+
+    /// Read one batch of the prefetch round (starting a round first when none is running).
+    fn prefetch_step(&mut self, days: u32) -> bool {
+        let now = self.now();
+        if self.pf.round.is_none() {
+            let calendars: Vec<(String, bool)> = known_sources(&self.app)
+                .into_iter()
+                .map(|s| {
+                    let active = s.active || s.kind == SourceKind::Primary;
+                    (s.id, active)
+                })
+                .collect();
+            let window = prefetch_window_with(Local::now().date_naive(), days, local_midnight);
+            let epoch = prefetch_cache().epoch;
+            match window.and_then(|w| PrefetchRound::new(&calendars, &self.pf.priority, w, epoch, days)) {
+                Some(round) => self.pf.round = Some(round),
+                None => {
+                    self.pf.due = Some(now.mono_ms + PREFETCH_RETRY_MS);
+                    return true;
+                }
+            }
+        }
+        let Some(mut round) = self.pf.round.take() else { return true };
+        let Some(task) = round.next_task() else {
+            self.prefetch_finish(round, &now);
+            return true;
+        };
+        let window = FetchWindow {
+            from: task.from,
+            to: task.to,
+            invites: false,
+            range: true,
+            only: Some(task.ids.clone()),
+            search: true,
+        };
+        self.in_prefetch = true;
+        let outcome = self.run_fetch(window);
+        self.in_prefetch = false;
+        let after = self.now();
+        let now_ms = after.unix_ms;
+        let done = match outcome {
+            Outcome::Shutdown => return false,
+            Outcome::Done(Ok(fetched)) => round.on_result(&task, fetched, now_ms),
+            Outcome::Done(Err(err)) => {
+                dlog!("DEBUG", "calendar", "{} prefetch batch not read ({:?})", err.code, err.kind);
+                round.on_error(&task, err.code, now_ms)
+            }
+            Outcome::TimedOut => {
+                // Same as any hung read, but the island's state machine is not told.
+                self.drop_worker(false);
+                let culprit = outlook::quarantine_reading_source_id();
+                if culprit.is_some() {
+                    dlog!("WARN", "calendar", "CAL-SHARED-104 a calendar did not answer the prefetch; skipped for a while");
+                }
+                dlog!("WARN", "calendar", "OUTLOOK-109 watchdog: prefetch batch did not answer in {}ms", WATCHDOG_MS);
+                round.on_timeout(&task, culprit.as_deref(), now_ms)
+            }
+        };
+        if !done.is_empty() {
+            let stored = prefetch_cache().commit(round.epoch, round.window, round.planned(), done, now_ms);
+            if !stored {
+                // Cleared meanwhile (profile change, switched off): this round is void.
+                self.pf.priority.clear();
+                return self.prefetch_after(after);
+            }
+        }
+        if round.is_done() {
+            self.prefetch_finish(round, &after);
+        } else {
+            self.pf.due = Some(after.mono_ms + PREFETCH_PACE_MS);
+            self.pf.round = Some(round);
+        }
+        self.prefetch_after(after)
+    }
+
+    /// A refresh that arrived during the batch was not served by it: serve it now.
+    fn prefetch_after(&mut self, now: Now) -> bool {
+        if std::mem::take(&mut self.refresh_after_prefetch) {
+            self.machine.on_refresh(&now);
+        }
+        true
+    }
+
+    fn prefetch_finish(&mut self, round: PrefetchRound, now: &Now) {
+        let status = {
+            let cache = prefetch_cache();
+            prefetch_status_of(&cache, round.days)
+        };
+        dlog!(
+            "INFO",
+            "calendar",
+            "prefetch round done: {}/{} calendars, {} days, {} failed",
+            status.calendars_read,
+            status.calendars_total,
+            round.days,
+            status.failed.len()
+        );
+        self.pf.priority = round.unreached();
+        self.pf.due = Some(now.mono_ms + PREFETCH_EVERY_MS);
+    }
 }
 
 // =============================================================================
@@ -2048,5 +2768,381 @@ mod tests {
         let from = at_utc(0);
         assert!(query_range(from, from, None).unwrap_err().contains("OUTLOOK-108"));
         assert!(query_range(from, from + ChronoDuration::days(32), None).unwrap_err().contains("OUTLOOK-108"));
+    }
+}
+
+#[cfg(test)]
+mod prefetch_tests {
+    use super::*;
+    use chrono::{NaiveDate, TimeZone};
+
+    fn t(day: u32, hour: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2027, 3, day, hour, 0, 0).unwrap()
+    }
+
+    fn ids(n: usize) -> Vec<(String, bool)> {
+        (0..n).map(|i| (format!("c{i}"), i == 0)).collect()
+    }
+
+    fn event(cal: &str, id: &str, start: DateTime<Utc>, len_h: i64) -> CalendarEventDto {
+        CalendarEventDto {
+            id: id.into(),
+            calendar_id: cal.into(),
+            calendar_name: "n".into(),
+            source_kind: SourceKind::Shared,
+            meeting_key: None,
+            subject: "s".into(),
+            start_utc: start,
+            end_utc: start + ChronoDuration::hours(len_h),
+            all_day: false,
+            location: None,
+            organizer: None,
+            is_recurring: false,
+            meeting_url: None,
+            busy_status: BusyStatus::Busy,
+            response_status: ResponseStatus::Accepted,
+            color: None,
+            calendar_color: None,
+        }
+    }
+
+    fn fetched(events: Vec<CalendarEventDto>) -> Fetched {
+        Fetched { events, ..Fetched::default() }
+    }
+
+    fn window(days: i64) -> (DateTime<Utc>, DateTime<Utc>) {
+        (t(1, 0), t(1, 0) + ChronoDuration::days(days))
+    }
+
+    fn cal(id: &str, active: bool, events: Vec<CalendarEventDto>, read_ms: i64) -> PrefCal {
+        PrefCal { id: id.into(), active, events, truncated: false, read_unix_ms: read_ms, error: None }
+    }
+
+    fn cache_with(cals: Vec<PrefCal>, days: i64) -> PrefetchCache {
+        let planned: Vec<(String, bool)> = cals.iter().map(|c| (c.id.clone(), c.active)).collect();
+        let mut cache = PrefetchCache::new();
+        assert!(cache.commit(0, window(days), &planned, cals, 1_000));
+        cache
+    }
+
+    #[test]
+    fn window_is_local_midnight_to_midnight_dst_correct() {
+        let day = NaiveDate::from_ymd_opt(2027, 3, 24).unwrap();
+        // A zone at +2 that moves to +3 on 26 March 2027 (like Israel): the 7 days are 167 h long.
+        let midnight = |d: NaiveDate| {
+            let offset = if d >= NaiveDate::from_ymd_opt(2027, 3, 26).unwrap() { 3 } else { 2 };
+            Some(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()) - ChronoDuration::hours(offset))
+        };
+        let (from, to) = prefetch_window_with(day, 7, midnight).unwrap();
+        assert_eq!(from, Utc.with_ymd_and_hms(2027, 3, 23, 22, 0, 0).unwrap());
+        assert_eq!(to, Utc.with_ymd_and_hms(2027, 3, 30, 21, 0, 0).unwrap());
+        assert_eq!(to - from, ChronoDuration::hours(167));
+        assert!(chunk_range(from, to).is_ok());
+    }
+
+    #[test]
+    fn window_zero_is_off_and_31_days_is_the_most_and_chunks() {
+        let day = NaiveDate::from_ymd_opt(2027, 10, 20).unwrap();
+        let utc_midnight = |d: NaiveDate| Some(Utc.from_utc_datetime(&d.and_hms_opt(0, 0, 0).unwrap()));
+        assert!(prefetch_window_with(day, 0, utc_midnight).is_none());
+        let (from, to) = prefetch_window_with(day, 31, utc_midnight).unwrap();
+        assert_eq!(to - from, ChronoDuration::days(31));
+        // More than the setting allows is cut to 31 days.
+        let (_, to99) = prefetch_window_with(day, 99, utc_midnight).unwrap();
+        assert_eq!(to99, to);
+        assert_eq!(chunk_range(from, to).unwrap().len(), 5);
+        // An unusable midnight means no window.
+        assert!(prefetch_window_with(day, 7, |_| None).is_none());
+        // The real local midnight exists for a plain date.
+        assert!(local_midnight(day).is_some());
+    }
+
+    #[test]
+    fn plan_batches_calendars_by_six_and_days_by_seven() {
+        let round = PrefetchRound::new(&ids(14), &[], window(30), 0, 30).unwrap();
+        // 3 groups (6 + 6 + 2) x 5 chunks (7+7+7+7+2 days)
+        assert_eq!(round.pending_tasks(), 15);
+        let mut round = round;
+        let mut seen_groups = Vec::new();
+        while let Some(task) = round.next_task() {
+            assert!(task.ids.len() <= PREFETCH_BATCH);
+            assert!(task.to - task.from <= ChronoDuration::days(MAX_RANGE_DAYS));
+            seen_groups.push((task.group, task.ids.len()));
+        }
+        assert_eq!(seen_groups.first(), Some(&(0, 6)));
+        assert_eq!(seen_groups.last(), Some(&(2, 2)));
+        // group-major: a group's chunks follow each other
+        assert!(seen_groups.windows(2).all(|w| w[0].0 <= w[1].0));
+        assert!(PrefetchRound::new(&[], &[], window(7), 0, 7).is_none());
+    }
+
+    #[test]
+    fn rotation_reads_unreached_calendars_first() {
+        let all: Vec<String> = (0..8).map(|i| format!("c{i}")).collect();
+        let order = prefetch_order(&all, &["c6".into(), "c7".into(), "gone".into()]);
+        assert_eq!(&order[..3], ["c6", "c7", "c0"]);
+        assert_eq!(order.len(), 8);
+        assert_eq!(prefetch_order(&all, &[]), all);
+        let round = PrefetchRound::new(&ids(8), &["c7".into()], window(7), 0, 7).unwrap();
+        assert_eq!(round.planned()[0].0, "c7");
+        // the active flag follows the calendar, not the position
+        assert!(round.planned().iter().find(|(id, _)| id == "c0").unwrap().1);
+        assert!(!round.planned()[0].1);
+    }
+
+    #[test]
+    fn unreached_after_an_ended_round_are_the_failed_and_never_read() {
+        let mut round = PrefetchRound::new(&ids(8), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        let mut f = fetched(vec![event("c0", "e", t(2, 9), 1)]);
+        f.failed.push(("c3".into(), "CAL-SHARED-101".into()));
+        let done = round.on_result(&task, f, 5);
+        assert_eq!(done.len(), 6);
+        assert_eq!(done.iter().find(|c| c.id == "c3").unwrap().error.as_deref(), Some("CAL-SHARED-101"));
+        assert!(done.iter().find(|c| c.id == "c0").unwrap().error.is_none());
+        // c6 and c7 (second group) were not reached
+        let unreached = round.unreached();
+        assert!(unreached.contains(&"c3".to_string()) && unreached.contains(&"c6".to_string()));
+        assert!(!unreached.contains(&"c0".to_string()));
+    }
+
+    #[test]
+    fn pending_calendars_are_read_once_more_and_a_good_repeat_clears_them() {
+        let mut round = PrefetchRound::new(&ids(2), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        let mut f = fetched(vec![event("c0", "a", t(2, 9), 1)]);
+        f.failed.push(("c1".into(), "CAL-SHARED-105".into()));
+        assert!(round.on_result(&task, f, 5).is_empty(), "the group waits for its repeat");
+        let retry = round.next_task().unwrap();
+        assert!(retry.retry);
+        assert_eq!(retry.ids, ["c1"]);
+        let done = round.on_result(&retry, fetched(vec![event("c1", "b", t(3, 9), 1)]), 9);
+        assert!(done.iter().all(|c| c.error.is_none()));
+        assert_eq!(done.iter().find(|c| c.id == "c1").unwrap().events.len(), 1);
+        assert!(round.is_done());
+        // a repeat that is pending again is not repeated a third time
+        let mut round = PrefetchRound::new(&ids(2), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        let mut f = fetched(vec![]);
+        f.failed.push(("c1".into(), "CAL-SHARED-105".into()));
+        round.on_result(&task, f.clone(), 5);
+        let retry = round.next_task().unwrap();
+        let done = round.on_result(&retry, f, 6);
+        assert_eq!(done.iter().find(|c| c.id == "c1").unwrap().error.as_deref(), Some("CAL-SHARED-105"));
+        assert!(round.is_done());
+    }
+
+    #[test]
+    fn a_timeout_blames_the_quarantined_calendar_and_rereads_the_others() {
+        let mut round = PrefetchRound::new(&ids(3), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        assert!(round.on_timeout(&task, Some("c2"), 5).is_empty());
+        let again = round.next_task().unwrap();
+        assert_eq!(again.ids, ["c0", "c1"]);
+        let done = round.on_result(&again, fetched(vec![]), 6);
+        assert_eq!(done.iter().find(|c| c.id == "c2").unwrap().error.as_deref(), Some("CAL-SHARED-104"));
+        assert!(done.iter().filter(|c| c.id != "c2").all(|c| c.error.is_none()));
+        // nobody to blame (the primary calendar): the batch fails and the round ends
+        let mut round = PrefetchRound::new(&ids(8), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        let done = round.on_timeout(&task, None, 5);
+        assert!(done.iter().all(|c| c.error.as_deref() == Some("OUTLOOK-109")));
+        assert!(round.is_done());
+        // a culprit that is not in the batch is no culprit
+        let mut round = PrefetchRound::new(&ids(8), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        round.on_timeout(&task, Some("c7"), 5);
+        assert!(round.is_done());
+    }
+
+    #[test]
+    fn too_many_timeouts_or_errors_end_the_round() {
+        let mut round = PrefetchRound::new(&ids(30), &[], window(7), 0, 7).unwrap();
+        for _ in 0..PREFETCH_MAX_TIMEOUTS {
+            let task = round.next_task().unwrap();
+            let first = task.ids[0].clone();
+            round.on_timeout(&task, Some(&first), 1);
+        }
+        assert!(round.is_done());
+        let mut round = PrefetchRound::new(&ids(30), &[], window(7), 0, 7).unwrap();
+        let task = round.next_task().unwrap();
+        round.on_error(&task, "OUTLOOK-105", 1);
+        assert!(!round.is_done());
+        let task = round.next_task().unwrap();
+        round.on_error(&task, "OUTLOOK-105", 1);
+        assert!(round.is_done());
+    }
+
+    #[test]
+    fn prefetched_needs_coverage_freshness_and_every_requested_calendar() {
+        let now = 1_000_000;
+        let cache = cache_with(
+            vec![
+                cal("c0", true, vec![event("c0", "a", t(2, 9), 1)], now),
+                cal("c1", false, vec![event("c1", "b", t(3, 9), 1)], now),
+            ],
+            7,
+        );
+        let only = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // inside the window
+        let read = prefetched_in(&cache, now, t(1, 0), t(8, 0), Some(&only(&["c0", "c1"]))).unwrap();
+        assert_eq!(read.events.len(), 2);
+        assert!(read.failed.is_empty() && !read.truncated);
+        // partly outside the window, or reaching before it
+        assert!(prefetched_in(&cache, now, t(1, 0), t(8, 1), Some(&only(&["c0"]))).is_none());
+        assert!(prefetched_in(&cache, now, t(1, 0) - ChronoDuration::hours(1), t(2, 0), Some(&only(&["c0"]))).is_none());
+        assert!(prefetched_in(&cache, now, t(2, 0), t(2, 0), Some(&only(&["c0"]))).is_none());
+        // a calendar that was never read
+        assert!(prefetched_in(&cache, now, t(1, 0), t(3, 0), Some(&only(&["c0", "zzz"]))).is_none());
+        assert!(prefetched_in(&cache, now, t(1, 0), t(3, 0), Some(&[])).is_none());
+        // fresh for 30 minutes
+        assert!(prefetched_in(&cache, now + PREFETCH_FRESH_MS, t(1, 0), t(3, 0), Some(&only(&["c0"]))).is_some());
+        assert!(prefetched_in(&cache, now + PREFETCH_FRESH_MS + 1, t(1, 0), t(3, 0), Some(&only(&["c0"]))).is_none());
+        // an empty cache answers nothing
+        assert!(prefetched_in(&PrefetchCache::new(), now, t(1, 0), t(3, 0), None).is_none());
+    }
+
+    #[test]
+    fn prefetched_filters_to_the_window_and_to_only() {
+        let now = 5;
+        let cache = cache_with(
+            vec![
+                cal(
+                    "c0",
+                    true,
+                    vec![event("c0", "before", t(1, 8), 1), event("c0", "in", t(2, 9), 1), event("c0", "after", t(4, 9), 1)],
+                    now,
+                ),
+                cal("c1", false, vec![event("c1", "other", t(2, 10), 1)], now),
+            ],
+            7,
+        );
+        let read = prefetched_in(&cache, now, t(2, 0), t(3, 0), Some(&["c0".to_string()])).unwrap();
+        let got: Vec<_> = read.events.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(got, ["in"]);
+        // a meeting running into the window counts
+        let read = prefetched_in(&cache, now, t(1, 8) + ChronoDuration::minutes(30), t(2, 0), Some(&["c0".to_string()])).unwrap();
+        assert_eq!(read.events.len(), 1);
+        // without a list: the active calendars of the round only
+        let read = prefetched_in(&cache, now, t(2, 0), t(3, 0), None).unwrap();
+        let got: Vec<_> = read.events.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(got, ["in"]);
+    }
+
+    #[test]
+    fn a_failed_calendar_blocks_only_the_questions_that_need_it() {
+        let now = 5;
+        let mut bad = cal("c1", false, vec![], now);
+        bad.error = Some("CAL-SHARED-101".into());
+        let cache = cache_with(vec![cal("c0", true, vec![event("c0", "a", t(2, 9), 1)], now), bad], 7);
+        assert!(prefetched_in(&cache, now, t(1, 0), t(3, 0), Some(&["c0".to_string()])).is_some());
+        assert!(prefetched_in(&cache, now, t(1, 0), t(3, 0), Some(&["c0".to_string(), "c1".to_string()])).is_none());
+        let status = prefetch_status_of(&cache, 7);
+        assert_eq!((status.calendars_total, status.calendars_read), (2, 1));
+        assert_eq!(status.failed, vec![("c1".to_string(), "CAL-SHARED-101".to_string())]);
+        assert_eq!(status.from_unix_ms, Some(t(1, 0).timestamp_millis()));
+        assert_eq!(status.to_unix_ms, Some(t(8, 0).timestamp_millis()));
+        assert_eq!(status.fetched_unix_ms, Some(1_000));
+    }
+
+    #[test]
+    fn status_serializes_camel_case() {
+        let json =
+            serde_json::to_value(PrefetchStatus { days: 7, failed: vec![("a".into(), "b".into())], ..Default::default() }).unwrap();
+        assert_eq!(json["days"], 7);
+        assert!(json["fromUnixMs"].is_null());
+        assert_eq!(json["calendarsTotal"], 0);
+        assert_eq!(json["failed"][0][1], "b");
+    }
+
+    #[test]
+    fn the_memory_cap_drops_the_latest_starting_events_first() {
+        let mk = |cal: &str, n: usize, h0: i64| -> Vec<CalendarEventDto> {
+            (0..n).map(|i| event(cal, &format!("{cal}{i}"), t(1, 0) + ChronoDuration::hours(h0 + i as i64), 1)).collect()
+        };
+        let mut cals = vec![cal("a", true, mk("a", 5, 0), 1), cal("b", false, mk("b", 5, 100), 1)];
+        assert!(!cap_prefetch_events(&mut cals, 10));
+        assert!(cap_prefetch_events(&mut cals, 7));
+        assert_eq!(cals[0].events.len(), 5);
+        assert_eq!(cals[1].events.len(), 2);
+        assert!(cals[1].truncated && !cals[0].truncated);
+        assert_eq!(cals[1].events[1].id, "b1");
+        // ties at the cut keep exactly the cap
+        let same = |c: &str| (0..4).map(|i| event(c, &format!("{c}{i}"), t(2, 0), 1)).collect::<Vec<_>>();
+        let mut cals = vec![cal("a", true, same("a"), 1), cal("b", true, same("b"), 1)];
+        assert!(cap_prefetch_events(&mut cals, 5));
+        assert_eq!(cals.iter().map(|c| c.events.len()).sum::<usize>(), 5);
+    }
+
+    #[test]
+    fn commit_caps_marks_truncated_and_a_clear_voids_older_rounds() {
+        let many: Vec<_> = (0..(PREFETCH_MAX_EVENTS + 50))
+            .map(|i| event("c0", &format!("e{i}"), t(1, 0) + ChronoDuration::minutes(i as i64), 1))
+            .collect();
+        let mut cache = PrefetchCache::new();
+        let planned = vec![("c0".to_string(), true)];
+        assert!(cache.commit(0, window(7), &planned, vec![cal("c0", true, many, 10)], 10));
+        assert_eq!(cache.cals[0].events.len(), PREFETCH_MAX_EVENTS);
+        let read = prefetched_in(&cache, 10, t(1, 0), t(8, 0), Some(&["c0".to_string()])).unwrap();
+        assert!(read.truncated);
+        assert_eq!(read.events.len(), SEARCH_MAX_EVENTS);
+        // a round that began before a clear cannot store into the cleared copy
+        cache.clear();
+        assert!(!cache.commit(0, window(7), &planned, vec![cal("c0", true, vec![], 11)], 11));
+        assert!(cache.cals.is_empty() && cache.window.is_none());
+        let epoch = cache.epoch;
+        assert!(cache.commit(epoch, window(7), &planned, vec![cal("c0", true, vec![], 11)], 11));
+        // another window drops what the old one held; a calendar gone from Outlook goes too
+        let two = vec![("c0".to_string(), true), ("c1".to_string(), false)];
+        assert!(cache.commit(epoch, window(7), &two, vec![cal("c1", false, vec![], 12)], 12));
+        assert_eq!(cache.cals.len(), 2);
+        assert!(cache.commit(epoch, window(14), &planned, vec![cal("c0", true, vec![], 13)], 13));
+        assert_eq!(cache.cals.len(), 1);
+    }
+
+    #[test]
+    fn a_pending_regular_sync_or_range_read_preempts_a_batch() {
+        let ok = PrefetchGate {
+            connected: true,
+            days: 7,
+            due: Some(100),
+            now: 100,
+            sync_at: 100 + PREFETCH_SYNC_GAP_MS + 1,
+            pending_ranges: 0,
+            work_waiting: false,
+        };
+        assert!(prefetch_may_run(&ok));
+        assert!(!prefetch_may_run(&PrefetchGate { pending_ranges: 1, ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { work_waiting: true, ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { sync_at: 100 + PREFETCH_SYNC_GAP_MS, ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { sync_at: 100, ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { connected: false, ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { days: 0, ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { due: Some(101), ..ok }));
+        assert!(!prefetch_may_run(&PrefetchGate { due: None, ..ok }));
+    }
+
+    #[test]
+    fn a_prefetch_timeout_never_escalates_the_island() {
+        // The prefetch reads are search reads, and a search read's timeout leaves the machine alone.
+        let mut m = Machine::new(None);
+        let now = Now { mono_ms: 0, unix_ms: 0, day: 1 };
+        m.on_fetch_ok(&now, vec![]);
+        on_range_timeout(&mut m, &now, true);
+        assert_eq!(m.status(), CalendarStatus::Connected);
+        assert_eq!(m.abandoned(), 0);
+    }
+
+    #[test]
+    fn dedup_keeps_the_first_calendars_copy_of_a_meeting() {
+        let now = 5;
+        let mut a = event("c0", "mine", t(2, 9), 1);
+        a.meeting_key = Some("g".into());
+        let mut b = event("c1", "theirs", t(2, 9), 1);
+        b.meeting_key = Some("g".into());
+        let cache = cache_with(vec![cal("c0", true, vec![a], now), cal("c1", false, vec![b], now)], 7);
+        let read = prefetched_in(&cache, now, t(2, 0), t(3, 0), Some(&["c1".to_string(), "c0".to_string()])).unwrap();
+        assert_eq!(read.events.len(), 1);
+        assert_eq!(read.events[0].id, "mine");
     }
 }

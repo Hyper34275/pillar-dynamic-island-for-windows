@@ -117,6 +117,7 @@ pub fn run() {
             calendar::calendar_get_snapshot,
             calendar::calendar_refresh,
             calendar::calendar_get_range,
+            calendar::calendar_prefetch_status,
             reminder_state::reminder_state_load,
             reminder_state::reminder_state_save,
             notes::notes_load,

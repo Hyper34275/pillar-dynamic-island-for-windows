@@ -18,6 +18,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 pub const SCHEMA_VERSION: u32 = 1;
 const DEFAULT_REMINDER_MINUTES: u32 = 30;
 const MAX_REMINDER_MINUTES: u32 = 120;
+const DEFAULT_PREFETCH_DAYS: u32 = 7;
+const MAX_PREFETCH_DAYS: u32 = 31;
 const MAX_MONITOR_INDEX: u32 = 15;
 const PRIMARY_MONITOR: &str = "primary";
 const RENAME_ATTEMPTS: u32 = 5;
@@ -66,6 +68,10 @@ pub struct Settings {
     pub ai_search_button: bool,
     /// Ctrl+Alt+Space opens the smart search input (also where there is no search box).
     pub ai_search_hotkey: bool,
+    /// Days of schedule the app itself downloads ahead, for the user's calendar and every shared
+    /// one, whatever Outlook's cache mode is (memory only). 0 = off; smart search then reads live.
+    #[serde(deserialize_with = "de_prefetch_days")]
+    pub calendar_prefetch_days: u32,
 }
 
 impl Default for Settings {
@@ -87,6 +93,7 @@ impl Default for Settings {
             ai_search_enabled: true,
             ai_search_button: true,
             ai_search_hotkey: true,
+            calendar_prefetch_days: DEFAULT_PREFETCH_DAYS,
         }
     }
 }
@@ -113,6 +120,8 @@ pub struct SettingsPatch {
     ai_search_enabled: Option<bool>,
     ai_search_button: Option<bool>,
     ai_search_hotkey: Option<bool>,
+    #[serde(default, deserialize_with = "de_prefetch_days_opt")]
+    calendar_prefetch_days: Option<u32>,
 }
 
 fn clamp_minutes(value: f64) -> u32 {
@@ -129,6 +138,22 @@ fn de_minutes<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
 
 fn de_minutes_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
     Option::<f64>::deserialize(d).map(|v| v.map(clamp_minutes))
+}
+
+fn clamp_prefetch_days(value: f64) -> u32 {
+    if value.is_nan() {
+        DEFAULT_PREFETCH_DAYS
+    } else {
+        value.round().clamp(0.0, MAX_PREFETCH_DAYS as f64) as u32
+    }
+}
+
+fn de_prefetch_days<'de, D: Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
+    f64::deserialize(d).map(clamp_prefetch_days)
+}
+
+fn de_prefetch_days_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u32>, D::Error> {
+    Option::<f64>::deserialize(d).map(|v| v.map(clamp_prefetch_days))
 }
 
 fn normalize_monitor(value: &str) -> String {
@@ -198,6 +223,7 @@ impl Settings {
     fn sanitized(mut self) -> Self {
         self.schema_version = SCHEMA_VERSION;
         self.reminder_minutes = self.reminder_minutes.min(MAX_REMINDER_MINUTES);
+        self.calendar_prefetch_days = self.calendar_prefetch_days.min(MAX_PREFETCH_DAYS);
         self.monitor = normalize_monitor(&self.monitor);
         self.island_display = normalize_island_display(&self.island_display);
         self
@@ -249,6 +275,9 @@ impl Settings {
         }
         if let Some(v) = patch.ai_search_hotkey {
             next.ai_search_hotkey = v;
+        }
+        if let Some(v) = patch.calendar_prefetch_days {
+            next.calendar_prefetch_days = v;
         }
         next.sanitized()
     }
@@ -399,6 +428,9 @@ pub fn apply_patch(app: &AppHandle, patch: SettingsPatch) -> Settings {
             crate::assistant::on_disabled();
         }
     }
+    if old.calendar_prefetch_days != new.calendar_prefetch_days {
+        crate::calendar::on_prefetch_settings_changed();
+    }
     new
 }
 
@@ -472,6 +504,26 @@ mod tests {
         assert_eq!(json.get("aiSearchEnabled"), Some(&serde_json::Value::Bool(true)));
         let next = Settings::default().patched(patch(r#"{"aiSearchButton": false, "aiSearchHotkey": false}"#));
         assert!(next.ai_search_enabled && !next.ai_search_button && !next.ai_search_hotkey);
+    }
+
+    #[test]
+    fn calendar_prefetch_days_default_patch_and_clamp() {
+        assert_eq!(Settings::default().calendar_prefetch_days, 7);
+        let old: Settings = serde_json::from_str(r#"{"schemaVersion":1}"#).unwrap();
+        assert_eq!(old.calendar_prefetch_days, 7);
+        let json = serde_json::to_value(Settings::default()).unwrap();
+        assert_eq!(json.get("calendarPrefetchDays"), Some(&serde_json::json!(7)));
+        let base = Settings::default();
+        assert_eq!(base.patched(patch(r#"{"calendarPrefetchDays": 0}"#)).calendar_prefetch_days, 0);
+        assert_eq!(base.patched(patch(r#"{"calendarPrefetchDays": 14}"#)).calendar_prefetch_days, 14);
+        assert_eq!(base.patched(patch(r#"{"calendarPrefetchDays": 9999}"#)).calendar_prefetch_days, 31);
+        assert_eq!(base.patched(patch(r#"{"calendarPrefetchDays": -3}"#)).calendar_prefetch_days, 0);
+        assert_eq!(base.patched(patch(r#"{"calendarPrefetchDays": 6.6}"#)).calendar_prefetch_days, 7);
+        assert_eq!(base.patched(patch(r#"{}"#)).calendar_prefetch_days, 7);
+        let stored: Settings = serde_json::from_str(r#"{"calendarPrefetchDays": 500}"#).unwrap();
+        assert_eq!(stored.sanitized().calendar_prefetch_days, 31);
+        let direct = Settings { calendar_prefetch_days: 99, ..Settings::default() }.sanitized();
+        assert_eq!(direct.calendar_prefetch_days, 31);
     }
 
     #[test]
