@@ -195,14 +195,15 @@ dictionary and is the largest remaining error class on the test set.
 - Analysis runs inside the async `assistant_submit` command (`run_query` worker), never on the
   UI thread.
 
-**Measured on a debug build** (the release build is faster; it was not measured because disk
-space was low):
+**Measured** (one thread):
 
-| run | result |
-|---|---|
-| per question | p50 0.25 ms, p95 1.6–1.9 ms |
-| 20,000 questions | 9–10 s |
-| eval sets | p50 0.4–0.7 ms per question (including follow-up set-up) |
+| build | per question | 20,000 questions | lexicon build |
+|---|---|---|---|
+| release | p50 0.05 ms, p95 0.21 ms, p99 0.34 ms | 1.4 s | 1.3 ms |
+| debug | p50 0.25 ms, p95 1.6–1.9 ms | 9–10 s | ~6 ms |
+
+On the eval sets, release takes p50 0.07–0.10 ms and p95 0.26–0.43 ms per question, including
+follow-up set-up.
 
 ## 8. Evaluation
 
