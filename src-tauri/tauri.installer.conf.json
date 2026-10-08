@@ -9,7 +9,9 @@
     },
     "windows": {
       "nsis": {
-        "template": "nsis/installer.nsi"
+        "template": "nsis/installer.nsi",
+        "headerImage": "nsis/installer-header.bmp",
+        "sidebarImage": "nsis/installer-sidebar.bmp"
       }
     }
   }
