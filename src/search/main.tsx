@@ -21,7 +21,7 @@ function readPreview(): Preview | null {
   const h = Number(q.get("h")) || 52;
   return {
     glow: GLOW_STATES.includes(state) ? state : "activated",
-    bar: sanitizeBar({ width: w, height: h, radius: q.has("r") ? Number(q.get("r")) : 4, highContrast: q.get("hc") === "1" }),
+    bar: sanitizeBar({ width: w, height: h, radius: q.has("r") ? Number(q.get("r")) : 4, highContrast: q.get("hc") === "1", anchored: q.get("a") === "1" }),
     text: q.get("text") ?? "",
   };
 }

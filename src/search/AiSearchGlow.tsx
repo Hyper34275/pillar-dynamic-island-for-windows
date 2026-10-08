@@ -11,6 +11,8 @@ export type AiSearchGlowProps = {
   height: number;
   /** The bar's own corner radius. */
   radius: number;
+  /** Room around the bar for the aura (0 when sitting flush on the taskbar search box). */
+  margin?: number;
   /** document.hidden: whatever moves is paused. */
   hidden?: boolean;
 };
@@ -23,7 +25,7 @@ const BASE_PERIOD_S = 12;
  * not hidden). The bar on top paints the light plate, inset by the ring width, so only a thin ring
  * and the aura show. It never takes pointer events or focus.
  */
-export function AiSearchGlow({ state, mode, width, height, radius, hidden = false }: AiSearchGlowProps) {
+export function AiSearchGlow({ state, mode, width, height, radius, margin = glowTokens.margin, hidden = false }: AiSearchGlowProps) {
   const visible = glowVisible(state);
   const [entered, setEntered] = useState(false);
   const sweepRef = useRef<HTMLDivElement | null>(null);
@@ -77,7 +79,6 @@ export function AiSearchGlow({ state, mode, width, height, radius, hidden = fals
 
   if (!visible) return null;
 
-  const margin = glowTokens.margin;
   const barW = Math.max(0, width - 2 * margin);
   const barH = Math.max(0, height - 2 * margin);
   const barRadius = Math.max(0, Math.min(radius, barH / 2));

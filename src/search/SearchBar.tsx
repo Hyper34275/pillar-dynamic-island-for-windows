@@ -192,13 +192,15 @@ export function SearchBar({ bar, disabled = false, api = defaultApi, subscribe =
 
   const glowState: GlowState = previewGlow ?? state.glow;
   const showHint = state.choices && text.length === 0;
-  const margin = glowTokens.margin;
+  // Anchored on the Windows 10 search box the window is exactly the box: no outer margin, the
+  // ring is drawn inside its edge so nothing shows above the taskbar.
+  const margin = bar.anchored ? 0 : glowTokens.margin;
   const barRadius = Math.max(0, Math.min(bar.radius, (bar.height - 2 * margin) / 2));
   const live = glowState !== "idle" && glowState !== "disabled";
 
   return (
     <div className="sb-root" style={{ width: bar.width, height: bar.height }} data-glow={live ? "on" : "off"} data-mode={mode}>
-      <AiSearchGlow state={glowState} mode={mode} width={bar.width} height={bar.height} radius={barRadius} hidden={hidden} />
+      <AiSearchGlow state={glowState} mode={mode} width={bar.width} height={bar.height} radius={barRadius} margin={margin} hidden={hidden} />
       <div
         className="sb-bar"
         data-state={glowState}

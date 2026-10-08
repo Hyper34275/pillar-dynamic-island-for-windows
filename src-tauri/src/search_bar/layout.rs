@@ -160,16 +160,18 @@ fn anchored(i: &Inputs) -> Option<Layout> {
     let right = rect.right - px(BUTTON_INSET_DIP, scale);
     let top = rect.top + (height - side) / 2;
     let button = Bounds { left: right - side, top, right, bottom: top + side };
-    let margin = px(GLOW_MARGIN_DIP, scale);
 
+    // Flush on the real box: exactly its rectangle, nothing outside it. The input replaces the
+    // box in place (same size, same square corners) and the glow is drawn inside its edge, so
+    // the taskbar looks unchanged apart from the light ring.
     Some(Layout {
         anchored: true,
         button: Some(button),
-        window: inflate(rect, margin),
+        window: rect,
         scale,
         dpi: monitor.dpi,
         radius_dip: 0.0,
-        region_radius_px: margin,
+        region_radius_px: 0,
         edge,
         monitor: monitor.bounds,
     })
@@ -274,15 +276,14 @@ mod tests {
             assert_eq!(rect.right - btn.right, (6.0 * s).round() as i32);
             assert!(rect.contains(&btn));
             assert!(((btn.top - rect.top) - (rect.bottom - btn.bottom)).abs() <= 1, "dpi {dpi}");
-            // the window is the box plus the glow margin on every side
-            let g = (6.0 * s).round() as i32;
-            assert_eq!(l.window, b(rect.left - g, rect.top - g, rect.right + g, rect.bottom + g));
-            assert_eq!(l.region_radius_px, g);
+            // flush: the window is exactly the box, square, nothing sticks out over the desktop
+            assert_eq!(l.window, rect);
+            assert_eq!(l.region_radius_px, 0);
             assert_eq!(l.radius_dip, 0.0);
             assert_eq!(l.dpi, dpi);
             let st = l.to_state(false);
             assert!(st.anchored && st.edge == "bottom");
-            assert!((st.width - (330.0 + 12.0)).abs() < 1.0, "dpi {dpi}: {}", st.width);
+            assert!((st.width - 330.0).abs() < 1.0, "dpi {dpi}: {}", st.width);
         }
     }
 
