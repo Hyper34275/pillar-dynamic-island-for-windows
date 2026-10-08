@@ -299,8 +299,8 @@ fn kind_title(kind: commands::Fallback, lang: Lang) -> Option<&'static str> {
 /// returned unchanged.
 ///
 /// Never for a request to change, send, install or switch something off (`Signals::is_action`): the web is no
-/// answer to that. A weather / news / translate answer keeps its own sentence ("אין לי דרך לבדוק את זה בלי
-/// אינטרנט") and gets the Google click next to it.
+/// answer to that. A weather / currency / news / sports text gets its topic title ("את מזג האוויר אפשר לבדוק
+/// בגוגל"); any other refusal keeps its own sentence ("אין לי דרך לבדוק את זה בלי אינטרנט"); both get the click.
 pub fn with_web_offer(mut o: Outcome, interp: &Interpretation, text: &str, signals: Signals) -> Outcome {
     if o.phase != CardPhase::Answer || !o.groups.is_empty() || signals.is_action() {
         return o;
@@ -319,8 +319,9 @@ pub fn with_web_offer(mut o: Outcome, interp: &Interpretation, text: &str, signa
     }
     let Some(query) = sys::clean_query(text) else { return o };
     let Some(url) = sys::search_url("google", &query, None, None) else { return o };
-    // (a known reason for the refusal already wrote the title)
-    if let Some(title) = topic.and_then(|kind| kind_title(kind, lang)).filter(|_| signals.unsupported.is_none()) {
+    // A known topic's title is more useful than the engine's general "no internet" sentence: it says where the
+    // answer is and sits right above the Google button. Without a topic, the refusal's own sentence stays.
+    if let Some(title) = topic.and_then(|kind| kind_title(kind, lang)) {
         o.title = title.to_string();
         o.summary = String::new();
     }

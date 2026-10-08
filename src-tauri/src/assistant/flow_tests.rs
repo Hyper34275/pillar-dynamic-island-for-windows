@@ -1866,9 +1866,18 @@ fn weather_and_news_say_they_need_the_internet_and_keep_the_google_button() {
     let f = Fake::default();
     let e = Engine::new();
     let nothing = interp(Decision::NoMatch, Slots::default());
-    for (n, (kind, text)) in [("weather", "מה מזג האוויר"), ("news", "מה שער הדולר"), ("news", "חדשות היום")].into_iter().enumerate() {
+    // a known topic names where the answer is; a refusal without one keeps the engine's sentence
+    for (n, (kind, text, title)) in [
+        ("weather", "מה מזג האוויר", "את מזג האוויר אפשר לבדוק בגוגל"),
+        ("news", "מה שער הדולר", "שערי מטבע אפשר לבדוק בגוגל"),
+        ("news", "חדשות היום", "חדשות אפשר לראות בגוגל"),
+        ("weather", OFFERABLE, "אין לי דרך לבדוק את זה בלי אינטרנט"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let card = e.run_with_signals(&f, text, &format!("q{n}"), now(), &nothing, sig(false, false, Some(kind)));
-        assert_eq!(card.title, "אין לי דרך לבדוק את זה בלי אינטרנט", "{text}");
+        assert_eq!(card.title, title, "{text}");
         assert_eq!(card.items.len(), 1, "{text}: {:?}", card.items);
         assert_eq!(card.items[0].kind, ItemKind::Action);
         assert!(card.items[0].title.starts_with("חפש בגוגל: "), "{}", card.items[0].title);
@@ -1876,9 +1885,11 @@ fn weather_and_news_say_they_need_the_internet_and_keep_the_google_button() {
     let mut en = interp(Decision::NoMatch, Slots::default());
     en.lang = Lang::En;
     let card = e.run_with_signals(&f, "what is the weather", "qe", now(), &en, sig(false, false, Some("weather")));
-    assert_eq!(card.title, "I have no way to check that without the internet");
+    assert_eq!(card.title, "Google can show you the weather");
     assert_eq!(card.items.len(), 1);
     assert!(card.items[0].title.starts_with("Search Google: "));
+    let card = e.run_with_signals(&f, "how many people live in israel", "qe2", now(), &en, sig(false, false, Some("weather")));
+    assert_eq!(card.title, "I have no way to check that without the internet");
 }
 
 #[test]
