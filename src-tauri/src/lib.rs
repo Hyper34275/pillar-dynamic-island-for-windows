@@ -62,7 +62,16 @@ fn prepare(context: &mut tauri::Context) {
 fn core_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("companyisland-core")
         .setup(|app, _api| {
+            // Before any file of the data folder is opened: an older CompanyIsland (or PILLAR) folder
+            // becomes %LOCALAPPDATA%\Yuval. After the single-instance check, so a duplicate launch
+            // never moves a folder under the running instance.
+            let migration = paths::migrate_data_dir_in_place();
             debug_log::init(env!("CARGO_PKG_VERSION"));
+            match &migration {
+                Some(m) if m.is_warning() => dlog!("WARN", "app", "{}", m.describe()),
+                Some(m @ paths::Migration::Moved { .. }) => dlog!("INFO", "app", "{}", m.describe()),
+                _ => {} // the usual start: nothing to say
+            }
             app.manage(settings::SettingsStore::load());
             app.manage(calendar::CalendarState::default());
             Ok(())
