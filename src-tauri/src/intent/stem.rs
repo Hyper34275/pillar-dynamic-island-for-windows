@@ -117,7 +117,7 @@ pub fn term_variants(raw: &str) -> Vec<String> {
             break;
         }
         let last = cs[k - 1];
-        let ok = if last == 'ה' { true } else { k == 1 && cs.len() >= k + 4 && matches!(last, 'ב' | 'ל' | 'ו') };
+        let ok = if last == 'ה' { true } else { k == 1 && cs.len() >= k + 3 && matches!(last, 'ב' | 'ל' | 'ו') };
         if ok {
             let s: String = cs[k..].iter().collect();
             if !out.contains(&s) {

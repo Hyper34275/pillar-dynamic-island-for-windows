@@ -16,6 +16,7 @@
 //!   ("ביומן", "פגישות") or a person ("לאיציק") the day defaults to today.
 //! - A fresh context turns "ומה ...", "רק ..." and bare dates / names into follow-ups.
 
+pub mod analysis;
 pub mod calc;
 pub mod context;
 pub mod dates;
@@ -24,12 +25,16 @@ pub mod lexicon;
 pub mod normalize;
 pub mod numwords;
 pub mod score;
+pub mod spell;
 pub mod stem;
 pub mod types;
 
 #[cfg(test)]
 mod corpus_tests;
+#[cfg(test)]
+mod eval_tests;
 
+pub use analysis::{Analysis, Correction};
 pub use context::Ctx;
 pub use types::*;
 
@@ -66,6 +71,10 @@ fn lead_of(a: &[lexicon::Ann]) -> Lead {
     if t0.hit.as_ref().map_or(false, |h| h.prefix.starts_with('ו')) {
         return Lead::Follow;
     }
+    // "ובתמיכה?", "ולדנה?": a short question that starts with "and"
+    if a.len() <= 3 && t0.hit.is_none() && t0.norm().starts_with('ו') && t0.norm().chars().count() >= 4 {
+        return Lead::Follow;
+    }
     if t0.is("Q_WHAT") || t0.norm() == "how" {
         if let Some(t1) = a.get(1) {
             if t1.is("P_REGARD") || t1.is("P_ABOUT") || t1.is("P_WITH") || t1.is("P_AT") {
@@ -78,6 +87,19 @@ fn lead_of(a: &[lexicon::Ann]) -> Lead {
 
 /// Understand `text`. Pure and deterministic for a given `now`.
 pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> Interpretation {
+    analyze(text, ctx, now, known).0
+}
+
+/// [`interpret`], plus why: the data source, confidence parts, spelling corrections and reason
+/// codes (no user text, safe to log).
+pub fn analyze(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> (Interpretation, Analysis) {
+    let mut an = Analysis::default();
+    let i = understand(text, ctx, now, known, &mut an);
+    an.finish(&i);
+    (i, an)
+}
+
+fn understand(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known, an: &mut Analysis) -> Interpretation {
     let lang = detect_lang(text);
     let last = ctx.last(now.timestamp_millis());
     let text: String = text.chars().take(MAX_QUERY_CHARS).collect();
@@ -102,7 +124,8 @@ pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> 
     // numbers first: "12*(3+4)" must not be read as a date
     let expr = calc::extract_expr(&text, calc::has_calc_word(&text));
     let dp = if expr.is_some() { dates::DateParse::default() } else { dates::parse(&mut a, now) };
-    let ent = entities::extract(&mut a, known, mail_hint);
+    let mut ent = entities::extract(&mut a, known, mail_hint);
+    lone_name(&a, &mut ent, last.and_then(context::last_cap), known);
 
     let ext = a
         .iter()
@@ -123,14 +146,18 @@ pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> 
             || ent.unread
             || ent.latest
             || has_time
-            || ext.is_some(),
+            || ext.is_some()
+            || ent.mailbox.is_some()
+            || ent.shared_mailbox
+            || ent.all_mailboxes,
     };
     let mut decision = score::decide(&f, &cands, &eff);
     let own_best = cands.first().map_or(0.0, |c| c.1);
     let conf = score::confidence(&cands);
     let ranked: Vec<(CapId, f32)> = cands.iter().take(5).copied().collect();
+    record(an, &a, &f, &cands, &ent, &dp);
     let app = app_text(&a);
-    let own = Own { ent: &ent, dp: &dp, expr: expr.clone(), ext, app: app.clone(), now };
+    let own = Own { ent: &ent, dp: &dp, expr: expr.clone(), ext, app: app.clone(), now, replace_terms: lead == Lead::Follow };
 
     let mut slots = slots_for(&decision, &own);
     let mut follow_up = false;
@@ -163,8 +190,10 @@ pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> 
         || ent.unread
         || ent.mailbox.is_some()
         || ent.all_mailboxes
+        || ent.shared_mailbox
         || ent.dont_know
-        || ent.latest;
+        || ent.latest
+        || own.ext.is_some();
     let has_terms = ent.explicit_terms || !ent.with_names.is_empty();
     let content_reply = matches!(last.map(|l| &l.decision), Some(Decision::Clarify { ask: AskKind::Content, .. }));
     let use_merge = match lead {
@@ -219,6 +248,56 @@ pub fn interpret(text: &str, ctx: &Ctx, now: DateTime<Local>, known: &Known) -> 
     make(decision, slots, conf, follow_up, ranked)
 }
 
+/// Fill the analysis from what the passes found (concept ids and fixed codes only).
+fn record(an: &mut Analysis, a: &[lexicon::Ann], f: &score::Features, cands: &[(CapId, f32)], ent: &Entities, dp: &dates::DateParse) {
+    if let Some(&(_, s1)) = cands.first() {
+        let s2 = cands.get(1).map_or(0.0, |c| c.1);
+        an.score = s1;
+        an.margin = ((s1 - s2) / s1).clamp(0.0, 1.0);
+    }
+    for t in a {
+        if let Some(h) = &t.hit {
+            if h.typo {
+                an.corrections.push(Correction { concept: h.concept, cost: h.cost, real_word: h.real_word });
+            }
+            if h.phrase {
+                an.reason(format!("phrase:{}", h.concept));
+            }
+        }
+    }
+    let flags = [
+        (f.mail, "noun:mail"),
+        (f.file, "noun:file"),
+        (f.note, "noun:note"),
+        (f.app, "noun:app"),
+        (f.cal, "noun:calendar"),
+        (f.meeting, "noun:meeting"),
+        (f.mailbox, "noun:mailbox"),
+        (f.free, "free"),
+        (f.v_search, "verb:search"),
+        (f.v_show, "verb:show"),
+        (f.v_open || f.v_launch, "verb:open"),
+        (f.veto, "verb:write"),
+        (f.q_what && f.yesh, "q:what-have"),
+        (dp.time.is_some(), "time"),
+        (dp.error.is_some(), "time:invalid"),
+        (ent.person.is_some(), "person"),
+        (ent.sender.is_some(), "sender"),
+        (!ent.terms.is_empty(), "terms"),
+        (ent.unread, "unread"),
+        (ent.latest, "latest"),
+        (ent.mailbox.is_some() || ent.all_mailboxes || ent.shared_mailbox, "mailbox"),
+    ];
+    for (on, code) in flags {
+        if on {
+            an.reason(code);
+        }
+    }
+    an.exact_terms = ent.exact;
+    an.shared_mailbox = ent.shared_mailbox;
+    an.unsupported = a.iter().find_map(|t| t.is("VETO").then(|| lexicon::unsupported_kind(t.norm())));
+}
+
 /// What the current text found, for building slots.
 struct Own<'a> {
     ent: &'a Entities,
@@ -227,6 +306,8 @@ struct Own<'a> {
     ext: Option<String>,
     app: Option<String>,
     now: DateTime<Local>,
+    /// "ומה עם/לגבי X": the new subject replaces the old one ("רק ..." narrows, so it adds).
+    replace_terms: bool,
 }
 
 fn day_span(now: DateTime<Local>) -> TimeSpec {
@@ -243,6 +324,15 @@ fn slots_for(decision: &Decision, o: &Own) -> Slots {
             s
         }
         _ => Slots::default(),
+    }
+}
+
+/// The time window for searching things that already exist (mail, files, notes): a date that was
+/// resolved forwards ("ביום שני", "6.10") means the past one.
+fn past_time(o: &Own) -> Option<TimeSpec> {
+    match (&o.dp.time, &o.dp.past) {
+        (Some(t), Some(p)) if t.from > o.now => Some(p.clone()),
+        (t, _) => t.clone(),
     }
 }
 
@@ -273,25 +363,32 @@ fn build_slots(cap: CapId, o: &Own) -> Slots {
         caps::EMAIL_SEARCH | caps::EMAIL_OPEN => {
             s.sender = e.sender.clone();
             s.terms = terms_all();
+            // "ההתכתבות עם דני": the person mail was exchanged with
+            if s.sender.is_none() && e.with_names.len() == 1 {
+                s.sender = e.with_names.first().cloned();
+                s.terms = e.terms.clone();
+            }
             s.mailbox = e.mailbox.clone();
             s.all_mailboxes = e.all_mailboxes;
             s.latest = e.latest;
             s.limit = e.limit;
             s.unread = e.unread;
-            s.time = o.dp.time.clone();
+            s.time = past_time(o);
         }
         caps::FILES_SEARCH | caps::FILES_OPEN => {
             s.terms = terms_all();
+            s.terms.extend(e.topic_nouns.iter().cloned());
             s.file_ext = o.ext.clone();
             s.latest = e.latest;
             s.limit = e.limit;
-            s.time = o.dp.time.clone();
+            s.time = past_time(o);
         }
         caps::NOTES_SEARCH | caps::NOTES_OPEN => {
             s.terms = terms_all();
+            s.terms.extend(e.topic_nouns.iter().cloned());
             s.latest = e.latest;
             s.limit = e.limit;
-            s.time = o.dp.time.clone();
+            s.time = past_time(o);
         }
         caps::APPS_SEARCH => {
             s.terms = terms_all();
@@ -321,6 +418,13 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool) -> Option<(
     let calendar = cap.as_str().starts_with("calendar.");
     if o.dp.time.is_some() || o.dp.tod.is_some() {
         s.time = context::merge_time(last.slots.time.as_ref(), o.dp);
+        if !cap.as_str().starts_with("calendar.") {
+            if let (Some(t), Some(p)) = (&s.time, &o.dp.past) {
+                if t.from > o.now {
+                    s.time = Some(p.clone());
+                }
+            }
+        }
     }
     if let Some(ask) = o.dp.error {
         return Some((Decision::Clarify { ask, cap: Some(cap) }, s));
@@ -328,6 +432,9 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool) -> Option<(
     if calendar {
         if let Some(p) = &e.person {
             s.person = Some(p.clone());
+        } else if e.with_names.len() == 1 && cap != caps::CALENDAR_SEARCH_EVENTS {
+            // "ומה עם משה": the calendar of the person now named
+            s.person = e.with_names.first().cloned();
         }
         if cap != caps::CALENDAR_RESOLVE_SHARED && s.time.is_none() && cap != caps::CALENDAR_SEARCH_EVENTS {
             s.time = Some(day_span(o.now));
@@ -353,11 +460,22 @@ fn merge_followup(last: &Interpretation, o: &Own, allow_terms: bool) -> Option<(
             s.latest = true;
             s.limit = e.limit;
         }
+        if matches!(cap, caps::FILES_SEARCH) || matches!(last.decision, Decision::MultiSource { .. }) {
+            if let Some(x) = &o.ext {
+                s.file_ext = Some(x.clone());
+            }
+        }
     }
     if allow_terms {
         let mut add = e.terms.clone();
-        for n in &e.with_names {
-            add.push(name_variants(n));
+        let with_is_person = calendar && e.person.is_none() && e.with_names.len() == 1 && cap != caps::CALENDAR_SEARCH_EVENTS;
+        if !with_is_person {
+            for n in &e.with_names {
+                add.push(name_variants(n));
+            }
+        }
+        if o.replace_terms && !add.is_empty() {
+            s.terms.clear();
         }
         for g in add {
             if !s.terms.contains(&g) {
@@ -380,7 +498,61 @@ fn app_text(a: &[lexicon::Ann]) -> Option<String> {
         .filter(|t| !t.tok.sym && (t.hit.is_none() || t.starts("A_") || (t.is("MARK") && t.norm() == "word")))
         .map(|t| t.raw())
         .collect();
+    // "את המחשבון", "את הכרום": the article is grammar, not part of the name
+    let words: Vec<String> = words
+        .iter()
+        .map(|w| match w.strip_prefix('ה') {
+            Some(rest) if rest.chars().count() >= 3 && rest.chars().all(normalize::is_he) => rest.to_string(),
+            _ => w.to_string(),
+        })
+        .collect();
     (!words.is_empty()).then(|| words.join(" "))
+}
+
+/// A question that is only a name. After a calendar turn "ולאיציק?" names whose calendar, after a
+/// mail turn "ומיובל?" names the sender; with nothing before it a name the machine knows ("דנה")
+/// becomes a person, so the engine asks what to do with it instead of giving up.
+fn lone_name(a: &[lexicon::Ann], ent: &mut Entities, last_cap: Option<CapId>, known: &Known) {
+    if ent.person.is_some() || ent.sender.is_some() || !ent.with_names.is_empty() {
+        return;
+    }
+    let content: Vec<&lexicon::Ann> = a.iter().filter(|t| t.is_content()).collect();
+    let others = a.iter().filter(|t| !t.is_content() && !t.tok.sym && !t.is("STOP")).count();
+    let [t] = content[..] else { return };
+    if others > 0 || t.tok.quoted {
+        return;
+    }
+    let mut name = t.raw().to_string();
+    let he = |s: &str| s.chars().count() >= 3 && s.chars().all(normalize::is_he);
+    let strip = |s: &str, c: char| s.strip_prefix(c).filter(|r| he(r)).map(String::from);
+    match last_cap {
+        Some(cap) if cap.as_str().starts_with("calendar.") => {
+            name = strip(&name, 'ו').unwrap_or(name);
+            name = strip(&name, 'ל').unwrap_or(name);
+            ent.person = Some(name);
+            ent.terms.clear();
+        }
+        Some(cap) if context::is_mail_cap(cap) => {
+            name = strip(&name, 'ו').unwrap_or(name);
+            name = strip(&name, 'מ').unwrap_or(name);
+            ent.sender = Some(name);
+            ent.terms.clear();
+        }
+        Some(_) => {}
+        None => {
+            let f = fold(&name);
+            let is_known = known
+                .calendars
+                .iter()
+                .map(|c| c.name.as_str())
+                .chain(known.people.iter().map(String::as_str))
+                .any(|full| fold(full).split(' ').next() == Some(f.as_str()));
+            if is_known {
+                ent.person = Some(name);
+                ent.terms.clear();
+            }
+        }
+    }
 }
 
 /// A Windows path or a program / script file in the text: never understood, never offered.

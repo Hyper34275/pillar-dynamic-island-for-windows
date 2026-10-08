@@ -62,6 +62,17 @@ pub fn merge_time(prev: Option<&TimeSpec>, new: &DateParse) -> Option<TimeSpec> 
         let day = prev.from.date_naive();
         return Some(TimeSpec { from: local_at(day, s), to: local_at(day, e), grain: Grain::Range });
     }
+    // "ומחרתיים?" after "אני פנוי מחר ב-11?": the same hours on the new day
+    if let (Some(prev), Some(t), None) = (prev, &new.time, new.tod) {
+        let same_day = prev.grain == Grain::Range && prev.from.date_naive() == (prev.to - chrono::Duration::minutes(1)).date_naive();
+        if same_day && t.grain == Grain::Day {
+            let (s, e) = (prev.from.time(), prev.to - chrono::Duration::minutes(1));
+            let mins = |h: u32, m: u32| h * 60 + m;
+            use chrono::Timelike;
+            let day = t.from.date_naive();
+            return Some(TimeSpec { from: local_at(day, mins(s.hour(), s.minute())), to: local_at(day, mins(e.hour(), e.minute()) + 1), grain: Grain::Range });
+        }
+    }
     new.time.clone().or_else(|| prev.cloned())
 }
 

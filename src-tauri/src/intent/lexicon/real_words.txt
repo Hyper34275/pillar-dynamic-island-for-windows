@@ -1,0 +1,39 @@
+# Real Hebrew words that sit one cheap edit away from a keyword. The spelling correction reads
+# them as the keyword only when the sentence supports it (see lexicon::correction_supported).
+# Hand-written for CompanyIsland; no third-party word list was copied.
+הים
+קצבים
+קצב
+מיכל
+יומם
+פגיעה
+פגשה
+הודאה
+מכר
+שבע
+פנו
+פני
+בקר
+אחרו
+חושב
+חושבת
+מילה
+מילים
+קובע
+מסמר
+תיק
+פתח
+הודו
+יומי
+קבצן
+מחד
+מחיר
+המחיר
+הודאות
+קבוצי
+קבוצה
+קבוצות
+קצבי
+עסקה
+הסכם
+ספק

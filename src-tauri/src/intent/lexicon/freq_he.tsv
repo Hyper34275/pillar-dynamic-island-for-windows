@@ -1,0 +1,3 @@
+# word<TAB>zipf*100 (Zipf = log10 of occurrences per billion words).
+# Empty on purpose: a third-party frequency list (e.g. wordfreq, CC BY-SA 4.0) is only added here
+# after its licence has been approved for distribution. See docs/HEBREW_ENGINE.md.

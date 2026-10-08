@@ -36,6 +36,14 @@ pub struct Entities {
     pub refers_back: bool,
     /// "מה שלח לי X": no mail noun was said but the question is about mail.
     pub implied_mail: bool,
+    /// An exact word was asked for ("המילה X", quotes, "בדיוק X").
+    pub exact: bool,
+    /// "התיבה המשותפת" with no mailbox name.
+    pub shared_mailbox: bool,
+    /// "עם הלקוח": a definite noun after "with" (a topic, which still makes "מתי X עם Y" a meeting).
+    pub with_topic: bool,
+    /// Meeting / calendar nouns that are the topic of a file, note or mail search ("המצגת מהישיבה").
+    pub topic_nouns: Vec<Vec<String>>,
 }
 
 const FILE_EXTS: [&str; 14] =
@@ -46,7 +54,7 @@ pub fn ext_of(concept: &str) -> Option<&'static str> {
     Some(match concept {
         "A_EXCEL" => "xlsx",
         "A_WORD" => "docx",
-        "A_PPT" => "pptx",
+        "A_PPT" | "N_PPT" => "pptx",
         "A_PDF" => "pdf",
         "A_CSV" => "csv",
         "A_TXT" => "txt",
@@ -94,6 +102,79 @@ fn is_wrote_verb(norm: &str) -> bool {
     matches!(norm, "שלח" | "שלחה" | "שלחו" | "כתב" | "כתבה" | "כתבו")
 }
 
+/// A first name (or full name) of a calendar or a person the machine knows, folded.
+fn known_name(known: &Known, norm: &str) -> bool {
+    known.calendars.iter().map(|c| c.name.as_str()).chain(known.people.iter().map(String::as_str)).any(|full| {
+        let f = fold(full);
+        f == norm || f.split(' ').next() == Some(norm)
+    })
+}
+
+/// The first place where one of `names` appears in full (2+ words), the first word possibly with
+/// a proclitic ("בחדר ישיבות", "לדנה כהן"): (start, token count, the name as typed).
+fn full_name_at<'n>(a: &[Ann], names: impl Iterator<Item = &'n str>) -> Option<(usize, usize, String)> {
+    for name in names {
+        let words: Vec<String> = fold(name).split(' ').map(String::from).collect();
+        if words.len() < 2 {
+            continue;
+        }
+        for i in 0..a.len() {
+            if i + words.len() > a.len() || a[i].used {
+                continue;
+            }
+            let head = a[i].norm();
+            let stripped = crate::intent::stem::prefix_splits(head).into_iter().find(|(_, rest)| *rest == words[0]);
+            let first = if head == words[0] {
+                a[i].raw().to_string()
+            } else if let Some((p, _)) = stripped {
+                strip_chars(a[i].raw(), p.chars().count())
+            } else {
+                continue;
+            };
+            if (1..words.len()).all(|k| !a[i + k].used && a[i + k].norm() == words[k]) {
+                let rest: Vec<&str> = (1..words.len()).map(|k| a[i + k].raw()).collect();
+                return Some((i, words.len(), format!("{first} {}", rest.join(" "))));
+            }
+        }
+    }
+    None
+}
+
+/// A name as the user wrote it, completed with the surname that follows it when together they are
+/// a person or calendar the machine knows ("מירי אברהם"), and with a misspelt first name fixed when
+/// exactly one known first name is one cheap edit away ("יבול" -> "יובל"). Nothing else changes:
+/// a name is never corrected towards a word.
+fn complete_name(a: &mut [Ann], known: &Known, name: &str) -> String {
+    let folded = fold(name);
+    let fulls: Vec<String> = known.calendars.iter().map(|c| fold(&c.name)).chain(known.people.iter().map(|p| fold(p))).collect();
+    if let Some(i) = a.iter().position(|t| t.used && (t.raw() == name || t.raw().ends_with(name))) {
+        if a.get(i + 1).map_or(false, |t| t.is_content()) {
+            let joined = format!("{folded} {}", a[i + 1].norm());
+            if fulls.iter().any(|f| *f == joined) {
+                a[i + 1].used = true;
+                return format!("{name} {}", a[i + 1].raw());
+            }
+        }
+    }
+    let cs: Vec<char> = folded.chars().collect();
+    if cs.len() < 3 || !cs.iter().all(|c| is_he(*c)) || fulls.iter().any(|f| f.split(' ').next() == Some(folded.as_str())) {
+        return name.to_string();
+    }
+    let originals: Vec<&str> = known.calendars.iter().map(|c| c.name.as_str()).chain(known.people.iter().map(String::as_str)).collect();
+    let mut close: Vec<&str> = Vec::new();
+    for full in &originals {
+        let Some(first) = full.split(' ').next() else { continue };
+        let fc: Vec<char> = fold(first).chars().collect();
+        if crate::intent::spell::weighted(&cs, &fc, 0.75).is_some() && !close.iter().any(|c| fold(c) == fold(first)) {
+            close.push(first);
+        }
+    }
+    match close[..] {
+        [one] => one.to_string(),
+        _ => name.to_string(),
+    }
+}
+
 fn push_unique(list: &mut Vec<String>, name: String) {
     let f = fold(&name);
     if !list.iter().any(|n| fold(n) == f) {
@@ -111,6 +192,7 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
         if t.tok.quoted && !t.used {
             e.terms.push(vec![t.tok.raw.clone()]);
             e.explicit_terms = true;
+            e.exact = true;
             t.used = true;
         }
     }
@@ -158,6 +240,11 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
     // ---- latest / limit ----
     for i in 0..n {
         if a[i].used || !(a[i].is("M_LATEST_ONE") || a[i].is("M_LATEST_MANY")) {
+            continue;
+        }
+        // "הפרויקט החדש": "new" right after a topic word describes the topic
+        if i > 0 && a[i - 1].is_content() && a[i].norm().starts_with("חדש") || i > 0 && a[i - 1].is_content() && a[i].norm().starts_with("החדש") {
+            a[i].hit = None;
             continue;
         }
         let many = a[i].is("M_LATEST_MANY");
@@ -245,6 +332,28 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
                 }
             }
         }
+        // one distinctive word of a mailbox name after a mailbox cue ("בתיבת התמיכה" -> "תמיכה טכנית"),
+        // or with a proclitic in a mail follow-up ("ובתמיכה?"), when only one mailbox has it
+        if best.is_none() && (cue || mail_hint) {
+            let mut found: Vec<(&str, usize)> = Vec::new();
+            for mb in &known.mailboxes {
+                for w in fold(&mb.name).split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 3) {
+                    let at = (0..n).find(|&k| {
+                        let nm = a[k].norm();
+                        !a[k].tok.sym && ((nm == w && cue) || crate::intent::stem::prefix_splits(nm).iter().any(|(_, rest)| rest == w))
+                    });
+                    if let Some(k) = at {
+                        if !found.iter().any(|(id, _)| *id == mb.id.as_str()) {
+                            found.push((&mb.id, k));
+                        }
+                    }
+                }
+            }
+            if let [(id, k)] = found[..] {
+                best = Some((1, id, vec![k]));
+                tie = false;
+            }
+        }
         if let (Some((_, id, hits)), false) = (best, tie) {
             e.mailbox = Some(id.to_string());
             for k in hits {
@@ -254,6 +363,18 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
                 if t.is("N_MAILBOX") || t.is("N_SHARED") {
                     t.used = true;
                 }
+            }
+        }
+    }
+    // "התיבה המשותפת": a shared mailbox, none named
+    if e.mailbox.is_none() && !e.all_mailboxes {
+        let shared = (0..n).find(|&k| !a[k].used && a[k].is("N_SHARED"));
+        let mailbox = (0..n).find(|&k| !a[k].used && a[k].is("N_MAILBOX"));
+        if let (Some(s), Some(m)) = (shared, mailbox) {
+            if s.abs_diff(m) <= 2 {
+                e.shared_mailbox = true;
+                a[s].used = true;
+                a[m].used = true;
             }
         }
     }
@@ -290,8 +411,10 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
         }
         let mut taken = 0;
         while j < n && taken < 3 && a[j].is_content() {
-            e.terms.push(term_variants(a[j].raw()));
+            // the exact word, as typed: no proclitic-stripped variant
+            e.terms.push(vec![a[j].raw().to_string()]);
             e.explicit_terms = true;
+            e.exact = true;
             a[j].used = true;
             taken += 1;
             j += 1;
@@ -338,7 +461,22 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
             continue;
         }
         if let Some(j) = next_content(a, i + 1, true) {
-            push_unique(&mut e.with_names, strip_poss(a[j].raw()).to_string());
+            let raw = a[j].raw().to_string();
+            // "עם הקוד", "עם הלקוח": a definite noun is a topic, not a person
+            let calendar_owner = !a.iter().any(|t| t.is("N_MEETING")) && known.calendars.iter().any(|c| fold(&c.name).split(' ').next() == Some(fold(&raw).as_str()));
+            if raw.starts_with('ה') && raw.chars().count() >= 4 && !known_name(known, &fold(&raw)) {
+                e.terms.push(term_variants(&raw));
+                e.explicit_terms = true;
+                e.with_topic = true;
+            } else if calendar_owner && a.iter().any(|t| t.is("N_CAL") || t.is("YESH")) {
+                // "מה קורה עם דנה מחר ביומן": a calendar the user reads, so whose day it is
+                a[j].used = true;
+                a[i].used = true;
+                e.person.get_or_insert(raw);
+                continue;
+            } else {
+                push_unique(&mut e.with_names, strip_poss(&raw).to_string());
+            }
             a[j].used = true;
             a[i].used = true;
         }
@@ -347,12 +485,36 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
     // ---- the calendar owner ----
     let mut persons: Vec<String> = Vec::new();
     let mut last_person_idx: Option<usize> = None;
+    if let Some(p) = e.person.take() {
+        push_unique(&mut persons, p);
+    }
+    let calendar_talk = a.iter().any(|t| t.is("N_CAL") || t.is("N_MEETING") || t.is("YESH") || t.is("FREE") || t.is("P_AT"));
+    if calendar_talk {
+        // a calendar the user can read, named in full ("בחדר ישיבות", "של דנה כהן")
+        if let Some((start, len, name)) = full_name_at(a, known.calendars.iter().map(|c| c.name.as_str())) {
+            push_unique(&mut persons, name);
+            for k in start..start + len {
+                a[k].used = true;
+            }
+            last_person_idx = Some(start + len - 1);
+        }
+    }
     for i in 0..n {
         if a[i].used {
             continue;
         }
         let mut found: Option<(usize, String)> = None;
-        if a[i].is("YESH") && a[i].hit.as_ref().map_or(false, |h| h.prefix.is_empty() || h.prefix == "ו") {
+        if a[i].is("YESH") && matches!(a[i].norm(), "עושה" | "עושימ" | "עושות") && i > 0 && a[i - 1].is_content() {
+            // "מה איציק עושה מחר", "מה דנה ואיציק עושים"
+            let mut j = i - 1;
+            if a[j].raw().starts_with('ו') && j > 0 && a[j - 1].is_content() {
+                let second = strip_chars(a[j].raw(), 1);
+                a[j].used = true;
+                j -= 1;
+                push_unique(&mut persons, second);
+            }
+            found = Some((j, a[j].raw().to_string()));
+        } else if a[i].is("YESH") && a[i].hit.as_ref().map_or(false, |h| h.prefix.is_empty() || h.prefix == "ו") {
             if let Some(j) = next_content(a, i + 1, false) {
                 if let Some(name) = without_lamed(a[j].raw()) {
                     found = Some((j, name));
@@ -406,6 +568,20 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
 
     // "מה שלח לי שרון", "מי כתב לי היום": a question about who wrote is a mail search. The verb is
     // taken here, otherwise it would count as a "send" command or as a search term.
+    // "מה שרון שלחה לי", "מה דני כתב לי": the name between the question and the verb
+    for i in 0..n.saturating_sub(2) {
+        let asks = !a[i].used && (a[i].is("Q_WHAT") || matches!(a[i].norm(), "מי" | "who"));
+        if asks && a[i + 1].is_content() && !a[i + 2].used && is_wrote_verb(a[i + 2].norm()) && !lex.is_not_name(a[i + 1].norm()) {
+            push_unique(&mut senders, strip_poss(a[i + 1].raw()).to_string());
+            a[i + 1].used = true;
+            a[i + 2].used = true;
+            e.implied_mail = true;
+            mail_ctx = true;
+            if i + 3 < n && a[i + 3].norm() == "לי" {
+                a[i + 3].used = true;
+            }
+        }
+    }
     for i in 0..n.saturating_sub(1) {
         let asks = !a[i].used && (a[i].is("Q_WHAT") || matches!(a[i].norm(), "מי" | "who"));
         if !asks || a[i + 1].used || !is_wrote_verb(a[i + 1].norm()) {
@@ -452,7 +628,9 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
         if a[i].used {
             continue;
         }
-        if a[i].is("P_FROM") {
+        // "המייל האחרון של יובל": של after the mail noun names the sender
+        let of_mail = a[i].is("P_OF") && (1..=2).any(|d| i >= d && a[i - d].is("N_MAIL"));
+        if a[i].is("P_FROM") || of_mail {
             if let Some(j) = next_content(a, i + 1, true) {
                 push_unique(&mut senders, strip_poss(a[j].raw()).to_string());
                 a[j].used = true;
@@ -504,7 +682,20 @@ pub fn extract(a: &mut [Ann], known: &Known, mail_hint: bool) -> Entities {
         }
     }
     e.senders = senders.len();
-    e.sender = senders.into_iter().next();
+    e.sender = senders.into_iter().next().map(|s| complete_name(a, known, &s));
+    e.person = e.person.take().map(|p| complete_name(a, known, &p));
+
+    // ---- a meeting noun with "מ"/"של" or the article next to a file / note noun is a topic ----
+    let object = a.iter().any(|t| t.is("N_FILE") || t.is("N_PPT") || t.is("N_NOTE") || t.starts("A_"));
+    if object {
+        for t in a.iter_mut() {
+            if !t.used && t.is("N_MEETING") && t.hit.as_ref().map_or(false, |h| !h.prefix.is_empty()) {
+                let rest = strip_chars(t.raw(), t.hit.as_ref().map_or(0, |h| h.prefix.chars().count()));
+                e.topic_nouns.push(vec![t.raw().to_string(), rest]);
+                t.used = true;
+            }
+        }
+    }
 
     // ---- leftover content words are the search terms ----
     if e.terms.len() < 6 {

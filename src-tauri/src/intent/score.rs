@@ -18,8 +18,10 @@ pub const T_LOW: f32 = 1.2;
 pub const MARGIN: f32 = 0.35;
 /// A sensitive capability (open / launch) is offered for a click from this score on.
 pub const T_CONFIRM: f32 = 2.0;
-/// A typo match counts this much of an exact one.
-pub const TYPO_FACTOR: f32 = 0.6;
+/// A spelling correction counts this much of an exact match ...
+pub const TYPO_FACTOR: f32 = 0.75;
+/// ... unless it was one cheap edit (a vowel letter, ס/ש, ...): that counts as exact.
+pub const CHEAP_TYPO: f32 = 0.5;
 
 #[derive(Clone, Debug, Default)]
 pub struct Features {
@@ -62,6 +64,11 @@ pub struct Features {
     /// An application / format word (אקסל, pdf) or an explicit file extension.
     pub has_ext: bool,
     pub refers_back: bool,
+    /// "איפה שמרתי" / "איפה רשמתי": a file / note question without the noun.
+    pub file_hint: bool,
+    pub note_hint: bool,
+    /// "קיבלתי", "הגיעו": received things are mail.
+    pub mail_hint: bool,
 }
 
 impl Features {
@@ -70,18 +77,23 @@ impl Features {
         let mut seen_exact: Vec<&str> = Vec::new();
         for t in a.iter().filter(|t| !t.used) {
             let Some(h) = &t.hit else { continue };
-            if !h.typo {
+            if !h.typo || h.cost <= CHEAP_TYPO {
                 seen_exact.push(h.concept);
             }
             match h.concept {
                 "N_MAIL" => f.mail = true,
                 "N_FILE" => f.file = true,
+                // a presentation is a file of a known type
+                "N_PPT" => f.file = true,
                 "N_NOTE" => f.note = true,
                 "N_APP" => f.app = true,
                 "N_CAL" => f.cal = true,
                 "N_MEETING" => f.meeting = true,
                 "N_MAILBOX" => f.mailbox = true,
                 "N_SHARED" => f.shared = true,
+                "H_FILE" => f.file_hint = true,
+                "H_NOTE" => f.note_hint = true,
+                "H_MAIL" => f.mail_hint = true,
                 "V_SEARCH" => f.v_search = true,
                 "V_SHOW" => f.v_show = true,
                 "V_OPEN" => f.v_open = true,
@@ -97,6 +109,22 @@ impl Features {
                 _ => {}
             }
         }
+        // a hint counts only when no other object noun says what is meant
+        if f.file_hint && !(f.mail || f.note || f.app) {
+            f.file = true;
+            seen_exact.push("N_FILE");
+        }
+        if f.note_hint && !(f.mail || f.file || f.app) {
+            f.note = true;
+            seen_exact.push("N_NOTE");
+        }
+        if f.mail_hint && !(f.file || f.note || f.app || f.cal || f.meeting) {
+            f.mail = true;
+            seen_exact.push("N_MAIL");
+        }
+        if seen_exact.contains(&"N_PPT") {
+            seen_exact.push("N_FILE");
+        }
         f.mail_typo = f.mail && !seen_exact.contains(&"N_MAIL");
         f.cal_typo = f.cal && !seen_exact.contains(&"N_CAL");
         f.meeting_typo = f.meeting && !seen_exact.contains(&"N_MEETING");
@@ -104,15 +132,16 @@ impl Features {
         f.note_typo = f.note && !seen_exact.contains(&"N_NOTE");
         f.app_typo = f.app && !seen_exact.contains(&"N_APP");
         // "מה שלח לי שרון": the question is about mail even if the word is not there
-        f.mail = f.mail || e.implied_mail;
+        // a named or shared mailbox is about mail too ("מה יש בתיבה המשותפת מהיום")
+        f.mail = f.mail || e.implied_mail || ((e.mailbox.is_some() || e.shared_mailbox) && !(f.file || f.note || f.app));
         f.has_time = has_time;
         f.has_person = e.person.is_some();
-        f.has_with = !e.with_names.is_empty();
+        f.has_with = !e.with_names.is_empty() || e.with_topic;
         f.has_sender = e.sender.is_some();
         f.has_terms = !e.terms.is_empty();
         f.has_unread = e.unread;
         f.has_latest = e.latest;
-        f.has_mailbox = e.mailbox.is_some() || e.all_mailboxes;
+        f.has_mailbox = e.mailbox.is_some() || e.all_mailboxes || e.shared_mailbox;
         f.has_expr = has_expr;
         f.has_ext = has_ext_word || e.explicit_ext.is_some();
         f.refers_back = e.refers_back;
@@ -165,12 +194,16 @@ pub fn candidates(f: &Features) -> Vec<(CapId, f32)> {
         - 1.5 * b(f.has_terms || f.has_with)
         - 2.0 * b(f.shared)
         - 1.5 * b(f.other_noun())
+        - 1.5 * b(f.has_ext && !f.other_noun())
         - 1.0 * b(opening)
         - 3.0 * b(f.has_expr);
     add(caps::CALENDAR_LIST_EVENTS, list);
     let avail = 2.8 * b(f.free) + 0.6 * b(f.has_time) + 0.3 * b(f.has_person) + 0.3 * b(f.q_when && f.free) - 1.5 * b(f.other_noun());
     add(caps::CALENDAR_CHECK_AVAILABILITY, if f.free { avail } else { 0.0 });
-    let search = if (f.meeting || f.cal) && (f.has_terms || f.has_with) {
+    let search = if f.q_when && f.has_with && !f.any_noun() && !f.has_ext {
+        // "מתי הדמו עם הלקוח": when + with is a meeting
+        2.2 + 0.4 * b(f.has_time)
+    } else if (f.meeting || f.cal) && (f.has_terms || f.has_with) {
         typo_w(1.4, f.meeting_typo) * b(f.meeting)
             + typo_w(0.8, f.cal_typo) * b(f.cal)
             + 1.4
@@ -184,7 +217,9 @@ pub fn candidates(f: &Features) -> Vec<(CapId, f32)> {
         0.0
     };
     add(caps::CALENDAR_SEARCH_EVENTS, search);
-    let shared = if f.shared && f.cal {
+    let shared = if f.cal && f.q_which && !f.has_time && !f.has_person && !f.meeting && !f.has_terms {
+        2.6
+    } else if f.shared && f.cal {
         0.6 + 2.2 + 0.6 * b(f.q_which || f.q_what || f.v_show) - 1.0 * b(f.has_time) - 2.0 * b(f.mail)
     } else {
         0.0
@@ -213,8 +248,9 @@ pub fn candidates(f: &Features) -> Vec<(CapId, f32)> {
     add(caps::EMAIL_DISCOVER_MAILBOXES, discover);
 
     // ---- files, notes, apps ----
-    let file = if f.file || (f.has_ext && f.v_search && f.has_terms) {
-        let base = if f.file { typo_w(2.4, f.file_typo) } else { 1.0 };
+    let ext_only = f.has_ext && !opening && !f.other_noun();
+    let file = if f.file || ext_only {
+        let base = if f.file { typo_w(2.4, f.file_typo) } else { 2.0 };
         base + 0.6 * b(f.v_search) + 0.4 * b(f.has_terms || f.has_ext || f.has_latest || f.has_time) - 1.5 * b(opening) - 0.5 * b(f.mail || f.note)
     } else {
         0.0

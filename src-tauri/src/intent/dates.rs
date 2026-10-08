@@ -30,6 +30,10 @@ pub struct DateParse {
     pub has_date: bool,
     /// A part of the day or an hour was named: minutes from midnight, `[start, end)`.
     pub tod: Option<(u32, u32)>,
+    /// The same words read as the past: a bare weekday or a "dd.mm" resolves to the nearest one
+    /// from today on, but mail, files and notes are never in the future, so their search uses this
+    /// ("מיילים מ-6.10" on 8.10 is this 6.10, not next year's).
+    pub past: Option<TimeSpec>,
 }
 
 /// Local time at `minutes` after midnight of `date` (>= 1440 rolls into the next day).
@@ -74,6 +78,8 @@ enum Mod {
     Next,
     Past,
     This,
+    /// "השבוע האחרון", "החודש האחרון": the stretch that ends today (the last 7 / 30 days).
+    Rolling,
 }
 
 /// The modifier next to token `i` (after it in Hebrew, before it in English); marks it used.
@@ -97,15 +103,18 @@ fn take_modifier(a: &mut [Ann], i: usize) -> Option<Mod> {
             a[i + 1].used = true;
             return Some(m);
         }
-        // "החודש האחרון" / "השבוע האחרון": the last one, i.e. the previous
-        // ... and "יום שני האחרון" is the last Monday, in the past
+        // "השבוע האחרון" / "החודש האחרון": the last 7 / 30 days, today included ("שבוע שעבר" is
+        // the previous Sunday-week) ... and "יום שני האחרון" is the last Monday, in the past
         let last_one = a[i + 1].norm().ends_with("אחרונ") || a[i + 1].norm().ends_with("אחרונה");
-        if !a[i + 1].used
-            && a[i + 1].is("M_LATEST_ONE")
-            && (matches!(a[i].concept(), "T_WEEK" | "T_MONTH") || (weekday_index(a[i].concept()).is_some() && last_one))
-        {
-            a[i + 1].used = true;
-            return Some(Mod::Past);
+        if !a[i + 1].used && a[i + 1].is("M_LATEST_ONE") {
+            if matches!(a[i].concept(), "T_WEEK" | "T_MONTH") {
+                a[i + 1].used = true;
+                return Some(Mod::Rolling);
+            }
+            if weekday_index(a[i].concept()).is_some() && last_one {
+                a[i + 1].used = true;
+                return Some(Mod::Past);
+            }
         }
     }
     if i > 0 {
@@ -344,6 +353,8 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
     // together "ראשון בנובמבר", the first Sunday of November
     let mut weekday_seen: Option<u32> = None;
     let mut month_only: Option<u32> = None;
+    // the past reading of a date that was resolved forwards (see `DateParse::past`)
+    let mut past_day: Option<NaiveDate> = None;
 
     // markers that settle AM / PM for an explicit hour
     let live = |a: &[Ann], c: &[&str]| a.iter().any(|t| !t.used && c.iter().any(|x| t.is(x)));
@@ -384,6 +395,11 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
             Numeric::Date(d) => {
                 a[i].used = true;
                 day = Some((d, d + Duration::days(1), Grain::Day));
+                // "6.10" without a year, resolved to next year: last 6.10 is the past reading
+                let year_given = s.matches(|c| c == '.' || c == '/').count() >= 2 || s.matches('-').count() == 2;
+                if !year_given && d > today {
+                    past_day = d.with_year(d.year() - 1);
+                }
             }
             Numeric::Invalid => {
                 a[i].used = true;
@@ -435,6 +451,33 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
             continue;
         }
         for t in i..=unit_at {
+            a[t].used = true;
+        }
+    }
+
+    // ---- "3 הימים האחרונים", "השבועיים האחרונים": a stretch that ends today ----
+    for i in 0..n {
+        if a[i].used || !(a[i].is("U_DAYS") || a[i].is("U_DAY2") || a[i].is("U_WEEK2")) {
+            continue;
+        }
+        let Some(last) = a.get(i + 1).filter(|t| !t.used && (t.is("M_LATEST_MANY") || t.is("M_LATEST_ONE"))) else { continue };
+        let _ = last;
+        let (count, start) = if a[i].is("U_DAY2") {
+            (2, i)
+        } else if a[i].is("U_WEEK2") {
+            (14, i)
+        } else if i > 0 && !a[i - 1].used && all_digits(a[i - 1].norm()) {
+            (a[i - 1].norm().parse::<i64>().unwrap_or(0), i - 1)
+        } else if let Some((v, s)) = (i.saturating_sub(3)..i).find_map(|s| word_number(a, s).filter(|(_, k, _)| s + k == i).map(|(v, _, _)| (v as i64, s))) {
+            (v, s)
+        } else {
+            continue;
+        };
+        if !(1..=366).contains(&count) {
+            continue;
+        }
+        day = Some((today - Duration::days(count - 1), today + Duration::days(1), Grain::Range));
+        for t in start..=i + 1 {
             a[t].used = true;
         }
     }
@@ -552,11 +595,17 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
             }
             "T_WEEKEND" | "T_WEEK" | "T_MONTH" => {
                 let is_week = c != "T_MONTH";
+                let m = take_modifier(a, i);
+                if m == Some(Mod::Rolling) {
+                    let back = if is_week { 7 } else { 30 };
+                    day = Some((today - Duration::days(back), today + Duration::days(1), Grain::Range));
+                    a[i].used = true;
+                    continue;
+                }
                 let weekend = c == "T_WEEKEND" || (c == "T_WEEK" && i > 0 && a[i - 1].is("T_END") && !a[i - 1].used);
                 if c == "T_WEEK" && weekend {
                     a[i - 1].used = true;
                 }
-                let m = take_modifier(a, i);
                 if is_week {
                     let start = week_start(today)
                         + Duration::days(match m {
@@ -613,6 +662,9 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
                 };
                 day = Some((date, date + Duration::days(1), Grain::Day));
                 weekday_seen = m.is_none().then_some(idx);
+                if m.is_none() && date > today {
+                    past_day = Some(date - Duration::days(7));
+                }
                 a[i].used = true;
                 if prev_day {
                     a[i - 1].used = true;
@@ -740,8 +792,12 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
     let has_date = day.is_some() || instant.is_some() || forced.is_some();
     let window = hour.map(|(h, m, _)| (h * 60 + m, h * 60 + m + 60)).or(tod);
     if error == Some(AskKind::Date) {
-        return DateParse { time: None, error, has_date, tod: window };
+        return DateParse { time: None, error, has_date, tod: window, past: None };
     }
+    let past = past_day.filter(|_| forced.is_none() && instant.is_none() && matches!(day, Some((_, _, Grain::Day)))).map(|d| match window {
+        Some((s, e)) => TimeSpec { from: local_at(d, s), to: local_at(d, e), grain: Grain::Range },
+        None => span(d, d + Duration::days(1), Grain::Day),
+    });
     let time = if let (Some(f), None) = (forced, error) {
         Some(f)
     } else if let Some(inst) = instant {
@@ -758,7 +814,7 @@ pub fn parse(a: &mut [Ann], now: DateTime<Local>) -> DateParse {
     } else {
         None
     };
-    DateParse { time, error, has_date, tod: window }
+    DateParse { time, error, has_date, tod: window, past }
 }
 
 #[cfg(test)]

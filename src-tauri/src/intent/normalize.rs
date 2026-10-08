@@ -90,7 +90,7 @@ pub struct Token {
 }
 
 impl Token {
-    fn word(raw: String) -> Token {
+    pub(crate) fn word(raw: String) -> Token {
         let norm = fold(&raw);
         Token { raw, norm, quoted: false, sym: false }
     }
