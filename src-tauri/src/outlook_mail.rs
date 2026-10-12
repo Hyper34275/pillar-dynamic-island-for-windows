@@ -29,6 +29,7 @@
 //! - Table DATE columns are UTC (`TABLE_DATES_ARE_UTC`), unlike every Item property (local).
 
 use crate::com::{self, ComError, ComResult, Dispatch};
+use crate::outlook_guard;
 use crate::outlook::{bool_prop, hash16, i32_prop, optional, run_on_outlook, str_prop};
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDateTime, TimeZone, Utc};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1035,9 +1036,9 @@ fn discover_in(session: &mut Dispatch, clock: &dyn Clock, budget_ms: u64, shared
 /// Column order of the search table.
 const COL_ENTRY: i32 = 1;
 const COL_SUBJECT: i32 = 2;
-const COL_FROM: i32 = 3;
-const COL_RECEIVED: i32 = 4;
-const COL_READ: i32 = 5;
+const COL_FROM: i32 = 5; // last: left out where Outlook's guard would ask (see `outlook_guard`)
+const COL_RECEIVED: i32 = 3;
+const COL_READ: i32 = 4;
 
 /// One table row that passed the date / unread re-checks.
 #[derive(Debug, Clone)]
@@ -1226,11 +1227,14 @@ impl OutlookRunner<'_> {
         {
             let mut columns = table.get_object("Columns")?;
             columns.call("RemoveAll", Vec::new())?;
-            for p in ["EntryID", P_SUBJECT, P_FROMNAME, P_RECEIVED, P_READ] {
+            for p in ["EntryID", P_SUBJECT, P_RECEIVED, P_READ] {
                 // Property names are runtime strings here; Dispatch caches DISPIDs per static name,
                 // so "Add" is the key and the argument is the property.
                 columns.call("Add", vec![com::variant_from_str(p)])?;
             }
+            // The sender's name is address information: `Columns.Add` of it is a protected call. Where Outlook
+            // would ask the user (or did and was refused) the column is left out and the hits show no sender.
+            outlook_guard::guarded(outlook_guard::Feature::MailSender, || columns.call("Add", vec![com::variant_from_str(P_FROMNAME)]))?;
         }
         let sorted = table.call("Sort", vec![com::variant_from_str("[ReceivedTime]"), com::variant_from_bool(true)]).is_ok();
 
@@ -1641,6 +1645,10 @@ pub fn free_busy(name: &str, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<F
     if name.is_empty() || to <= from {
         return Err("MAIL-109: free/busy not available".into());
     }
+    // Not even a worker thread while Outlook's object model guard would ask the user (see `outlook_guard`).
+    if !crate::outlook_guard::allowed(crate::outlook_guard::Feature::FreeBusy) {
+        return Err("MAIL-109: free/busy not available".into());
+    }
     let _busy = BusyGuard::acquire()?;
     let worker = WorkerFlag::acquire(&FREEBUSY_WORKER)?;
     // Slot 0 is local midnight of the first day (Outlook counts the string from there).
@@ -1654,17 +1662,22 @@ pub fn free_busy(name: &str, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<F
         let _worker = worker;
         let mut app = Dispatch::get_active("Outlook.Application")?;
         let mut session = app.get_object("Session")?;
-        let mut recipient = session
-            .call_object("CreateRecipient", vec![com::variant_from_str(&name)])?
-            .ok_or_else(|| ComError::new("CreateRecipient", com::E_NOOBJECT))?;
-        // Resolve() against the address book; an ambiguous or unknown name stays unresolved.
-        let _ = optional(recipient.call("Resolve", Vec::new()))?;
-        if !bool_prop(&mut recipient, "Resolved")? {
-            return Ok((false, None, String::new()));
-        }
-        let display = str_prop(&mut recipient, "Name")?.map(|n| clip_name(&n));
-        let fb = recipient.call("FreeBusy", vec![com::variant_from_date(start_date)?, com::variant_from_i32(30), com::variant_from_bool(true)])?;
-        Ok((true, display, com::variant_string(&fb).unwrap_or_default()))
+        // Everything on a Recipient is a protected property: where Outlook would ask the user, or it denied
+        // it before, nothing is looked up and the result is "not available" (an empty answer, see below).
+        let looked_up = outlook_guard::guarded(outlook_guard::Feature::FreeBusy, || {
+            let mut recipient = session
+                .call_object("CreateRecipient", vec![com::variant_from_str(&name)])?
+                .ok_or_else(|| ComError::new("CreateRecipient", com::E_NOOBJECT))?;
+            // Resolve() against the address book; an ambiguous or unknown name stays unresolved.
+            let _ = optional(recipient.call("Resolve", Vec::new()))?;
+            if !bool_prop(&mut recipient, "Resolved")? {
+                return Ok((false, None, String::new()));
+            }
+            let display = str_prop(&mut recipient, "Name")?.map(|n| clip_name(&n));
+            let fb = recipient.call("FreeBusy", vec![com::variant_from_date(start_date)?, com::variant_from_i32(30), com::variant_from_bool(true)])?;
+            Ok((true, display, com::variant_string(&fb).unwrap_or_default()))
+        })?;
+        Ok(looked_up.unwrap_or((true, None, String::new())))
     })?;
     let (resolved, display_name, digits) = raw;
     if !resolved {

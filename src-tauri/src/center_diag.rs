@@ -32,6 +32,11 @@ pub fn note_connected() {
 
 /// Environment for the Center process: the runtime writes a dump + crash report on a fatal error.
 pub fn crash_report_env(command: &mut std::process::Command) {
+    // Exit 0x80131506 before the first line of center.log (a runtime fatal error, no managed code ran) is
+    // what .NET 7+ does on PCs where security software or a process mitigation (no dynamic code) conflicts
+    // with the JIT's write-xor-execute memory. Turning W^X off is the runtime's own switch for exactly that;
+    // it costs nothing for a program this small (and starts a little faster).
+    command.env("DOTNET_EnableWriteXorExecute", "0");
     let Ok(dir) = paths::logs_dir() else { return };
     let name = dir.join(format!("{DUMP_PREFIX}%p.dmp"));
     command
@@ -130,6 +135,9 @@ impl Summary {
                 }
             }
             None => m.push_str("\nלא נוצר דוח קריסה של .NET.\n"),
+        }
+        if self.exit_code == Some(0x80131506u32 as i32) && self.stage.is_empty() {
+            m.push_str("\nהקריסה קרתה לפני שהקוד של מרכז יובל רץ: בדרך כלל תוכנת אבטחה או מדיניות של המחשב חוסמות את סביבת ההרצה של .NET.\n");
         }
         m.push_str("\nצלמו את ההודעה הזאת ושלחו לתמיכה.");
         m

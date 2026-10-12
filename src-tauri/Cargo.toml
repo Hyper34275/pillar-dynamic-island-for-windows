@@ -1,6 +1,6 @@
 [package]
 name = "companyisland"
-version = "1.0.15"
+version = "1.0.16"
 description = "Yuval - a Dynamic Island style date, time and calendar overlay for Windows"
 authors = ["Yuval"]
 license = "MIT"
@@ -55,6 +55,7 @@ features = [
   "Win32_System_Ole",
   "Win32_System_Registry",
   "Win32_System_RemoteDesktop",
+  "Win32_System_SecurityCenter",
   "Win32_System_Shutdown",
   "Win32_System_Threading",
   "Win32_System_Variant",

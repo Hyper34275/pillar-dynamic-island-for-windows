@@ -27,6 +27,7 @@ use crate::calendar::{
     BusyStatus, CalendarEventDto, CalendarSource, CalendarSourceDto, ErrKind, FetchResult, FetchWindow, Fetched, MeetingInviteDto,
     ResponseStatus, SelectionOrigin, SourceError, SourceGroup, SourceKind, SourceState, SourcesReport, MAX_INVITES,
 };
+use crate::outlook_guard;
 use crate::outlook_nav::{self, FolderCache, NavCalendar, NavScan, NavWatcher, SelectionMemory};
 use crate::com::{self, ComApartment, ComError, ComResult, Dispatch, MessageFilterGuard};
 use crate::debug_log::hash_id;
@@ -642,7 +643,14 @@ fn lenient<T>(r: ComResult<T>) -> ComResult<Option<T>> {
 
 /// The join link a Teams or Skype for Business add-in stored on the item, if any.
 fn online_meeting_link(item: &mut Dispatch) -> ComResult<Option<String>> {
-    let Some(mut accessor) = lenient(item.get_object("PropertyAccessor"))? else {
+    // `AppointmentItem.PropertyAccessor` is a protected property: where Outlook would ask the user, the link is
+    // simply not read (the location text is still searched for one, see `read_item`).
+    let Some(probe) = outlook_guard::begin(outlook_guard::Feature::MeetingLink) else {
+        return Ok(None);
+    };
+    let accessor = item.get_object("PropertyAccessor");
+    let usable = probe.finish(&accessor);
+    let Some(mut accessor) = lenient(accessor)?.filter(|_| usable) else {
         return Ok(None);
     };
     for prop in ONLINE_MEETING_PROPS {
@@ -669,8 +677,15 @@ fn organizer(item: &mut Dispatch) -> ComResult<Option<String>> {
     if blocked_until.is_some_and(|t| Instant::now() < t) {
         return Ok(None);
     }
-    match str_prop(item, "Organizer") {
-        Ok(name) => Ok(non_empty(name, MAX_TEXT_CHARS)),
+    // Where Outlook would show its security prompt (no healthy antivirus, a prompt policy) the read never
+    // starts, and a read that is denied or waits for a click is not repeated (see `outlook_guard`).
+    let Some(probe) = outlook_guard::begin(outlook_guard::Feature::Organizer) else {
+        return Ok(None);
+    };
+    let read = str_prop(item, "Organizer");
+    let usable = probe.finish(&read);
+    match read {
+        Ok(name) => Ok(if usable { non_empty(name, MAX_TEXT_CHARS) } else { None }),
         Err(e) if e.is_blocked() => {
             dlog!("WARN", "outlook", "OUTLOOK-110 Organizer blocked by the object model guard ({}); events shown without it", e);
             *ORGANIZER_BLOCKED_UNTIL.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -992,7 +1007,9 @@ impl OutlookSource {
         if self.calendar_colors_read_at.is_some_and(|at| at.elapsed().as_secs() < CATEGORY_REFRESH_SECS) {
             return Ok(());
         }
-        match outlook_nav::read_calendar_colors(session) {
+        // Reads `Store.PropertyAccessor`, a protected property: where Outlook would ask the user, the
+        // pane's own colors are not read and the automatic ones stand.
+        match outlook_guard::guarded(outlook_guard::Feature::CalendarColors, || outlook_nav::read_calendar_colors(session)).map(Option::unwrap_or_default) {
             Ok(colors) => {
                 if colors.len() != self.calendar_colors.len() {
                     dlog!("INFO", "outlook", "calendar colors: {} set in Outlook", colors.len());
