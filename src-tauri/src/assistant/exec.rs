@@ -63,6 +63,15 @@ pub trait Sources: Send + Sync {
     fn run_action(&self, _action: &super::actions::Action) -> Result<(), String> {
         Err("APP-042: nothing to open".into())
     }
+    /// The user's AI server (`llm`): `None` when it is off, an `AI-001` error when it is on but its settings
+    /// are incomplete or unreadable.
+    fn ai_setup(&self) -> Option<Result<super::ai::Setup, String>> {
+        None
+    }
+    /// Ask the AI server (blocking, bounded by its timeout). `results`: the built-in results as text.
+    fn ask_ai(&self, _question: &str, _hebrew: bool, _results: Option<&str>, _now: DateTime<Local>) -> Result<String, String> {
+        Err("AI-001: the AI is off".into())
+    }
 }
 
 /// One group of results with the targets behind its items (ids are minted when the card is built).
@@ -98,6 +107,8 @@ pub struct Outcome {
     pub interleave: bool,
     /// The terms of an exact-word mail search: the items the card shows put whole-word hits first.
     pub exact_terms: Vec<Vec<String>>,
+    /// The title and summary were written by the user's AI server (`assistant::ai`).
+    pub ai: bool,
 }
 
 impl Outcome {
@@ -118,6 +129,7 @@ impl Outcome {
             searchable: Vec::new(),
             interleave: false,
             exact_terms: Vec::new(),
+            ai: false,
         }
     }
 

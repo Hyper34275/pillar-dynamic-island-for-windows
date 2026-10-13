@@ -31,6 +31,7 @@ mod local;
 mod outlook_mail;
 mod search_bar;
 mod sticky_notes;
+mod llm;
 
 use tauri::utils::config::AppDirectoriesOverride;
 use tauri::{Manager, RunEvent};

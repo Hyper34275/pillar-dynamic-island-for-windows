@@ -159,6 +159,7 @@ fn spawn(page: &str) -> Result<u32, String> {
     }
     // A fatal .NET error leaves a crash report the watcher below turns into a message box.
     crate::center_diag::crash_report_env(&mut command);
+    crate::center_diag::capture_stderr(&mut command);
     let started = std::time::SystemTime::now();
     let child = command.spawn().map_err(|e| {
         dlog!("WARN", "center", "APP-030 center app could not start: {}", e);

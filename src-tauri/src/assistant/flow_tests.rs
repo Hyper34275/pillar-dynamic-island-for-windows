@@ -49,6 +49,11 @@ struct Fake {
     prefs: Mutex<Option<Prefs>>,
     /// The terms every files / notes search was given.
     local_terms: Mutex<Vec<Vec<Vec<String>>>>,
+    /// The user's AI server: how it is set up (None = off) and what it answers.
+    ai: Option<Result<crate::assistant::ai::Setup, String>>,
+    ai_answer: Option<Result<String, String>>,
+    /// Every question the AI got, with the results text that went with it.
+    ai_asked: Mutex<Vec<(String, Option<String>)>>,
 }
 
 impl Sources for Fake {
@@ -140,6 +145,13 @@ impl Sources for Fake {
     fn save_prefs(&self, p: &Prefs) -> Result<(), String> {
         *self.prefs.lock().unwrap() = Some(p.clone());
         Ok(())
+    }
+    fn ai_setup(&self) -> Option<Result<crate::assistant::ai::Setup, String>> {
+        self.ai.clone()
+    }
+    fn ask_ai(&self, question: &str, _hebrew: bool, results: Option<&str>, _now: DateTime<Local>) -> Result<String, String> {
+        self.ai_asked.lock().unwrap().push((question.to_string(), results.map(str::to_string)));
+        self.ai_answer.clone().unwrap_or_else(|| Err("AI-002: no answer in the fake".into()))
     }
 }
 
@@ -1921,4 +1933,97 @@ fn the_reason_is_only_for_a_no_match() {
     let slots = Slots { person: Some("איציק".into()), time: Some(tomorrow()), ..Slots::default() };
     let card = run_sig(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, slots), sig(false, false, Some("write")));
     assert_eq!(card.title, "מחר יש לאיציק 3 פגישות");
+}
+
+// ----- the user's AI server -------------------------------------------------------------------
+
+fn ai_fake(mode: crate::llm::Mode, share_results: bool, answer: Result<&str, &str>) -> Fake {
+    Fake {
+        ai: Some(Ok(crate::assistant::ai::Setup { mode, share_results })),
+        ai_answer: Some(answer.map(str::to_string).map_err(str::to_string)),
+        ..Fake::default()
+    }
+}
+
+#[test]
+fn ai_off_changes_nothing() {
+    let f = Fake::default();
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    let card = Engine::new().run_with_signals(&f, "מה מזג האוויר", "q1", now(), &nothing, sig(false, false, Some("weather")));
+    assert_eq!(card.title, "את מזג האוויר אפשר לבדוק בגוגל");
+    assert!(!card.sources.contains(&"ai".to_string()));
+}
+
+#[test]
+fn ai_answers_what_the_engine_did_not_understand() {
+    let f = ai_fake(crate::llm::Mode::Fallback, true, Ok("בירת צרפת היא פריז.\nהיא גם העיר הגדולה במדינה."));
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    let card = Engine::new().run_with_signals(&f, "מה בירת צרפת?", "q1", now(), &nothing, Signals::default());
+    assert_eq!(card.phase, CardPhase::Answer);
+    assert_eq!(card.title, "בירת צרפת היא פריז.");
+    assert_eq!(card.summary, "היא גם העיר הגדולה במדינה.");
+    assert_eq!(card.sources, vec!["ai".to_string()]);
+    assert!(card.items.is_empty(), "no Google button over an answer: {:?}", card.items);
+    assert_eq!(f.ai_asked.lock().unwrap().as_slice(), &[("מה בירת צרפת?".to_string(), None)]);
+}
+
+#[test]
+fn in_fallback_mode_an_understood_question_never_reaches_the_ai() {
+    let f = ai_fake(crate::llm::Mode::Fallback, true, Ok("x"));
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, Slots::default()));
+    assert_eq!(card.title, "היום אין לך פגישות");
+    assert!(f.ai_asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn in_always_mode_the_ai_answers_over_the_results_it_was_given() {
+    let mut f = ai_fake(crate::llm::Mode::Always, true, Ok("יש לך היום ישיבה אחת, ב-14:00."));
+    f.events = vec![event("e1", "ישיבת תקציב", at(10, 14, 0), 60, BusyStatus::Busy)];
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, Slots::default()));
+    assert_eq!(card.title, "יש לך היום ישיבה אחת, ב-14:00.");
+    assert_eq!(card.items.len(), 1, "the meeting stays on the card, clickable");
+    assert!(card.sources.contains(&"calendar".to_string()) && card.sources.contains(&"ai".to_string()), "{:?}", card.sources);
+    let asked = f.ai_asked.lock().unwrap();
+    let results = asked[0].1.as_deref().unwrap();
+    assert!(results.contains("ישיבת תקציב") && results.contains("today 14:00-15:00"), "{results}");
+}
+
+#[test]
+fn in_always_mode_without_shared_results_the_built_in_answer_stays() {
+    let mut f = ai_fake(crate::llm::Mode::Always, false, Ok("x"));
+    f.events = vec![event("e1", "ישיבת תקציב", at(10, 14, 0), 60, BusyStatus::Busy)];
+    let card = engine_run(&Engine::new(), &f, "q1", &exec_cap(caps::CALENDAR_LIST_EVENTS, Slots::default()));
+    assert!(!card.sources.contains(&"ai".to_string()));
+    assert!(f.ai_asked.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_ai_that_fails_leaves_the_built_in_answer_with_its_code() {
+    let f = ai_fake(crate::llm::Mode::Fallback, true, Err("AI-003: the AI server did not answer in time"));
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    let card = Engine::new().run_with_signals(&f, "מה מזג האוויר", "q1", now(), &nothing, sig(false, false, Some("weather")));
+    assert_eq!(card.title, "את מזג האוויר אפשר לבדוק בגוגל");
+    assert!(card.summary.contains("(AI-003)"), "{}", card.summary);
+    assert_eq!(card.error_code.as_deref(), Some("AI-003"));
+    assert_eq!(card.items.len(), 1, "the Google button is still offered");
+}
+
+#[test]
+fn an_ai_switched_on_with_broken_settings_says_so_on_what_it_would_answer() {
+    let f = Fake { ai: Some(Err("AI-001: no model".into())), ..Fake::default() };
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    let card = Engine::new().run_with_signals(&f, "מה בירת צרפת?", "q1", now(), &nothing, Signals::default());
+    assert_eq!(card.error_code.as_deref(), Some("AI-001"));
+    assert!(f.ai_asked.lock().unwrap().is_empty());
+    let card = engine_run(&Engine::new(), &f, "q2", &exec_cap(caps::CALENDAR_LIST_EVENTS, Slots::default()));
+    assert_eq!(card.error_code, None, "an understood question is not burdened with the AI's settings");
+}
+
+#[test]
+fn a_refused_action_and_a_command_never_reach_the_ai() {
+    let f = ai_fake(crate::llm::Mode::Always, true, Ok("x"));
+    let nothing = interp(Decision::NoMatch, Slots::default());
+    Engine::new().run_with_signals(&f, "תמחק את כל המיילים", "q1", now(), &nothing, sig(false, false, Some("write")));
+    engine_run(&Engine::new(), &f, "q2", &exec_cap(caps::CALCULATOR_EVALUATE, Slots::default()));
+    assert!(f.ai_asked.lock().unwrap().is_empty());
 }

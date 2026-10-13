@@ -102,6 +102,20 @@ function afterTauri(nsiPath) {
   console.log(`build-center: ${path.basename(setup)} includes the Yuval Center.`);
 }
 
+/**
+ * The environment of the Native AOT publish: the ILCompiler finds the MSVC linker through vswhere.exe, which lives in the
+ * Visual Studio installer's folder and is not on PATH by default ("'vswhere.exe' is not recognized", link exit 3).
+ */
+function aotEnv() {
+  const env = { ...process.env };
+  const installer = path.join(env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Microsoft Visual Studio", "Installer");
+  if (fs.existsSync(path.join(installer, "vswhere.exe"))) {
+    const key = Object.keys(env).find((k) => k.toLowerCase() === "path") || "PATH";
+    env[key] = `${env[key] || ""}${path.delimiter}${installer}`;
+  }
+  return env;
+}
+
 function build() {
   // Fail before touching anything when the web build is missing (the Tour would be an empty page).
   if (!fs.existsSync(path.join(dist, "tour.html"))) {
@@ -110,10 +124,11 @@ function build() {
 
   fs.rmSync(publish, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 
-  console.log("build-center: dotnet publish (Release, win-x64, self-contained) ...");
+  console.log("build-center: dotnet publish (Release, win-x64, Native AOT) ...");
   const result = spawnSync("dotnet", ["publish", project, "-c", "Release", "-o", publish, "--nologo"], {
     cwd: root,
     stdio: "inherit",
+    env: aotEnv(),
   });
   if (result.error) fail(`could not run dotnet (${result.error.message}). Is the .NET SDK installed and on PATH?`);
   if (result.status !== 0) fail(`dotnet publish failed (exit code ${result.status}).`);

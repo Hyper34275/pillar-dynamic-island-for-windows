@@ -20,6 +20,7 @@ pub fn set_search_enabled(enabled: bool) {
         let _ = item.set_enabled(enabled);
     }
 }
+const AI_CONFIG: &str = "tray_ai_config";
 const ABOUT: &str = "tray_about";
 const LOGS: &str = "tray_logs";
 const QUIT: &str = "tray_quit";
@@ -32,6 +33,7 @@ struct Labels {
     center: &'static str,
     notes: &'static str,
     search: &'static str,
+    ai_config: &'static str,
     about: &'static str,
     logs: &'static str,
     quit: &'static str,
@@ -43,6 +45,7 @@ const LABELS: Labels = Labels {
     center: "מרכז יובל",
     notes: "פתקים",
     search: "חיפוש חכם",
+    ai_config: "הגדרות AI (קובץ CONFIG)",
     about: "אודות",
     logs: "פתח יומנים",
     quit: "יציאה",
@@ -66,11 +69,12 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
     let search_on = app.state::<SettingsStore>().get().ai_search_enabled;
     let search = MenuItem::with_id(app, SEARCH, labels.search, search_on, None::<&str>)?;
     let _ = SEARCH_ITEM.set(search.clone());
+    let ai_config = MenuItem::with_id(app, AI_CONFIG, labels.ai_config, true, None::<&str>)?;
     let about = MenuItem::with_id(app, ABOUT, labels.about, true, None::<&str>)?;
     let logs = MenuItem::with_id(app, LOGS, labels.logs, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, QUIT, labels.quit, true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&toggle, &center, &notes, &search, &about, &logs, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &center, &notes, &search, &ai_config, &about, &logs, &separator, &quit])?;
 
     let mut builder = TrayIconBuilder::new()
         .tooltip(TOOLTIP)
@@ -82,6 +86,14 @@ fn build(app: &AppHandle) -> tauri::Result<()> {
                 CENTER => open_center(app, "welcome"),
                 NOTES => open_center(app, "notes"),
                 SEARCH => search_bar::open(app),
+                // the file itself: it works even where the Center cannot start
+                AI_CONFIG => {
+                    tauri::async_runtime::spawn_blocking(|| {
+                        if let Err(e) = crate::llm::open_file() {
+                            dlog!("WARN", "tray", "{}", e);
+                        }
+                    });
+                }
                 ABOUT => {
                     window::show(app);
                     window::emit_island_toggle(app, Some("about"));
@@ -128,7 +140,7 @@ mod tests {
     fn nothing_in_the_tray_carries_the_old_product_name() {
         assert_eq!(TOOLTIP, "Yuval");
         for label in [
-            LABELS.toggle, LABELS.center, LABELS.notes, LABELS.search, LABELS.about, LABELS.logs, LABELS.quit, TOOLTIP,
+            LABELS.toggle, LABELS.center, LABELS.notes, LABELS.search, LABELS.ai_config, LABELS.about, LABELS.logs, LABELS.quit, TOOLTIP,
         ] {
             assert!(!label.contains("CompanyIsland") && !label.contains("האי"), "{label}");
         }

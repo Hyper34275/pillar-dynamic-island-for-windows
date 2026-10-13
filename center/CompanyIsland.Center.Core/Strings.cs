@@ -68,6 +68,40 @@ public static class Strings
     public static string SettingsSearchHotkey => "קיצור מקלדת Ctrl+Alt+Space";
     public static string SettingsSearchHotkeyDescription => "פותח את שורת החיפוש החכם מכל מקום.";
     public static string SettingsSearchPrivacy => "הכול מקומי: השאלות והתוצאות לא נשמרות ולא נשלחות לשום שירות";
+    public static string SettingsSearchPrivacyAi => "השאלות נשלחות לשרת ה-AI שהוגדר למטה בלבד, ולא לשום שירות אחר";
+
+    // The user's AI server (docs/AI_API.md)
+    public static string SectionAi => "חיבור לשרת AI";
+    public static string AiEnabled => "שלח שאלות לשרת ה-AI";
+    public static string AiEnabledHint => "שרת AI של הארגון: תואם OpenAI, Azure OpenAI או Anthropic. השאלות נשלחות רק לכתובת שמוגדרת כאן.";
+    public static string AiProvider => "סוג השרת";
+    public static string AiProviderOpenAi => "תואם OpenAI (vLLM, Ollama, LM Studio, LiteLLM, OpenAI)";
+    public static string AiProviderAzure => "Azure OpenAI";
+    public static string AiProviderAnthropic => "Anthropic (Claude)";
+    public static string AiEndpoint => "כתובת השרת (Endpoint)";
+    public static string AiEndpointPlaceholder => "http://ai-server:8000/v1";
+    public static string AiModel => "מודל";
+    public static string AiModelPlaceholder => "שם המודל (ב-Azure: שם ה-deployment)";
+    public static string AiKey => "מפתח API";
+    public static string AiKeyPlaceholderEmpty => "הדביקו את המפתח (אפשר להשאיר ריק אם השרת לא דורש)";
+    public static string AiKeyPlaceholderSaved => "יש מפתח שמור (מוצפן). הקלידו כדי להחליף";
+    public static string AiKeyClear => "מחק מפתח";
+    public static string AiMode => "מתי לשאול את ה-AI";
+    public static string AiModeFallback => "רק שאלות שיובל לא הבין";
+    public static string AiModeAlways => "כל שאלה";
+    public static string AiShareResults => "שלח ל-AI את התוצאות שנמצאו";
+    public static string AiShareResultsHint => "במצב 'כל שאלה': כותרות, שעות ושולחים מהיומן, המיילים, הפתקים והקבצים, כדי שה-AI יענה עליהם.";
+    public static string AiSave => "שמור";
+    public static string AiTest => "בדוק חיבור";
+    public static string AiTesting => "בודק את החיבור…";
+    public static string AiOpenFile => "פתח קובץ CONFIG";
+    public static string AiFileHint(string path) => $"הגדרות מתקדמות (כותרות HTTP, תעודות, התחברות עם משתמש Windows, זמן המתנה, הנחיות למודל) בקובץ: {path}";
+    public static string AiSaved => "נשמר. השאלה הבאה כבר משתמשת בהגדרות החדשות.";
+    public static string AiTestOk(long ms, string reply) => $"החיבור עובד ({ms} מ״ש). השרת ענה: {reply}";
+    public static string AiTestFailed(string message) => $"החיבור נכשל: {message}";
+    public static string AiLocked => "ההגדרות האלה מנוהלות על ידי מנהל המערכת.";
+    public static string AiFileError(string error) => $"קובץ ההגדרות לא תקין: {error}";
+    public static string AiSaveFailed => "שמירת הגדרות ה-AI נכשלה.";
     public static string VersionFooter(string version) => $"גרסה {version}";
 
     public static string DisconnectedTitle => "יובל לא פועל כרגע";

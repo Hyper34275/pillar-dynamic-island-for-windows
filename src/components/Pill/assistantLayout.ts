@@ -90,7 +90,9 @@ export function visibleChoices(choices: readonly Choice[]): Choice[] {
 export function showsAllResults(card: AssistantCard): boolean {
   if (card.phase !== "answer") return false;
   const shown = Math.min(card.items.length, ASSISTANT_MAX_ITEMS);
-  return card.total > shown || card.items.length > shown || card.sources.length > 1 || card.partial;
+  // an answer the user's AI server wrote may be longer than the card's lines: the Center shows all of it
+  const longAiAnswer = card.sources.includes("ai") && card.summary.trim().length > 0;
+  return card.total > shown || card.items.length > shown || card.sources.length > 1 || card.partial || longAiAnswer;
 }
 
 export function showsExtend(card: AssistantCard): boolean {

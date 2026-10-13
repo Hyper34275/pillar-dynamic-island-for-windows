@@ -7,7 +7,8 @@ The user asks a question in Hebrew or English from a bar on the Windows taskbar.
 in the island at the top of the screen, and the full results open in the Island Center. Everything
 runs locally:
 
-- no cloud, no language model, no runtime downloads;
+- no cloud, no language model, no runtime downloads (the one opt-in exception, 1.0.17: the organisation's own AI
+  server, configured in `ai-config.json`, see [AI_API.md](AI_API.md));
 - no DLL injection and nothing loaded into explorer.exe;
 - the native Windows search keeps working exactly as before.
 

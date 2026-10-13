@@ -28,7 +28,11 @@ public sealed partial class SettingsPage : Page, ICenterPage
         Render();
     }
 
-    public void Show(CenterPage page) => Render();
+    public void Show(CenterPage page)
+    {
+        Render();
+        _ = LoadAiAsync();
+    }
 
     public void Hide()
     {
@@ -43,6 +47,10 @@ public sealed partial class SettingsPage : Page, ICenterPage
         }
 
         Render();
+        if (connected)
+        {
+            _ = LoadAiAsync();
+        }
     }
 
     /// <summary>Redraws every control from the model without raising change events.</summary>
@@ -267,6 +275,184 @@ public sealed partial class SettingsPage : Page, ICenterPage
         {
             ErrorBar.Message = Strings.LoadFailed;
             ErrorBar.IsOpen = true;
+        }
+    }
+
+    // ---- The user's AI server (docs/AI_API.md) ----
+
+    private AiConfig? _ai;
+    private bool _aiClearKey;
+
+    private async Task LoadAiAsync()
+    {
+        if (!_connected)
+        {
+            return;
+        }
+
+        try
+        {
+            RenderAi(await _model.Client.AiGetConfigAsync());
+        }
+        catch (IslandException ex) when (ex.Code == "APP-031")
+        {
+            // an island from before the AI connection: the section has nothing to talk to
+            AiSection.Visibility = Visibility.Collapsed;
+        }
+        catch (Exception ex)
+        {
+            _model.Report("aiGetConfig", ex);
+        }
+    }
+
+    private void RenderAi(AiConfig config)
+    {
+        _ai = config;
+        _aiClearKey = false;
+        AiSection.Visibility = Visibility.Visible;
+        AiEnabledToggle.Toggled -= OnAiEnabledToggled;
+        AiEnabledToggle.IsOn = config.Enabled;
+        AiEnabledToggle.Toggled += OnAiEnabledToggled;
+        AiProviderCombo.SelectedIndex = Math.Max(0, Array.IndexOf(AiProviders.All, config.Provider));
+        AiEndpointBox.Text = config.Endpoint;
+        AiModelBox.Text = config.Model;
+        AiKeyBox.Password = "";
+        AiKeyBox.PlaceholderText = config.HasKey ? Strings.AiKeyPlaceholderSaved : Strings.AiKeyPlaceholderEmpty;
+        AiKeyClearButton.IsEnabled = config.HasKey;
+        AiModeCombo.SelectedIndex = config.Mode == AiModes.Always ? 1 : 0;
+        AiShareToggle.IsOn = config.ShareResults;
+        AiFileHintText.Text = Strings.AiFileHint(config.FilePath);
+        AiEnabledRow.IsEnabled = !config.Locked;
+        foreach (Control c in new Control[] { AiProviderCombo, AiEndpointBox, AiModelBox, AiKeyBox, AiKeyClearButton, AiModeCombo, AiShareToggle, AiSaveButton })
+        {
+            c.IsEnabled = !config.Locked && (c != AiKeyClearButton || config.HasKey);
+        }
+
+        SearchPrivacyRow.Title = config.Enabled ? Strings.SettingsSearchPrivacyAi : Strings.SettingsSearchPrivacy;
+        if (config.Error is { Length: > 0 } error)
+        {
+            ShowAi(InfoBarSeverity.Error, Strings.AiFileError(error));
+        }
+        else if (config.Locked)
+        {
+            ShowAi(InfoBarSeverity.Informational, Strings.AiLocked);
+        }
+    }
+
+    private void ShowAi(InfoBarSeverity severity, string message)
+    {
+        AiBar.Severity = severity;
+        AiBar.Message = message;
+        AiBar.IsOpen = true;
+    }
+
+    private AiConfigPatch FormPatch()
+    {
+        var patch = new AiConfigPatch()
+            .Enabled(AiEnabledToggle.IsOn)
+            .Provider((AiProviderCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? AiProviders.OpenAi)
+            .Endpoint(AiEndpointBox.Text)
+            .Model(AiModelBox.Text)
+            .Mode((AiModeCombo.SelectedItem as ComboBoxItem)?.Tag as string ?? AiModes.Fallback)
+            .ShareResults(AiShareToggle.IsOn);
+        if (AiKeyBox.Password.Trim().Length > 0)
+        {
+            patch.ApiKey(AiKeyBox.Password);
+        }
+        else if (_aiClearKey)
+        {
+            patch.ApiKey("");
+        }
+
+        return patch;
+    }
+
+    /// <summary>Saves <paramref name="patch"/>; true when the island took it.</summary>
+    private async Task<bool> SaveAiAsync(AiConfigPatch patch, bool announce)
+    {
+        if (_ai is { Locked: true })
+        {
+            return true;
+        }
+
+        AiBar.IsOpen = false;
+        try
+        {
+            RenderAi(await _model.Client.AiSetConfigAsync(patch));
+            if (announce)
+            {
+                ShowAi(InfoBarSeverity.Success, Strings.AiSaved);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _model.Report("aiSetConfig", ex);
+            ShowAi(InfoBarSeverity.Error, ex is IslandException { Message.Length: > 0 } ie ? ie.Message : Strings.AiSaveFailed);
+            return false;
+        }
+    }
+
+    private async void OnAiEnabledToggled(object sender, RoutedEventArgs e)
+    {
+        // like every other switch on this page, it applies at once
+        await SaveAiAsync(new AiConfigPatch().Enabled(AiEnabledToggle.IsOn), announce: false);
+    }
+
+    private async void OnAiSaveClick(object sender, RoutedEventArgs e)
+    {
+        await SaveAiAsync(FormPatch(), announce: true);
+    }
+
+    private void OnAiKeyClearClick(object sender, RoutedEventArgs e)
+    {
+        _aiClearKey = true;
+        AiKeyBox.Password = "";
+        AiKeyBox.PlaceholderText = Strings.AiKeyPlaceholderEmpty;
+        AiKeyClearButton.IsEnabled = false;
+    }
+
+    private async void OnAiTestClick(object sender, RoutedEventArgs e)
+    {
+        // the test uses what is on the form: save it first
+        if (!await SaveAiAsync(FormPatch(), announce: false))
+        {
+            return;
+        }
+
+        AiTestButton.IsEnabled = false;
+        AiProgress.IsActive = true;
+        ShowAi(InfoBarSeverity.Informational, Strings.AiTesting);
+        try
+        {
+            AiTestResult result = await _model.Client.AiTestAsync();
+            string where = result.Url.Length > 0 ? Environment.NewLine + result.Url : "";
+            ShowAi(result.Ok ? InfoBarSeverity.Success : InfoBarSeverity.Error,
+                (result.Ok ? Strings.AiTestOk(result.Ms, result.Message) : Strings.AiTestFailed(result.Message)) + where);
+        }
+        catch (Exception ex)
+        {
+            _model.Report("aiTest", ex);
+            ShowAi(InfoBarSeverity.Error, Strings.AiTestFailed(ex.Message));
+        }
+        finally
+        {
+            AiTestButton.IsEnabled = true;
+            AiProgress.IsActive = false;
+        }
+    }
+
+    private async void OnAiOpenFileClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _model.Client.AiOpenConfigFileAsync();
+        }
+        catch (Exception ex)
+        {
+            _model.Report("aiOpenConfigFile", ex);
+            ShowAi(InfoBarSeverity.Error, ex.Message);
         }
     }
 

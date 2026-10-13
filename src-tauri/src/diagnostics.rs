@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 const MAX_RECENT: usize = 10;
 /// Code families of docs/ENTERPRISE_DESIGN.md §3.
-const CODE_PREFIXES: [&str; 8] = ["APP", "OUTLOOK", "NOTIF", "NET", "WIN", "MAIL", "FILES", "APPS"];
+const CODE_PREFIXES: [&str; 9] = ["APP", "OUTLOOK", "NOTIF", "NET", "WIN", "MAIL", "FILES", "APPS", "AI"];
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

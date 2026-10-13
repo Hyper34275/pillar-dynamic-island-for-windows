@@ -15,6 +15,8 @@ namespace CompanyIsland.Center.Core;
 [JsonSerializable(typeof(Note))]
 [JsonSerializable(typeof(Note[]))]
 [JsonSerializable(typeof(IslandSettings))]
+[JsonSerializable(typeof(AiConfig))]
+[JsonSerializable(typeof(AiTestResult))]
 [JsonSerializable(typeof(MonitorInfo))]
 [JsonSerializable(typeof(MonitorInfo[]))]
 [JsonSerializable(typeof(AssistantCard))]

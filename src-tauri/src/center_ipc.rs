@@ -222,6 +222,12 @@ pub enum Cmd {
     SearchOpen { query_id: String, item_id: String },
     SearchResults { query_id: String },
     SearchHistory,
+    /// The AI connection (docs/AI_API.md): the settings without the key, a change, a test request, and
+    /// opening `ai-config.json` in Notepad.
+    AiGetConfig,
+    AiSetConfig(crate::llm::AiConfigPatch),
+    AiTest,
+    AiOpenConfigFile,
 }
 
 impl Cmd {
@@ -244,6 +250,10 @@ impl Cmd {
             Cmd::SearchOpen { .. } => "searchOpen",
             Cmd::SearchResults { .. } => "searchResults",
             Cmd::SearchHistory => "searchHistory",
+            Cmd::AiGetConfig => "aiGetConfig",
+            Cmd::AiSetConfig(_) => "aiSetConfig",
+            Cmd::AiTest => "aiTest",
+            Cmd::AiOpenConfigFile => "aiOpenConfigFile",
         }
     }
 }
@@ -254,7 +264,7 @@ impl Cmd {
     pub fn is_slow(&self) -> bool {
         matches!(
             self,
-            Cmd::SearchSubmit { .. } | Cmd::SearchChoose { .. } | Cmd::SearchExtend { .. } | Cmd::SearchOpen { .. }
+            Cmd::SearchSubmit { .. } | Cmd::SearchChoose { .. } | Cmd::SearchExtend { .. } | Cmd::SearchOpen { .. } | Cmd::AiTest
         )
     }
 }
@@ -342,6 +352,13 @@ pub fn parse_command(cmd: &str, args: &Value) -> Result<Cmd, String> {
         "searchOpen" => Cmd::SearchOpen { query_id: id_arg(args, "queryId")?, item_id: id_arg(args, "itemId")? },
         "searchResults" => Cmd::SearchResults { query_id: id_arg(args, "queryId")? },
         "searchHistory" => Cmd::SearchHistory,
+        "aiGetConfig" => Cmd::AiGetConfig,
+        "aiSetConfig" => {
+            let patch = arg("patch").filter(|p| p.is_object()).ok_or_else(invalid_args)?;
+            Cmd::AiSetConfig(serde_json::from_value(patch.clone()).map_err(|_| invalid_args())?)
+        }
+        "aiTest" => Cmd::AiTest,
+        "aiOpenConfigFile" => Cmd::AiOpenConfigFile,
         _ => return Err("APP-031: unknown command".to_string()),
     })
 }
@@ -412,6 +429,10 @@ fn run_sync(app: &AppHandle, cmd: Cmd) -> Result<Value, String> {
         }
         Cmd::SearchResults { query_id } => to_json(&assistant::results(&query_id)?),
         Cmd::SearchHistory => to_json(&assistant::history()),
+        Cmd::AiGetConfig => to_json(&crate::llm::view()),
+        Cmd::AiSetConfig(patch) => to_json(&crate::llm::update(patch)?),
+        Cmd::AiTest => to_json(&crate::llm::test()),
+        Cmd::AiOpenConfigFile => crate::llm::open_file().map(|_| Value::Null),
         // Answered by the async arms in `run`.
         Cmd::GetNotificationStatus
         | Cmd::RequestNotificationAccess
@@ -1094,6 +1115,23 @@ mod tests {
         assert!(parse_command("searchResults", &json!({"queryId": "q1"})).is_ok());
         assert!(parse_command("searchResults", &json!({"queryId": ""})).is_err());
         assert_eq!(parse_command("searchHistory", &json!({})).unwrap().name(), "searchHistory");
+    }
+
+    #[test]
+    fn ai_commands_are_validated() {
+        assert_eq!(parse_command("aiGetConfig", &json!({})).unwrap().name(), "aiGetConfig");
+        assert!(parse_command("aiTest", &json!({})).unwrap().is_slow(), "a test request may take seconds");
+        assert_eq!(parse_command("aiOpenConfigFile", &json!({})).unwrap().name(), "aiOpenConfigFile");
+        match parse_command("aiSetConfig", &json!({"patch": {"enabled": true, "endpoint": "http://ai:8000/v1", "apiKey": "k", "temperature": null}})).unwrap() {
+            Cmd::AiSetConfig(p) => {
+                assert_eq!((p.enabled, p.endpoint.as_deref(), p.api_key.as_deref()), (Some(true), Some("http://ai:8000/v1"), Some("k")));
+                assert_eq!(p.temperature, Some(None), "null clears the temperature");
+            }
+            other => panic!("{other:?}"),
+        }
+        for bad in [json!({}), json!({"patch": 5}), json!({"patch": {"enabled": "yes"}})] {
+            assert!(parse_command("aiSetConfig", &bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

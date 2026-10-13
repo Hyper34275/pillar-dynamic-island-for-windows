@@ -108,7 +108,63 @@
                     <controls:SettingRow x:Name="SearchHotkeyRow" Glyph="&#xE765;" Title="{x:Bind s:Strings.SettingsSearchHotkey}" Description="{x:Bind s:Strings.SettingsSearchHotkeyDescription}">
                         <ToggleSwitch x:Name="SearchHotkeyToggle" OnContent="" OffContent="" MinWidth="0" Toggled="OnToggleChanged" AutomationProperties.Name="{x:Bind s:Strings.SettingsSearchHotkey}" />
                     </controls:SettingRow>
-                    <controls:SettingRow Glyph="&#xE72E;" Title="{x:Bind s:Strings.SettingsSearchPrivacy}" />
+                    <controls:SettingRow x:Name="SearchPrivacyRow" Glyph="&#xE72E;" Title="{x:Bind s:Strings.SettingsSearchPrivacy}" />
+                </StackPanel>
+
+                <!-- The user's AI server (docs/AI_API.md). Saved with the button, not per keystroke. -->
+                <StackPanel x:Name="AiSection" Spacing="4">
+                    <TextBlock Text="{x:Bind s:Strings.SectionAi}" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,0,0,4" AutomationProperties.HeadingLevel="Level2" />
+                    <InfoBar x:Name="AiBar" IsOpen="False" IsClosable="True" />
+                    <controls:SettingRow x:Name="AiEnabledRow" Glyph="&#xE99A;" Title="{x:Bind s:Strings.AiEnabled}" Description="{x:Bind s:Strings.AiEnabledHint}">
+                        <ToggleSwitch x:Name="AiEnabledToggle" OnContent="" OffContent="" MinWidth="0" AutomationProperties.Name="{x:Bind s:Strings.AiEnabled}" />
+                    </controls:SettingRow>
+                    <Border
+                        x:Name="AiForm"
+                        Padding="16,12,16,14"
+                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                        BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                        <StackPanel Spacing="12">
+                            <ComboBox x:Name="AiProviderCombo" Header="{x:Bind s:Strings.AiProvider}" MinWidth="320" AutomationProperties.Name="{x:Bind s:Strings.AiProvider}">
+                                <ComboBoxItem Tag="openai" Content="{x:Bind s:Strings.AiProviderOpenAi}" />
+                                <ComboBoxItem Tag="azure" Content="{x:Bind s:Strings.AiProviderAzure}" />
+                                <ComboBoxItem Tag="anthropic" Content="{x:Bind s:Strings.AiProviderAnthropic}" />
+                            </ComboBox>
+                            <TextBox x:Name="AiEndpointBox" Header="{x:Bind s:Strings.AiEndpoint}" PlaceholderText="{x:Bind s:Strings.AiEndpointPlaceholder}" FlowDirection="LeftToRight" TextAlignment="Left" IsSpellCheckEnabled="False" AutomationProperties.Name="{x:Bind s:Strings.AiEndpoint}" />
+                            <TextBox x:Name="AiModelBox" Header="{x:Bind s:Strings.AiModel}" PlaceholderText="{x:Bind s:Strings.AiModelPlaceholder}" FlowDirection="LeftToRight" TextAlignment="Left" IsSpellCheckEnabled="False" AutomationProperties.Name="{x:Bind s:Strings.AiModel}" />
+                            <Grid ColumnSpacing="8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <PasswordBox x:Name="AiKeyBox" Header="{x:Bind s:Strings.AiKey}" FlowDirection="LeftToRight" AutomationProperties.Name="{x:Bind s:Strings.AiKey}" />
+                                <Button x:Name="AiKeyClearButton" Grid.Column="1" VerticalAlignment="Bottom" Content="{x:Bind s:Strings.AiKeyClear}" Click="OnAiKeyClearClick" />
+                            </Grid>
+                            <ComboBox x:Name="AiModeCombo" Header="{x:Bind s:Strings.AiMode}" MinWidth="320" AutomationProperties.Name="{x:Bind s:Strings.AiMode}">
+                                <ComboBoxItem Tag="fallback" Content="{x:Bind s:Strings.AiModeFallback}" />
+                                <ComboBoxItem Tag="always" Content="{x:Bind s:Strings.AiModeAlways}" />
+                            </ComboBox>
+                            <Grid ColumnSpacing="16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Spacing="2" VerticalAlignment="Center">
+                                    <TextBlock Text="{x:Bind s:Strings.AiShareResults}" Style="{StaticResource BodyTextBlockStyle}" TextWrapping="Wrap" />
+                                    <TextBlock Text="{x:Bind s:Strings.AiShareResultsHint}" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" />
+                                </StackPanel>
+                                <ToggleSwitch x:Name="AiShareToggle" Grid.Column="1" OnContent="" OffContent="" MinWidth="0" AutomationProperties.Name="{x:Bind s:Strings.AiShareResults}" />
+                            </Grid>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button x:Name="AiSaveButton" Style="{StaticResource AccentButtonStyle}" Content="{x:Bind s:Strings.AiSave}" Click="OnAiSaveClick" />
+                                <Button x:Name="AiTestButton" Content="{x:Bind s:Strings.AiTest}" Click="OnAiTestClick" />
+                                <Button x:Name="AiFileButton" Content="{x:Bind s:Strings.AiOpenFile}" Click="OnAiOpenFileClick" />
+                                <ProgressRing x:Name="AiProgress" IsActive="False" Width="20" Height="20" />
+                            </StackPanel>
+                            <TextBlock x:Name="AiFileHintText" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
                 <StackPanel Spacing="4">

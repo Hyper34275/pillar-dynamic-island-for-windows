@@ -20,6 +20,9 @@ const WATCH: Duration = Duration::from_secs(20);
 /// createdump writes the report after the process is gone; give it this long to appear.
 const REPORT_WAIT: Duration = Duration::from_secs(8);
 const DUMP_PREFIX: &str = "center-crash-";
+/// The Center's standard error, rewritten on every start: a runtime that dies before managed code runs writes its
+/// reason there ("Fatal error. Failed to load JIT compiler"), and on Windows nowhere else we can read.
+const STDERR_FILE: &str = "center-stderr.log";
 /// Old dumps are removed so the logs folder never fills up.
 const KEEP_DUMPS: usize = 3;
 
@@ -45,6 +48,17 @@ pub fn crash_report_env(command: &mut std::process::Command) {
         .env("DOTNET_DbgMiniDumpType", "1")
         .env("DOTNET_EnableCrashReport", "1")
         .env("DOTNET_DbgMiniDumpName", name);
+}
+
+/// Send the Center's standard error to `logs\center-stderr.log` (truncated on every start).
+pub fn capture_stderr(command: &mut std::process::Command) {
+    let Ok(dir) = paths::logs_dir() else { return };
+    match std::fs::File::create(dir.join(STDERR_FILE)) {
+        Ok(file) => {
+            command.stderr(file);
+        }
+        Err(e) => dlog!("DEBUG", "center", "center stderr file not created: {}", e),
+    }
 }
 
 /// Follow a started Center on its own thread.
@@ -76,7 +90,8 @@ pub fn watch(mut child: Child, started: SystemTime) {
             }
             let report = wait_for_report(started);
             let stage = last_center_log_lines(2);
-            let summary = Summary { pid, exit_code: code, stage, report: report.as_deref().and_then(summarize_report) };
+            let stderr = stderr_lines(6);
+            let summary = Summary { pid, exit_code: code, stage, stderr, report: report.as_deref().and_then(summarize_report) };
             dlog!("WARN", "center", "APP-034 center pid {} exited before connecting: {}", pid, summary.one_line());
             prune_dumps();
             show(&summary.message());
@@ -95,6 +110,8 @@ struct Summary {
     pid: u32,
     exit_code: Option<i32>,
     stage: Vec<String>,
+    /// The last lines the Center wrote to standard error (the runtime's own reason for a fatal error).
+    stderr: Vec<String>,
     report: Option<ReportSummary>,
 }
 
@@ -106,11 +123,12 @@ impl Summary {
     fn one_line(&self) -> String {
         let r = self.report.as_ref();
         format!(
-            "exit={} stage={} exception={} frames={}",
+            "exit={} stage={} exception={} frames={} stderr={}",
             self.code_hex(),
             self.stage.last().map(String::as_str).unwrap_or("-"),
             r.and_then(|r| r.exception.as_deref()).unwrap_or("-"),
-            r.map(|r| r.frames.join(" < ")).unwrap_or_default()
+            r.map(|r| r.frames.join(" < ")).unwrap_or_default(),
+            if self.stderr.is_empty() { "-".to_string() } else { self.stderr.join(" | ") }
         )
     }
 
@@ -134,7 +152,16 @@ impl Summary {
                     m.push('\n');
                 }
             }
-            None => m.push_str("\nלא נוצר דוח קריסה של .NET.\n"),
+            None if self.stderr.is_empty() => m.push_str("\nלא נוצר דוח קריסה של .NET.\n"),
+            None => {}
+        }
+        if !self.stderr.is_empty() {
+            m.push_str("\nהודעת המערכת:\n");
+            for l in &self.stderr {
+                m.push_str("  ");
+                m.push_str(l);
+                m.push('\n');
+            }
         }
         if self.exit_code == Some(0x80131506u32 as i32) && self.stage.is_empty() {
             m.push_str("\nהקריסה קרתה לפני שהקוד של מרכז יובל רץ: בדרך כלל תוכנת אבטחה או מדיניות של המחשב חוסמות את סביבת ההרצה של .NET.\n");
@@ -209,6 +236,18 @@ fn prune_dumps() {
         json.push(".crashreport.json");
         let _ = std::fs::remove_file(json);
     }
+}
+
+/// The last `n` non-empty lines the Center wrote to standard error, each cut to 160 characters.
+fn stderr_lines(n: usize) -> Vec<String> {
+    let Ok(dir) = paths::logs_dir() else { return Vec::new() };
+    let Ok(bytes) = std::fs::read(dir.join(STDERR_FILE)) else { return Vec::new() };
+    plain_tail(&String::from_utf8_lossy(&bytes), n)
+}
+
+fn plain_tail(text: &str, n: usize) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].iter().map(|l| l.chars().take(160).collect()).collect()
 }
 
 /// The last `n` non-empty lines of `center.log`, without the timestamp (they hold stages and codes only).
@@ -328,6 +367,7 @@ mod tests {
             pid: 1,
             exit_code: Some(0x80131506u32 as i32),
             stage: vec!["[INFO] app resources loaded".into()],
+            stderr: Vec::new(),
             report: Some(ReportSummary { exception: Some("System.X".into()), frames: vec!["A [b.dll]".into()] }),
         };
         let m = s.message();
@@ -335,5 +375,17 @@ mod tests {
         assert!(s.one_line().contains("exit=0x80131506"));
         assert!(m.starts_with("מרכז יובל נסגר"), "{m}");
         assert!(!m.contains("CompanyIsland") && !m.contains("מרכז האי"), "{m}");
+    }
+
+    #[test]
+    fn the_runtime_reason_on_stderr_is_shown_when_there_is_no_log() {
+        let stderr = plain_tail("LoadAndInitializeJIT: failed to load clrjit.dll, hr=0x80004005\r\nFatal error.\r\n\r\nFailed to load JIT compiler\r\n", 6);
+        assert_eq!(stderr, vec!["LoadAndInitializeJIT: failed to load clrjit.dll, hr=0x80004005", "Fatal error.", "Failed to load JIT compiler"]);
+        let s = Summary { pid: 1, exit_code: Some(0x80131506u32 as i32), stage: Vec::new(), stderr, report: None };
+        let m = s.message();
+        assert!(m.contains("Failed to load JIT compiler") && m.contains("clrjit.dll"), "{m}");
+        assert!(!m.contains("לא נוצר דוח קריסה"), "{m}");
+        assert!(s.one_line().contains("stderr=LoadAndInitializeJIT"));
+        assert!(plain_tail("", 3).is_empty());
     }
 }

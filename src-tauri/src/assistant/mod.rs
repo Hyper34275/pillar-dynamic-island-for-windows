@@ -17,6 +17,7 @@
 //! choice). The real sources are [`Live`] below.
 
 mod actions;
+mod ai;
 mod answer;
 mod avail;
 mod exec;
@@ -91,6 +92,7 @@ const OFF_ERROR: &str = "APP-040: smart search is off";
 pub fn on_disabled() {
     OFF.store(true, Ordering::SeqCst);
     engine().clear();
+    crate::llm::forget();
 }
 
 fn enabled(app: &AppHandle) -> Result<(), String> {
@@ -361,6 +363,13 @@ impl exec::Sources for Live {
     }
     fn run_action(&self, action: &actions::Action) -> Result<(), String> {
         actions::perform(&self.app, action)
+    }
+    fn ai_setup(&self) -> Option<Result<ai::Setup, String>> {
+        crate::llm::active().map(|r| r.map(|c| ai::Setup { mode: c.mode(), share_results: c.share_results }))
+    }
+    fn ask_ai(&self, question: &str, hebrew: bool, results: Option<&str>, now: DateTime<Local>) -> Result<String, String> {
+        let config = crate::llm::active().ok_or("AI-001: the AI is off")??;
+        crate::llm::ask(&config, &crate::llm::Question { text: question, hebrew, results, now })
     }
 }
 

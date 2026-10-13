@@ -359,7 +359,8 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
 
         if (card.Summary.Length > 0)
         {
-            body.Children.Add(new TextBlock { Text = card.Summary, Style = Res<Style>("SecondaryTextStyle"), IsTextSelectionEnabled = true });
+            // wrapped: an answer from the user's AI server can be a paragraph
+            body.Children.Add(new TextBlock { Text = card.Summary, Style = Res<Style>("SecondaryTextStyle"), IsTextSelectionEnabled = true, TextWrapping = TextWrapping.Wrap });
         }
 
         if (SearchFormat.NeedsAnswer(card))
@@ -375,8 +376,9 @@ public sealed partial class SmartSearchPage : Page, ICenterPage
             shown += group.Items.Count;
         }
 
+        // (an answer the user's AI server wrote is the answer itself, not an empty search)
         if (card.Phase != CardPhases.Choices && card.Phase != CardPhases.Processing && groups.Count == 0 && card.Phase != CardPhases.Error &&
-            card.Total == 0 && card.Items.Count == 0)
+            card.Total == 0 && card.Items.Count == 0 && !card.Sources.Contains("ai"))
         {
             body.Children.Add(new TextBlock { Text = Strings.SearchNoResults, Style = Res<Style>("SecondaryTextStyle") });
         }

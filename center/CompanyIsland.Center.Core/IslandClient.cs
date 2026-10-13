@@ -342,7 +342,8 @@ public sealed class IslandClient : IAsyncDisposable
     }
 
     /// <summary>A search runs 10 s per budget and an extension adds 10 s more, so searches wait longer than other requests.</summary>
-    public static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(45);
+    /// <summary>A question may wait for the user's AI server too (its own timeout is at most 90 s).</summary>
+    public static readonly TimeSpan SearchTimeout = TimeSpan.FromSeconds(120);
 
     /// <summary>Asks a question. The text goes to the island and is never logged.</summary>
     public async Task<AssistantCard> SearchSubmitAsync(string text, CancellationToken ct = default)
@@ -400,6 +401,37 @@ public sealed class IslandClient : IAsyncDisposable
             : null;
 
     public Task OpenLogDirAsync(CancellationToken ct = default) => RequestAsync("openLogDir", ct: ct);
+
+    /// <summary>The AI connection's settings (never the key).</summary>
+    public async Task<AiConfig> AiGetConfigAsync(CancellationToken ct = default)
+    {
+        JsonElement result = await RequestAsync("aiGetConfig", ct: ct).ConfigureAwait(false);
+        return ReadAiConfig(result);
+    }
+
+    public async Task<AiConfig> AiSetConfigAsync(AiConfigPatch patch, CancellationToken ct = default)
+    {
+        JsonElement result = await RequestAsync("aiSetConfig", new JsonObject { ["patch"] = patch.ToJson() }, ct: ct).ConfigureAwait(false);
+        return ReadAiConfig(result);
+    }
+
+    /// <summary>Sends a tiny question with the saved settings.</summary>
+    public async Task<AiTestResult> AiTestAsync(CancellationToken ct = default)
+    {
+        JsonElement result = await RequestAsync("aiTest", timeout: SearchTimeout, ct: ct).ConfigureAwait(false);
+        return result.Deserialize(CenterJson.Default.AiTestResult) ?? throw new IslandException("client-protocol", "empty test result");
+    }
+
+    /// <summary>Opens the user's <c>ai-config.json</c> in Notepad.</summary>
+    public Task AiOpenConfigFileAsync(CancellationToken ct = default) => RequestAsync("aiOpenConfigFile", ct: ct);
+
+    public static AiConfig ReadAiConfig(JsonElement element)
+    {
+        AiConfig config = element.Deserialize(CenterJson.Default.AiConfig) ?? throw new IslandException("client-protocol", "empty AI settings");
+        config.Provider = AiProviders.Normalize(config.Provider);
+        config.Mode = AiModes.Normalize(config.Mode);
+        return config;
+    }
 
     /// <summary>
     /// Shows the island expanded on <paramref name="tab"/> (an <see cref="IslandTabs"/> value). The tab is required, and the

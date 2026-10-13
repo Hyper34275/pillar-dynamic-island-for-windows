@@ -4,6 +4,11 @@
     Lessons from the toolchain probe: EnableMsixTooling=true is required (without it the app's .pri is missing from publish
     and XAML crashes with 0xc000027b); the WinUI + Runtime packages are used, not the 1.8 metapackage (it adds AI/ML);
     PublishTrimmed with TrimMode=partial works; build from a short path (deep folders break MSIX content extraction).
+    Published as Native AOT (1.0.17): the exe is machine code, with no coreclr.dll / clrjit.dll and no JIT at run time. On a
+    locked-down PC a JIT that cannot load (or executable memory that is refused) ends a JIT-based Center with exit 0x80131506
+    before its first line of center.log ("Fatal error. Failed to load JIT compiler"); an AOT Center has nothing to fail there.
+    Every XAML binding is x:Bind and every JSON type goes through the source-generated context, so AOT needs no reflection.
+    Linking needs the Visual Studio C++ tools (scripts/build-center.cjs puts vswhere.exe on PATH).
   -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -24,6 +29,7 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
     <EnableMsixTooling>true</EnableMsixTooling>
+    <PublishAot>true</PublishAot>
     <PublishTrimmed>true</PublishTrimmed>
     <TrimMode>partial</TrimMode>
     <!-- Program.cs is our own Main (single instance + redirected launch arguments). -->

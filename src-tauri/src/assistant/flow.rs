@@ -170,6 +170,9 @@ fn build_entry(query_id: &str, query: &str, lang: Lang, follow_up: bool, created
         }
         groups.push(ResultGroup { kind: kind.to_string(), title, mailbox, items: out_items, truncated, error_code });
     }
+    if o.ai {
+        sources.push("ai".to_string());
+    }
     let total = groups.iter().map(|g| g.items.len()).sum::<usize>() as u32;
     let items = if o.phase == CardPhase::Answer { top_items(&groups, o.interleave, &o.exact_terms) } else { Vec::new() };
     let card = AssistantCard {
@@ -240,9 +243,15 @@ impl Engine {
         let prefs = src.load_prefs();
         let run = Run { src, now, lang: interp.lang, prefs: prefs.as_ref(), inherited: inherited.as_deref(), allow_ask: true, signals };
         let outcome = exec::execute(&run, interp);
+        // the user's own AI server, when it is on: it answers what the engine did not understand (or, in
+        // mode "always", writes the answer over the results found)
+        let (outcome, ai_failure) = super::ai::augment(src, text, interp.lang, &interp.decision, signals, outcome, now);
         // nothing understood: the honest message stays and "search it on Google" is offered as a click
         // (not for a request to change something, and not over the sentence that says why it is refused)
-        let outcome = super::actions::with_web_offer(outcome, interp, text, signals);
+        let mut outcome = if outcome.ai { outcome } else { super::actions::with_web_offer(outcome, interp, text, signals) };
+        if let Some(e) = ai_failure {
+            super::ai::note_failure(&mut outcome, &e, interp.lang);
+        }
         self.finish(query_id, text, interp.lang, interp.follow_up, Some(interp), outcome, now_ms, now_ms, started)
     }
 

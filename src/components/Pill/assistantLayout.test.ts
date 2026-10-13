@@ -118,6 +118,9 @@ describe("the actions", () => {
     expect(showsAllResults(card({ items: [item("1")], total: 1, sources: ["A"] }))).toBe(false);
     expect(showsAllResults(card({ items: [], total: 0, partial: true }))).toBe(true);
     expect(showsAllResults(card({ phase: "choices", total: 9, partial: true }))).toBe(false);
+    // the user's AI server: a one-line answer fits the card, a longer one opens in the Center
+    expect(showsAllResults(card({ title: "פריז.", summary: "", sources: ["ai"] }))).toBe(false);
+    expect(showsAllResults(card({ title: "פריז.", summary: "עוד שורה", sources: ["ai"] }))).toBe(true);
   });
 
   it("extend only on an answer that can be extended; the row costs one button height", () => {

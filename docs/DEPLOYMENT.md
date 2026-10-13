@@ -336,7 +336,10 @@ Error codes are listed in [ARCHITECTURE.md](ARCHITECTURE.md) section 8.
 ## 9. Network, proxy, firewall
 
 None required. The app makes no network connections by design: no telemetry, no update check, no cloud or AI
-calls, no HTTP client library. The page's Content-Security-Policy only allows its own origin and the local
+calls. The one exception is opt-in (1.0.17): when a user or an administrator connects Yuval to the organisation's own
+AI server in `ai-config.json` (see [AI_API.md](AI_API.md)), smart search sends questions to that address, and only to
+it, through WinHTTP (the system proxy, the Windows certificate store). Off by default; nothing is sent until the file
+says `"enabled": true` with an endpoint. The page's Content-Security-Policy only allows its own origin and the local
 Tauri IPC. WebView2 is started with `--disable-background-networking` (plus wry's defaults and
 `msSmartScreenProtection` disabled), so the runtime does not phone home for component or safe-browsing
 updates from this app's profile. The only network-related code reads the local adapter list to show the
@@ -397,7 +400,7 @@ documentation, not tested here.
 | Key-logger heuristics | Raw keyboard/mouse input registration is disabled (`DeviceEventFilter::Always`), there is no global mouse or keyboard hook, and no code injection: the fullscreen detector uses out-of-context `SetWinEventHook` only (foreground / minimize / location events). | Code |
 | SmartScreen | A downloaded (mark-of-the-web) unsigned installer triggers "Windows protected your PC". Software-distribution tools do not add the mark. Signing fixes it for the publisher over time. | Doc |
 | Privileges | `asInvoker`; no services, drivers, scheduled tasks, firewall rules, or HKLM writes at run time. | Code |
-| Center exits with 0x80131506 before its first log line | A fatal error of the .NET runtime itself (no managed code ran). Known causes: security software or a process mitigation that forbids dynamic code conflicting with the JIT's write-xor-execute memory. Since 1.0.16 the island starts the Center with `DOTNET_EnableWriteXorExecute=0`. If it still happens the message box shows the exit code, `center.log` and the crash report; an EDR that injects into unsigned child processes of `Yuval.exe` needs an exclusion for `%ProgramFiles%Yuvalcenter*`. | Code, doc (dotnet/runtime) |
+| Center exits with 0x80131506 before its first log line | A fatal error of the .NET runtime itself (no managed code ran). Reproduced on the dev PC: when `clrjit.dll` cannot be loaded (blocked, quarantined or missing) a JIT-based Center ends exactly like this ("Fatal error. Failed to load JIT compiler", Application log: .NET Runtime 1023 + Application Error 1000 in coreclr.dll), with an empty `center.log` and no crash report. Since 1.0.17 the Center is published as **Native AOT**: `Yuval.Center.exe` is machine code with no `coreclr.dll`, no `clrjit.dll` and no JIT, so neither a blocked JIT nor refused executable memory (W^X, "no dynamic code" mitigations) can stop it. The island also captures the Center's standard error in `logscenter-stderr.log`, and the message box shows its last lines (the runtime's own reason). An EDR that blocks unsigned child processes of `Yuval.exe` still needs an exclusion for `%ProgramFiles%Yuvalcenter*`. | Code, reproduced (JIT path) |
 | Outlook programmatic access | See section 10 "Prompts". | Code, doc |
 
 ## 12. Multi-user, Fast User Switching, RDS / VDI
